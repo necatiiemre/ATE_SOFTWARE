@@ -59,6 +59,14 @@ private:
     // Returns the log directory path for the given unit name
     std::string getLogPathForUnit() const;
 
+    // Builds the "TEST REPORT" header block shared by the main log and the
+    // DTN summary log.
+    std::string buildReportHeaderText() const;
+
+    // Prepends `header` to an existing file at `path`. No-op returning false if
+    // the file does not exist (e.g. no summary log was fetched for this unit).
+    bool prependHeaderToFile(const std::string &path, const std::string &header) const;
+
     std::string m_testName;
     std::string m_test_name_correction;
     std::string m_ate_serial_number;

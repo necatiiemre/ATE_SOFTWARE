@@ -388,8 +388,58 @@ std::string ReportManager::getTestLogFilePath()
     return getTestLogDir() + "/" + m_testName + ".log";
 }
 
+std::string ReportManager::buildReportHeaderText() const
+{
+    std::ostringstream h;
+    h << "========================================" << "\n";
+    h << "         TEST REPORT" << "\n";
+    h << "========================================" << "\n";
+    h << "Software Start Time : " << m_software_start_time << "\n";
+    h << "Unit Power On Time  : " << m_unit_power_on_time << "\n";
+    h << "Power Off Time      : " << m_power_off_time << "\n";
+    h << "Software End Time   : " << m_software_end_time << "\n";
+    h << "Test Name           : " << m_testName << "\n";
+    h << "ATE Serial Number   : " << m_ate_serial_number << "\n";
+    h << "Bilgem Number       : " << m_bilgem_number << "\n";
+    h << "Serial Number       : " << m_serial_number << "\n";
+    h << "Tester Name         : " << m_tester_name << "\n";
+    h << "Quality Checker     : " << m_quality_checker_name << "\n";
+    h << "Unit Name           : " << m_unit_name << "IRSW" << "\n";
+    h << "========================================" << "\n";
+    h << "\n";
+    return h.str();
+}
+
+bool ReportManager::prependHeaderToFile(const std::string &path, const std::string &header) const
+{
+    // Read existing content; if the file isn't there, skip silently.
+    std::string existingContent;
+    {
+        std::ifstream inFile(path);
+        if (!inFile.is_open())
+        {
+            return false;
+        }
+        std::stringstream ss;
+        ss << inFile.rdbuf();
+        existingContent = ss.str();
+    }
+
+    std::ofstream outFile(path);
+    if (!outFile.is_open())
+    {
+        std::cerr << "Error: Could not open file for header prepend: " << path << std::endl;
+        return false;
+    }
+    outFile << header;
+    outFile << existingContent;
+    outFile.close();
+    return true;
+}
+
 bool ReportManager::writeReportHeader()
 {
+    const std::string header = buildReportHeaderText();
     std::string logFile = getTestLogFilePath();
 
     // Read existing content if present
@@ -413,22 +463,7 @@ bool ReportManager::writeReportHeader()
         return false;
     }
 
-    outFile << "========================================" << std::endl;
-    outFile << "         TEST REPORT" << std::endl;
-    outFile << "========================================" << std::endl;
-    outFile << "Software Start Time : " << m_software_start_time << std::endl;
-    outFile << "Unit Power On Time  : " << m_unit_power_on_time << std::endl;
-    outFile << "Power Off Time      : " << m_power_off_time << std::endl;
-    outFile << "Software End Time   : " << m_software_end_time << std::endl;
-    outFile << "Test Name           : " << m_testName << std::endl;
-    outFile << "ATE Serial Number   : " << m_ate_serial_number << std::endl;
-    outFile << "Bilgem Number       : " << m_bilgem_number << std::endl;
-    outFile << "Serial Number       : " << m_serial_number << std::endl;
-    outFile << "Tester Name         : " << m_tester_name << std::endl;
-    outFile << "Quality Checker     : " << m_quality_checker_name << std::endl;
-    outFile << "Unit Name           : " << m_unit_name << "IRSW"<< std::endl;
-    outFile << "========================================" << std::endl;
-    outFile << std::endl;
+    outFile << header;
 
     // Append existing content
     if (!existingContent.empty())
@@ -439,6 +474,14 @@ bool ReportManager::writeReportHeader()
     outFile.close();
 
     DEBUG_LOG("Report header written to: " << logFile);
+
+    // Add the same header to the DTN summary log, if one was fetched into this
+    // test's directory. No-op for units that don't produce a summary log.
+    std::string summaryFile = getTestLogDir() + "/dpdk_summary.log";
+    if (prependHeaderToFile(summaryFile, header))
+    {
+        DEBUG_LOG("Report header written to summary log: " << summaryFile);
+    }
 
     return true;
 }
