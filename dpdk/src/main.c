@@ -231,6 +231,11 @@ int main(int argc, char const *argv[])
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    // Remove any stale summary log from a previous run so that, if this run
+    // ends without producing a fresh one (e.g. a crash), MainSoftware won't
+    // fetch old data. dpdk runs as root, so it can delete the root-owned file.
+    remove(SHUTDOWN_SNAPSHOT_PATH);
+
     // Print basic EAL info
     print_eal_info();
 
