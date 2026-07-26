@@ -31,9 +31,10 @@ enum snapshot_slot {
 // Default output file - a SEPARATE "summary log". It never touches the normal
 // per-second log (dpdk_app.log); it only holds the single last-second summary.
 // MainSoftware fetches /tmp/dpdk_app.log after each run; this lives next to it
-// so it can be collected the same way.
+// so it can be collected the same way. The file is named with the final test
+// result naming scheme so it carries the correct name on the server too.
 #ifndef SHUTDOWN_SNAPSHOT_PATH
-#define SHUTDOWN_SNAPSHOT_PATH "/tmp/dpdk_summary.log"
+#define SHUTDOWN_SNAPSHOT_PATH "/tmp/DTN_IRSW_EQ_Test_Result_Summary_Log_Files.log"
 #endif
 
 // Initialize internal state (mutex). Safe to call more than once; only the

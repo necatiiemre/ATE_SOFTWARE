@@ -28,12 +28,17 @@ public:
     // Creates PDF report from log file
     bool createPdfReport();
 
-    // Per-test output directory: LOGS/<unit>/<session-timestamp>.
+    // Per-test output directory: LOGS/<unit>/<test_name>-<session-timestamp>.
     // Created on access so every caller is safe to write into it.
     std::string getTestLogDir();
 
-    // Full path of the main log inside the per-test dir: <dir>/<test_name>.log
+    // Full path of the main log inside the per-test dir:
+    // <dir>/<prefix>_EQ_Test_Result_Log_Files.log
     std::string getTestLogFilePath();
+
+    // Full path of the summary log inside the per-test dir:
+    // <dir>/<prefix>_EQ_Test_Result_Summary_Log_Files.log
+    std::string getSummaryLogFilePath();
 
     // Timestamp recording methods
     void recordSoftwareStartTime();
@@ -58,6 +63,11 @@ private:
 
     // Returns the log directory path for the given unit name
     std::string getLogPathForUnit() const;
+
+    // Returns the log-file name prefix for the current unit. DTN and HSN carry
+    // the "IRSW" designator (e.g. "DTN_IRSW"); CMC/VMC/MMC use the bare unit
+    // name (e.g. "CMC"). Combined with the shared "_EQ_Test_Result_*" suffix.
+    std::string getLogFilePrefix() const;
 
     // Builds the "TEST REPORT" header block shared by the main log and the
     // DTN summary log.
