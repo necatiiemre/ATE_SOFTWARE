@@ -74,6 +74,29 @@ ssh_exec() {
     eval $SSH_CMD "\"$1\""
 }
 
+# Read a component's version from its VERSION.txt (first line, whitespace
+# stripped). Falls back to 0.0.0 if the file is missing.
+read_component_version() {
+    local component="$1"
+    local version_file="$SCRIPT_DIR/$component/VERSION.txt"
+    if [ -f "$version_file" ]; then
+        head -n1 "$version_file" | tr -d '[:space:]'
+    else
+        echo "0.0.0"
+    fi
+}
+
+# Write the release package version to MMUComputerTestSoftware/VERSION.txt.
+# By design this mirrors MainSoftware's version - the whole test software
+# package is versioned together with MainSoftware.
+write_release_version() {
+    local version
+    version="$(read_component_version MainSoftware)"
+    mkdir -p "$PREBUILT_DIR"
+    echo "$version" > "$PREBUILT_DIR/VERSION.txt"
+    log_info "Release package version set to $version (from MainSoftware/VERSION.txt)"
+}
+
 test_server_connection() {
     log_info "Testing connection to $SERVER_HOST..."
     if ssh_exec "echo 'Connection OK'" > /dev/null 2>&1; then
@@ -470,6 +493,9 @@ main() {
             exit 1
             ;;
     esac
+
+    # Stamp the release package with a version that mirrors MainSoftware.
+    write_release_version
 
     log_step "Preparation Complete!"
     echo ""
