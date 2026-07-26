@@ -16,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,11 +44,11 @@ void psu_telem_stop(void);
 
 /**
  * Print the current PSU measurement as a [HEALTH]-prefixed table block to
- * stdout. Safe to call every print cycle. If no packet has been received
- * yet, prints a "NO DATA" row. If the cache is older than 3 seconds prints
- * a "STALE" row instead of the regular one.
+ * `out` (pass stdout for live console/log output). Safe to call every print
+ * cycle. If no packet has been received yet, prints a "NO DATA" row. If the
+ * cache is older than 3 seconds prints a "STALE" row instead of the regular one.
  */
-void psu_telem_print_table(void);
+void psu_telem_print_table(FILE *out);
 
 /**
  * Diagnostics.

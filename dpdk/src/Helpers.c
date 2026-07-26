@@ -1,6 +1,12 @@
+// _GNU_SOURCE must precede any system header so open_memstream() is declared.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "Helpers.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <rte_ethdev.h>
@@ -10,6 +16,7 @@
 #include "TxRxManager.h"  // for rx_stats_per_port
 #include "DpdkExternalTx.h" // for External TX stats
 #include "RawSocketPort.h"  // for reset_raw_socket_stats
+#include "ShutdownSnapshot.h" // capture last-second DTN table for Ctrl+C dump
 
 // Daemon mode flag - when true, ANSI escape codes are disabled
 bool g_daemon_mode = false;
@@ -61,9 +68,14 @@ void helper_reset_stats(const struct ports_config *ports_config,
 static uint64_t dtn_prev_tx_bytes[DTN_PORT_COUNT];
 static uint64_t dtn_prev_rx_bytes[DTN_PORT_COUNT];
 
-static void helper_print_dtn_stats(const struct ports_config *ports_config,
-                                   bool warmup_complete, unsigned loop_count,
-                                   unsigned test_time)
+// Renders the DTN statistics table to `out`. All printf calls below are
+// redirected to `out` by the macro so the exact same text can be both printed
+// to the console/log and captured for the Ctrl+C snapshot.
+#define printf(...) fprintf(out, __VA_ARGS__)
+static void helper_render_dtn_stats(FILE *out,
+                                    const struct ports_config *ports_config,
+                                    bool warmup_complete, unsigned loop_count,
+                                    unsigned test_time)
 {
     // Clear the screen
     if (!g_daemon_mode) {
@@ -298,6 +310,35 @@ static void helper_print_dtn_stats(const struct ports_config *ports_config,
     }
 
     printf("\n  Press Ctrl+C to stop\n");
+}
+#undef printf
+
+// Wrapper: render the DTN table once into a memory buffer, then (a) print it to
+// stdout exactly as before and (b) hand the captured text to ShutdownSnapshot
+// so the last full second before a Ctrl+C can be dumped to a file.
+static void helper_print_dtn_stats(const struct ports_config *ports_config,
+                                   bool warmup_complete, unsigned loop_count,
+                                   unsigned test_time)
+{
+    char *buf = NULL;
+    size_t buf_size = 0;
+    FILE *ms = open_memstream(&buf, &buf_size);
+    if (ms == NULL) {
+        // Fallback: no capture, render straight to stdout (original behavior).
+        helper_render_dtn_stats(stdout, ports_config, warmup_complete,
+                                loop_count, test_time);
+        return;
+    }
+
+    helper_render_dtn_stats(ms, ports_config, warmup_complete,
+                            loop_count, test_time);
+    fclose(ms);  // flushes and finalizes `buf`
+
+    if (buf != NULL) {
+        fputs(buf, stdout);
+        shutdown_snapshot_store(SNAP_SLOT_DTN, buf);
+        free(buf);
+    }
 }
 #endif /* STATS_MODE_DTN */
 

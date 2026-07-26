@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "HealthMonitor.h"
 #include "PsuTelemetryReceiver.h"   // psu_telem_print_table() - appended to health block
+#include "ShutdownSnapshot.h"       // capture last-second HM+PSU block for Ctrl+C dump
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -362,7 +363,12 @@ static const char *port_speed_str(uint64_t speed)
 // TABLE PRINTING
 // ==========================================
 
-static void health_print_fpga_table(const char *fpga_name, const struct health_fpga_data *fpga)
+// The two functions below render into `out`. printf/putchar are redirected to
+// `out` so the exact same text is produced whether we print live (out=stdout)
+// or capture into a buffer for the Ctrl+C snapshot. (snprintf is unaffected.)
+#define printf(...)  fprintf(out, __VA_ARGS__)
+#define putchar(c)   putc((c), out)
+static void health_print_fpga_table(FILE *out, const char *fpga_name, const struct health_fpga_data *fpga)
 {
     const struct health_device_info *dev = &fpga->device;
 
@@ -469,17 +475,17 @@ static void health_print_fpga_table(const char *fpga_name, const struct health_f
     }
 }
 
-static void health_print_tables(const struct health_cycle_data *cycle)
+static void health_render_tables(FILE *out, const struct health_cycle_data *cycle)
 {
     printf("\n");
 
     // Assistant FPGA Table
-    health_print_fpga_table("ASSISTANT", &cycle->assistant);
+    health_print_fpga_table(out, "ASSISTANT", &cycle->assistant);
 
     printf("[HEALTH] ================================================\n\n");
 
     // Manager FPGA Table
-    health_print_fpga_table("MANAGER", &cycle->manager);
+    health_print_fpga_table(out, "MANAGER", &cycle->manager);
 
     printf("[HEALTH] ================================================\n");
 
@@ -524,7 +530,33 @@ static void health_print_tables(const struct health_cycle_data *cycle)
     // MainSoftware over UDP. Append them to the per-cycle health block so
     // they're visible alongside the FPGA/MCU tables both on screen and in
     // the dpdk_app.log that the PDF generator consumes.
-    psu_telem_print_table();
+    psu_telem_print_table(out);
+}
+#undef printf
+#undef putchar
+
+// Wrapper: render the Health Monitor + PSU block once into a memory buffer,
+// then (a) print it to stdout exactly as before and (b) hand the captured text
+// to ShutdownSnapshot so the last full second before a Ctrl+C can be dumped.
+static void health_print_tables(const struct health_cycle_data *cycle)
+{
+    char *buf = NULL;
+    size_t buf_size = 0;
+    FILE *ms = open_memstream(&buf, &buf_size);
+    if (ms == NULL) {
+        // Fallback: no capture, render straight to stdout (original behavior).
+        health_render_tables(stdout, cycle);
+        return;
+    }
+
+    health_render_tables(ms, cycle);
+    fclose(ms);  // flushes and finalizes `buf`
+
+    if (buf != NULL) {
+        fputs(buf, stdout);
+        shutdown_snapshot_store(SNAP_SLOT_HEALTH, buf);
+        free(buf);
+    }
 }
 
 static int get_interface_index(const char *ifname)
