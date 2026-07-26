@@ -30,6 +30,10 @@ static inline double to_gbps(uint64_t bytes) {
     return (bytes * 8.0) / 1e9;
 }
 
+static inline double to_mbps(uint64_t bytes) {
+    return (bytes * 8.0) / 1e6;
+}
+
 void helper_reset_stats(const struct ports_config *ports_config,
                         uint64_t prev_tx_bytes[], uint64_t prev_rx_bytes[])
 {
@@ -57,7 +61,7 @@ void helper_reset_stats(const struct ports_config *ports_config,
 // DTN PORT-BASED STATISTICS TABLE
 // ==========================================
 // 34 rows: DTN Port 0-31 (DPDK) + DTN Port 32 (Port12) + DTN Port 33 (Port13)
-// Columns: TX Pkts/Bytes/Gbps | RX Pkts/Bytes/Gbps | Good/Bad/Lost/BitErr/BER
+// Columns: TX Pkts/Bytes/Mbps | RX Pkts/Bytes/Mbps | Good/Bad/Lost/BitErr/BER
 //
 // DTN TX (DTN→Server) = Server RX = HW q_ipackets[queue]
 // DTN RX (Server→DTN) = Server TX = HW q_opackets[queue]
@@ -99,7 +103,7 @@ static void helper_render_dtn_stats(FILE *out,
     printf("┌──────┬─────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────┐\n");
     printf("│ DTN  │                          DTN TX (DTN→Server)                        │                          DTN RX (Server→DTN)                        │                                      PRBS Verification                                               │\n");
     printf("│ Port ├─────────────────────┬─────────────────────┬─────────────────────────┼─────────────────────┬─────────────────────┬─────────────────────────┼─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────┤\n");
-    printf("│      │       Packets       │        Bytes        │          Gbps           │       Packets       │        Bytes        │          Gbps           │        Good         │         Bad         │        Lost         │      Bit Error      │     BER     │\n");
+    printf("│      │       Packets       │        Bytes        │          Mbps           │       Packets       │        Bytes        │          Mbps           │        Good         │         Bad         │        Lost         │      Bit Error      │     BER     │\n");
     printf("├──────┼─────────────────────┼─────────────────────┼─────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────┤\n");
 
     // Fetch HW stats once (per port)
@@ -150,11 +154,11 @@ static void helper_render_dtn_stats(FILE *out,
             }
         }
 
-        // Gbps delta calculation
+        // Mbps delta calculation
         uint64_t tx_delta = dtn_tx_bytes - dtn_prev_tx_bytes[dtn];
         uint64_t rx_delta = dtn_rx_bytes - dtn_prev_rx_bytes[dtn];
-        double tx_gbps = to_gbps(tx_delta);
-        double rx_gbps = to_gbps(rx_delta);
+        double tx_mbps = to_mbps(tx_delta);
+        double rx_mbps = to_mbps(rx_delta);
 
         // Update prev values
         dtn_prev_tx_bytes[dtn] = dtn_tx_bytes;
@@ -183,8 +187,8 @@ static void helper_render_dtn_stats(FILE *out,
 
         printf("│  %2u  │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %19lu │ %19lu │ %11.2e │\n",
                dtn,
-               dtn_tx_pkts, dtn_tx_bytes, tx_gbps,
-               dtn_rx_pkts, dtn_rx_bytes, rx_gbps,
+               dtn_tx_pkts, dtn_tx_bytes, tx_mbps,
+               dtn_rx_pkts, dtn_rx_bytes, rx_mbps,
                good, bad, lost, bit_errors, ber);
     }
 
@@ -215,8 +219,8 @@ static void helper_render_dtn_stats(FILE *out,
         uint64_t rx_delta = dtn32_rx_bytes - dtn_prev_rx_bytes[DTN_RAW_PORT_12];
         dtn_prev_tx_bytes[DTN_RAW_PORT_12] = dtn32_tx_bytes;
         dtn_prev_rx_bytes[DTN_RAW_PORT_12] = dtn32_rx_bytes;
-        double tx_gbps = to_gbps(tx_delta);
-        double rx_gbps = to_gbps(rx_delta);
+        double tx_mbps = to_mbps(tx_delta);
+        double rx_mbps = to_mbps(rx_delta);
 
         uint64_t dtn32_lost = get_global_sequence_lost();
 
@@ -233,8 +237,8 @@ static void helper_render_dtn_stats(FILE *out,
         if (total_bits > 0) ber = (double)dtn32_bit_err_eff / (double)total_bits;
 
         printf("│  32  │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %19lu │ %19lu │ %11.2e │\n",
-               dtn32_tx_pkts, dtn32_tx_bytes, tx_gbps,
-               dtn32_rx_pkts, dtn32_rx_bytes, rx_gbps,
+               dtn32_tx_pkts, dtn32_tx_bytes, tx_mbps,
+               dtn32_rx_pkts, dtn32_rx_bytes, rx_mbps,
                dtn32_good, dtn32_bad, dtn32_lost, dtn32_bit_err_eff, ber);
     }
 
@@ -263,8 +267,8 @@ static void helper_render_dtn_stats(FILE *out,
         uint64_t rx_delta = dtn33_rx_bytes - dtn_prev_rx_bytes[DTN_RAW_PORT_13];
         dtn_prev_tx_bytes[DTN_RAW_PORT_13] = dtn33_tx_bytes;
         dtn_prev_rx_bytes[DTN_RAW_PORT_13] = dtn33_rx_bytes;
-        double tx_gbps = to_gbps(tx_delta);
-        double rx_gbps = to_gbps(rx_delta);
+        double tx_mbps = to_mbps(tx_delta);
+        double rx_mbps = to_mbps(rx_delta);
 
         uint64_t dtn33_lost = get_global_sequence_lost_p13();
 
@@ -281,8 +285,8 @@ static void helper_render_dtn_stats(FILE *out,
         if (total_bits > 0) ber = (double)dtn33_bit_err_eff / (double)total_bits;
 
         printf("│  33  │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %23.2f │ %19lu │ %19lu │ %19lu │ %19lu │ %11.2e │\n",
-               dtn33_tx_pkts, dtn33_tx_bytes, tx_gbps,
-               dtn33_rx_pkts, dtn33_rx_bytes, rx_gbps,
+               dtn33_tx_pkts, dtn33_tx_bytes, tx_mbps,
+               dtn33_rx_pkts, dtn33_rx_bytes, rx_mbps,
                dtn33_good, dtn33_bad, dtn33_lost, dtn33_bit_err_eff, ber);
     }
 
