@@ -626,12 +626,14 @@ int main(int argc, char const *argv[])
     {
         sleep(1);
 
-        // If a stop was requested (Ctrl+C) while we were sleeping, exit BEFORE
-        // rendering another second. This keeps the last captured DTN table (and
-        // the Health Monitor + PSU block) as the state from the second just
-        // BEFORE the signal - which is exactly what the shutdown snapshot dumps.
+        // A stop (Ctrl+C) was requested while we were sleeping: FREEZE the
+        // summary-log snapshot now so it keeps the DTN table + Health + PSU
+        // block from the last full second BEFORE the signal. We deliberately
+        // do NOT break here - the loop still renders this second exactly as it
+        // always did, so the normal per-second log (dpdk_app.log) is unchanged.
+        // Only the summary snapshot stops updating (store becomes a no-op).
         if (force_quit) {
-            break;
+            shutdown_snapshot_freeze();
         }
 
         loop_count++;
@@ -731,10 +733,10 @@ int main(int argc, char const *argv[])
                      "stop requested during warm-up (%u/120 s)", loop_count);
         }
         if (shutdown_snapshot_dump(note) == 0) {
-            printf("[SNAPSHOT] Last-second stats written to %s\n",
+            printf("[SUMMARY] Last-second summary written to %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);
         } else {
-            printf("[SNAPSHOT] WARNING: failed to write %s\n",
+            printf("[SUMMARY] WARNING: failed to write %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);
         }
     }

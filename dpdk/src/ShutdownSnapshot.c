@@ -1,12 +1,16 @@
 #include "ShutdownSnapshot.h"
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 // Latest rendered text per slot (heap-owned, may be NULL when empty).
 static char *g_slots[SNAP_SLOT_COUNT] = {0};
+// Once frozen (on stop request), store() stops updating the slots so the
+// summary keeps the last full second captured BEFORE the signal.
+static bool g_frozen = false;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Human-readable slot names for the dump header.
@@ -41,8 +45,21 @@ void shutdown_snapshot_store(enum snapshot_slot slot, const char *text)
     }
 
     pthread_mutex_lock(&g_lock);
+    if (g_frozen) {
+        // A stop was requested: keep the pre-signal snapshot untouched.
+        pthread_mutex_unlock(&g_lock);
+        free(copy);
+        return;
+    }
     free(g_slots[slot]);
     g_slots[slot] = copy;  // may be NULL to clear the slot
+    pthread_mutex_unlock(&g_lock);
+}
+
+void shutdown_snapshot_freeze(void)
+{
+    pthread_mutex_lock(&g_lock);
+    g_frozen = true;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -65,7 +82,7 @@ int shutdown_snapshot_dump(const char *header_note)
 
     fprintf(fp,
             "════════════════════════════════════════════════════════════════════\n"
-            "  CTRL+C SNAPSHOT - statistics from the last full second before stop\n"
+            "  SUMMARY LOG - stats from the last full second before stop (Ctrl+C)\n"
             "  Captured at : %s\n"
             "  Note        : %s\n"
             "════════════════════════════════════════════════════════════════════\n",

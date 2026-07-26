@@ -28,10 +28,12 @@ enum snapshot_slot {
     SNAP_SLOT_COUNT
 };
 
-// Default output file. MainSoftware fetches /tmp/dpdk_app.log after each run;
-// this snapshot lives next to it so it can be collected the same way.
+// Default output file - a SEPARATE "summary log". It never touches the normal
+// per-second log (dpdk_app.log); it only holds the single last-second summary.
+// MainSoftware fetches /tmp/dpdk_app.log after each run; this lives next to it
+// so it can be collected the same way.
 #ifndef SHUTDOWN_SNAPSHOT_PATH
-#define SHUTDOWN_SNAPSHOT_PATH "/tmp/dpdk_ctrlc_snapshot.log"
+#define SHUTDOWN_SNAPSHOT_PATH "/tmp/dpdk_summary.log"
 #endif
 
 // Initialize internal state (mutex). Safe to call more than once; only the
@@ -42,6 +44,12 @@ void shutdown_snapshot_init(void);
 // Thread-safe. A NULL or empty `text` clears the slot. Called once per second
 // by each producer with the block it just rendered.
 void shutdown_snapshot_store(enum snapshot_slot slot, const char *text);
+
+// Stop updating the slots. Called once when a stop (Ctrl+C) is requested so
+// the summary keeps the last full second captured BEFORE the signal, while the
+// normal per-second log keeps printing as usual. Thread-safe; irreversible for
+// the remainder of the run.
+void shutdown_snapshot_freeze(void);
 
 // Write every non-empty slot (in slot order) to SHUTDOWN_SNAPSHOT_PATH,
 // prefixed by a header that includes the wall-clock time and `header_note`
