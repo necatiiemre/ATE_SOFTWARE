@@ -1,0 +1,3 @@
+ssh cumulus@10.1.33.3
+sudo cp /etc/cumulus/ports.conf.orig /etc/cumulus/ports.conf
+sudo systemctl restart switchd
