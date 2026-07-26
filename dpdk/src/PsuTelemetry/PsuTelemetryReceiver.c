@@ -233,7 +233,10 @@ static const char *model_name(uint8_t model)
     }
 }
 
-void psu_telem_print_table(void)
+// All printf calls in this function are redirected to `out` so the PSU block
+// can be captured (for the Ctrl+C snapshot) as well as printed live.
+#define printf(...) fprintf(out, __VA_ARGS__)
+void psu_telem_print_table(FILE *out)
 {
     psu_telem_pkt_t snap;
     bool has_data;
@@ -290,3 +293,4 @@ void psu_telem_print_table(void)
 
     printf("[HEALTH] ================================================\n\n");
 }
+#undef printf

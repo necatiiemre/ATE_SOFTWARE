@@ -23,6 +23,7 @@
 #include "HealthMonitor.h"   // Health monitor for DTN status queries
 #include "PsuTelemetry.h"          // wire format (shared with MainSoftware)
 #include "PsuTelemetryReceiver.h"  // receiver API for MainSoftware UDP pushes
+#include "ShutdownSnapshot.h"      // dump last-second stats on Ctrl+C
 
 // Enable/disable raw socket ports
 #ifndef ENABLE_RAW_SOCKET_PORTS
@@ -229,6 +230,11 @@ int main(int argc, char const *argv[])
     // Setup signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+
+    // Remove any stale summary log from a previous run so that, if this run
+    // ends without producing a fresh one (e.g. a crash), MainSoftware won't
+    // fetch old data. dpdk runs as root, so it can delete the root-owned file.
+    remove(SHUTDOWN_SNAPSHOT_PATH);
 
     // Print basic EAL info
     print_eal_info();
@@ -624,6 +630,17 @@ int main(int argc, char const *argv[])
     while (!force_quit)
     {
         sleep(1);
+
+        // A stop (Ctrl+C) was requested while we were sleeping: FREEZE the
+        // summary-log snapshot now so it keeps the DTN table + Health + PSU
+        // block from the last full second BEFORE the signal. We deliberately
+        // do NOT break here - the loop still renders this second exactly as it
+        // always did, so the normal per-second log (dpdk_app.log) is unchanged.
+        // Only the summary snapshot stops updating (store becomes a no-op).
+        if (force_quit) {
+            shutdown_snapshot_freeze();
+        }
+
         loop_count++;
 
         // Reset when warm-up is complete
@@ -707,6 +724,28 @@ int main(int argc, char const *argv[])
         }
     }
 
+    // Ctrl+C / stop requested: dump the DTN table + Health Monitor + PSU block
+    // captured in the last full second BEFORE the signal into a single file.
+    // Done here, before any teardown prints, so the snapshot reflects the
+    // pre-stop state (not values re-rendered during shutdown).
+    {
+        char note[96];
+        if (warmup_complete) {
+            snprintf(note, sizeof(note),
+                     "stop requested at test second %u", test_time);
+        } else {
+            snprintf(note, sizeof(note),
+                     "stop requested during warm-up (%u/120 s)", loop_count);
+        }
+        if (shutdown_snapshot_dump(note) == 0) {
+            printf("[SUMMARY] Last-second summary written to %s\n",
+                   SHUTDOWN_SNAPSHOT_PATH);
+        } else {
+            printf("[SUMMARY] WARNING: failed to write %s\n",
+                   SHUTDOWN_SNAPSHOT_PATH);
+        }
+    }
+
     // Log Test Finish Time for PDF report
     {
         time_t now_t = time(NULL);
@@ -778,6 +817,7 @@ int main(int argc, char const *argv[])
     cleanup_prbs_cache();
     cleanup_ports(&ports_config);
     cleanup_eal();
+    shutdown_snapshot_cleanup();
 
     printf("Application exited cleanly\n");
 
