@@ -368,13 +368,24 @@ std::string ReportManager::getLogPathForUnit() const
     return LogPaths::baseDir();
 }
 
+std::string ReportManager::getLogFilePrefix() const
+{
+    // DTN and HSN units carry the "IRSW" designator in their file names;
+    // CMC/VMC/MMC use the bare unit name.
+    if (m_unit_name == "DTN" || m_unit_name == "HSN")
+        return m_unit_name + "_IRSW";
+    return m_unit_name;
+}
+
 std::string ReportManager::getTestLogDir()
 {
     // Fallback in case recordSoftwareStartTime() was never called.
     if (m_session_timestamp.empty())
         m_session_timestamp = getFileSafeTimestamp();
 
-    std::string dir = getLogPathForUnit() + "/" + m_session_timestamp;
+    // Per-test directory is named "<test_name>-<timestamp>" so a run is
+    // identifiable by test name at a glance and never overwrites a previous one.
+    std::string dir = getLogPathForUnit() + "/" + m_testName + "-" + m_session_timestamp;
 
     // Idempotent: make sure the run's directory exists for every writer.
     std::error_code ec;
@@ -385,7 +396,12 @@ std::string ReportManager::getTestLogDir()
 
 std::string ReportManager::getTestLogFilePath()
 {
-    return getTestLogDir() + "/" + m_testName + ".log";
+    return getTestLogDir() + "/" + getLogFilePrefix() + "_EQ_Test_Result_Log_Files.log";
+}
+
+std::string ReportManager::getSummaryLogFilePath()
+{
+    return getTestLogDir() + "/" + getLogFilePrefix() + "_EQ_Test_Result_Summary_Log_Files.log";
 }
 
 std::string ReportManager::buildReportHeaderText() const
@@ -477,7 +493,7 @@ bool ReportManager::writeReportHeader()
 
     // Add the same header to the DTN summary log, if one was fetched into this
     // test's directory. No-op for units that don't produce a summary log.
-    std::string summaryFile = getTestLogDir() + "/dpdk_summary.log";
+    std::string summaryFile = getSummaryLogFilePath();
     if (prependHeaderToFile(summaryFile, header))
     {
         DEBUG_LOG("Report header written to summary log: " << summaryFile);

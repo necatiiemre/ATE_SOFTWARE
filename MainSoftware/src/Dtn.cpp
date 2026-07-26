@@ -540,7 +540,7 @@ bool Dtn::configureSequence()
     // Also fetch the separate summary log (DTN table + Health Monitor + PSU
     // block from the last full second before Ctrl+C). Written by dpdk on stop;
     // may be absent if the run crashed before the snapshot was dumped.
-    std::string local_summary_log = g_ReportManager.getTestLogDir() + "/dpdk_summary.log";
+    std::string local_summary_log = g_ReportManager.getSummaryLogFilePath();
     if (g_ssh_deployer_server.fetchFile("/tmp/dpdk_summary.log", local_summary_log))
     {
         std::cout << "DTN: Summary log saved to: " << local_summary_log << std::endl;
