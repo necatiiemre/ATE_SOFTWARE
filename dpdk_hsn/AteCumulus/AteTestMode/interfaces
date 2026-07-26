@@ -1,0 +1,460 @@
+# ============================================================================
+# HSN ATE Mode - Cumulus /etc/network/interfaces  (FIZIKSEL + VLAN KATMANI)
+# ----------------------------------------------------------------------------
+# Server 12x100G -> swp13..swp24 (P0->swp13 ... P11->swp24), trunk
+# Cihaz 4x100G   -> swp1..swp4 (D0..D3), 26x10G -> swp25s0..swp31s1 (E0..E25)
+# Cihaz swp: bridge-vids {ingress 100+idx} + bridge-pvid {200+idx} (capraz-es loopback)
+# Server swp: tasidigi TX+RX VLAN'lari (tagged) + park pvid. Tum portlar MTU 9216 (jumbo).
+# NOT: breakout (swp25-31=4x10G) /etc/cumulus/ports.conf'ta da tanimli olmali.
+# ============================================================================
+
+source /etc/network/interfaces.d/*.intf
+
+auto lo
+iface lo inet loopback
+
+auto mgmt
+iface mgmt
+    address 127.0.0.1/8
+    address ::1/128
+    vrf-table auto
+
+auto eth0
+iface eth0
+    address 10.1.33.3/24
+    gateway 10.1.33.1
+    ip-forward off
+    ip6-forward off
+    vrf mgmt
+
+# ===== CIHAZ 100G (swp1-4 = D0-D3) =====
+auto swp1
+iface swp1
+    bridge-vids 100
+    bridge-pvid 200
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp2
+iface swp2
+    bridge-vids 101
+    bridge-pvid 201
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp3
+iface swp3
+    bridge-vids 102
+    bridge-pvid 202
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp4
+iface swp4
+    bridge-vids 103
+    bridge-pvid 203
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+# ===== SERVER 100G trunk (swp13-24 = P0-P11) =====
+auto swp13
+iface swp13
+    bridge-vids 100 200
+    bridge-pvid 49
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp14
+iface swp14
+    bridge-vids 101 201
+    bridge-pvid 50
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp15
+iface swp15
+    bridge-vids 102 202
+    bridge-pvid 51
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp16
+iface swp16
+    bridge-vids 103 203
+    bridge-pvid 52
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp17
+iface swp17
+    bridge-vids 104 106 108 110 204 206 208 210
+    bridge-pvid 53
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp18
+iface swp18
+    bridge-vids 105 107 109 111 205 207 209 211
+    bridge-pvid 54
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp19
+iface swp19
+    bridge-vids 112 114 116 212 214 216
+    bridge-pvid 55
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp20
+iface swp20
+    bridge-vids 113 115 117 213 215 217
+    bridge-pvid 56
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp21
+iface swp21
+    bridge-vids 118 120 122 218 220 222
+    bridge-pvid 57
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp22
+iface swp22
+    bridge-vids 119 121 123 219 221 223
+    bridge-pvid 58
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp23
+iface swp23
+    bridge-vids 124 126 128 224 226 228
+    bridge-pvid 59
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+auto swp24
+iface swp24
+    bridge-vids 125 127 129 225 227 229
+    bridge-pvid 60
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 100000
+    link-autoneg off
+
+# ===== CIHAZ 10G breakout (swp25s0-swp31s1 = E0-E25) =====
+auto swp25s0
+iface swp25s0
+    bridge-vids 104
+    bridge-pvid 204
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp25s1
+iface swp25s1
+    bridge-vids 105
+    bridge-pvid 205
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp25s2
+iface swp25s2
+    bridge-vids 106
+    bridge-pvid 206
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp25s3
+iface swp25s3
+    bridge-vids 107
+    bridge-pvid 207
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp26s0
+iface swp26s0
+    bridge-vids 108
+    bridge-pvid 208
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp26s1
+iface swp26s1
+    bridge-vids 109
+    bridge-pvid 209
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp26s2
+iface swp26s2
+    bridge-vids 110
+    bridge-pvid 210
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp26s3
+iface swp26s3
+    bridge-vids 111
+    bridge-pvid 211
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp27s0
+iface swp27s0
+    bridge-vids 112
+    bridge-pvid 212
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp27s1
+iface swp27s1
+    bridge-vids 113
+    bridge-pvid 213
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp27s2
+iface swp27s2
+    bridge-vids 114
+    bridge-pvid 214
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp27s3
+iface swp27s3
+    bridge-vids 115
+    bridge-pvid 215
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp28s0
+iface swp28s0
+    bridge-vids 116
+    bridge-pvid 216
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp28s1
+iface swp28s1
+    bridge-vids 117
+    bridge-pvid 217
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp28s2
+iface swp28s2
+    bridge-vids 118
+    bridge-pvid 218
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp28s3
+iface swp28s3
+    bridge-vids 119
+    bridge-pvid 219
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp29s0
+iface swp29s0
+    bridge-vids 120
+    bridge-pvid 220
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp29s1
+iface swp29s1
+    bridge-vids 121
+    bridge-pvid 221
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp29s2
+iface swp29s2
+    bridge-vids 122
+    bridge-pvid 222
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp29s3
+iface swp29s3
+    bridge-vids 123
+    bridge-pvid 223
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp30s0
+iface swp30s0
+    bridge-vids 124
+    bridge-pvid 224
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp30s1
+iface swp30s1
+    bridge-vids 125
+    bridge-pvid 225
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp30s2
+iface swp30s2
+    bridge-vids 126
+    bridge-pvid 226
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp30s3
+iface swp30s3
+    bridge-vids 127
+    bridge-pvid 227
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp31s0
+iface swp31s0
+    bridge-vids 128
+    bridge-pvid 228
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto swp31s1
+iface swp31s1
+    bridge-vids 129
+    bridge-pvid 229
+    mtu 9216
+    ip6-forward off
+    disable-ipv6 yes
+    link-speed 10000
+    link-autoneg off
+
+auto br_default
+iface br_default
+    bridge-ports swp1 swp2 swp3 swp4 swp13 swp14 swp15 swp16 swp17 swp18 swp19 swp20 swp21 swp22 swp23 swp24 swp25s0 swp25s1 swp25s2 swp25s3 swp26s0 swp26s1 swp26s2 swp26s3 swp27s0 swp27s1 swp27s2 swp27s3 swp28s0 swp28s1 swp28s2 swp28s3 swp29s0 swp29s1 swp29s2 swp29s3 swp30s0 swp30s1 swp30s2 swp30s3 swp31s0 swp31s1
+    bridge-vlan-aware yes
+    bridge-vids 100-229
+    bridge-pvid 1
+    bridge-stp no
+    bridge-mcsnoop no
