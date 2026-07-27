@@ -15,7 +15,10 @@ namespace serial {
  * @brief Forwards time data from MicroChip SyncServer to another serial port
  *
  * Reads time data from input port (format: YYYY DDD HH:MM:SS DZZ),
- * converts to Unix timestamp, and sends as binary packet to output port.
+ * computes seconds-since-midnight, encodes it as a Q14 fixed-point value
+ * (little-endian), patches it into a fixed 69-byte system message template
+ * (time field at bytes 49-52), recomputes the trailing checksum, and sends
+ * the packet to the output port.
  *
  * Runs in a separate thread, non-blocking to main application.
  *
@@ -109,13 +112,27 @@ private:
     mutable std::mutex m_time_string_mutex;
     std::string m_last_time_string;
 
-    // Packet constants
-    static constexpr size_t PACKET_SIZE = 20;
-    static constexpr size_t TS_OFFSET = 8;
+    // Packet constants (1-based byte numbers from the protocol doc are noted
+    // in comments; the offsets below are 0-based for array indexing).
+    static constexpr size_t PACKET_SIZE = 69;         // full system message
+    static constexpr size_t TS_OFFSET = 48;           // time field, bytes 49-52 (Q14, little-endian)
+    static constexpr size_t CHECKSUM_OFFSET = 68;     // trailing checksum, byte 69
+    static constexpr size_t CHECKSUM_SUM_BEGIN = 4;   // data field starts at byte 5
+    static constexpr size_t CHECKSUM_SUM_END = 67;    // data field ends at byte 67 (byte 68 excluded)
+    static constexpr uint32_t Q14_SCALE = 16384;      // 2^14 fixed-point scale
 
-    // Packet template (header + placeholder + tail)
-    static constexpr uint8_t PACKET_HEADER[] = {0xCA, 0xE1, 0x10, 0x44,0x01, 0x02, 0x03, 0x04};
-    static constexpr uint8_t PACKET_TAIL[] = {0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+    // Fixed system message template. Only the time field (bytes 49-52) and the
+    // trailing checksum (byte 69) are overwritten per packet; every other byte
+    // is constant. Captured from a reference packet emitted by the device.
+    static constexpr uint8_t PACKET_TEMPLATE[PACKET_SIZE] = {
+        0xCA, 0xE3, 0x40, 0x13, 0xC9, 0x27, 0x9F, 0x44, 0x80, 0xD0,  // 0-9
+        0xAE, 0x24, 0xF2, 0x19, 0x00, 0x00, 0x01, 0x0B, 0x71, 0x1C,  // 10-19
+        0xF0, 0x46, 0x4A, 0x17, 0x03, 0x03, 0x7A, 0x00, 0x91, 0xBB,  // 20-29
+        0x0B, 0x00, 0x09, 0xD9, 0x12, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,  // 30-39
+        0x07, 0x20, 0x89, 0x09, 0x67, 0x04, 0x40, 0x02, 0x00, 0x00,  // 40-49 (48-51: time field)
+        0x00, 0x00, 0x2D, 0x30, 0x30, 0x34, 0x00, 0x00, 0x00, 0x00,  // 50-59
+        0x00, 0x00, 0x2F, 0x40, 0xB4, 0x15, 0xB9, 0x07, 0xF1         // 60-68 (68: checksum)
+    };
 
     /**
      * @brief Worker thread main loop
@@ -150,11 +167,28 @@ private:
     bool isLeapYear(int year);
 
     /**
-     * @brief Builds output packet with timestamp
-     * @param buffer Output buffer (must be PACKET_SIZE bytes)
-     * @param timestamp Unix timestamp (big endian)
+     * @brief Builds the output packet for a given time of day
+     *
+     * Copies the fixed template, writes the Q14 fixed-point seconds-of-day
+     * value into the time field (bytes 49-52, little-endian) and recomputes
+     * the trailing checksum.
+     *
+     * @param buffer         Output buffer (must be PACKET_SIZE bytes)
+     * @param seconds_of_day Seconds since midnight UTC (0-86399)
      */
-    void buildPacket(uint8_t* buffer, uint32_t timestamp);
+    void buildPacket(uint8_t* buffer, uint32_t seconds_of_day);
+
+    /**
+     * @brief Computes the trailing checksum over the data field
+     *
+     * Sums the data-field bytes (bytes 5-67) modulo 256 and returns the
+     * two's complement of the low 8 bits, so that the data field plus the
+     * checksum sum to zero (mod 256).
+     *
+     * @param buffer Packet buffer (must be PACKET_SIZE bytes)
+     * @return Checksum byte
+     */
+    uint8_t computeChecksum(const uint8_t* buffer) const;
 
     /**
      * @brief Sets last error message

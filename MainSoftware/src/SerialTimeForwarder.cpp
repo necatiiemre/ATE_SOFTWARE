@@ -1,6 +1,7 @@
 #include "SerialTimeForwarder.h"
 #include "Utils.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -11,8 +12,7 @@
 namespace serial {
 
 // Static constexpr definitions
-constexpr uint8_t SerialTimeForwarder::PACKET_HEADER[];
-constexpr uint8_t SerialTimeForwarder::PACKET_TAIL[];
+constexpr uint8_t SerialTimeForwarder::PACKET_TEMPLATE[];
 
 SerialTimeForwarder::SerialTimeForwarder(const std::string& input_device,
                                          const std::string& output_device,
@@ -169,8 +169,13 @@ void SerialTimeForwarder::workerLoop()
             continue;
         }
 
+        // The time field carries seconds-since-midnight (UTC), not the full
+        // epoch timestamp. Unix time has no leap seconds, so modulo 86400
+        // yields exactly HH*3600 + MM*60 + SS.
+        uint32_t seconds_of_day = timestamp % 86400;
+
         // Build packet
-        buildPacket(packet, timestamp);
+        buildPacket(packet, seconds_of_day);
 
         // Record time just before sending
         auto send_start = std::chrono::high_resolution_clock::now();
@@ -218,7 +223,7 @@ void SerialTimeForwarder::workerLoop()
 
 void SerialTimeForwarder::verifyLoop()
 {
-    uint8_t buffer[64];
+    uint8_t buffer[128];  // must hold at least one full PACKET_SIZE (69) message
     int timeout_count = 0;
 
     DEBUG_LOG("[TimeForwarder] Verify thread started (reading from USB2)");
@@ -266,14 +271,27 @@ void SerialTimeForwarder::verifyLoop()
         }
         std::cout << std::dec << std::endl;
 
-        // If we got enough bytes, try to decode timestamp
+        // If we got enough bytes, try to decode the time field
         if (bytes_read >= static_cast<int>(PACKET_SIZE)) {
-            // Extract timestamp (bytes 7-10, big endian)
-            uint32_t ts = (static_cast<uint32_t>(buffer[7]) << 24) |
-                          (static_cast<uint32_t>(buffer[8]) << 16) |
-                          (static_cast<uint32_t>(buffer[9]) << 8) |
-                          static_cast<uint32_t>(buffer[10]);
-            std::cout << "[TimeForwarder] RX Decoded timestamp: " << ts << std::endl;
+            // Extract Q14 time field (bytes 49-52, little endian)
+            uint32_t q14 = static_cast<uint32_t>(buffer[TS_OFFSET + 0]) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 1]) << 8) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 2]) << 16) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 3]) << 24);
+            uint32_t sod = q14 / Q14_SCALE;  // seconds of day
+            std::cout << "[TimeForwarder] RX Decoded seconds-of-day: " << sod
+                      << " (" << std::setfill('0') << std::setw(2) << (sod / 3600)
+                      << ":" << std::setw(2) << ((sod % 3600) / 60)
+                      << ":" << std::setw(2) << (sod % 60)
+                      << std::setfill(' ') << ")" << std::endl;
+
+            // Verify the trailing checksum
+            uint8_t expected = computeChecksum(buffer);
+            std::cout << "[TimeForwarder] RX Checksum: got 0x" << std::hex << std::uppercase
+                      << std::setfill('0') << std::setw(2) << static_cast<int>(buffer[CHECKSUM_OFFSET])
+                      << ", expected 0x" << std::setw(2) << static_cast<int>(expected)
+                      << std::dec << std::setfill(' ')
+                      << (buffer[CHECKSUM_OFFSET] == expected ? " [OK]" : " [MISMATCH]") << std::endl;
         }
 
         // Print wire latency
@@ -406,19 +424,37 @@ bool SerialTimeForwarder::dayOfYearToDate(int year, int doy, int& month, int& da
     return false;
 }
 
-void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t timestamp)
+void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t seconds_of_day)
 {
-    // Copy header
-    memcpy(buffer, PACKET_HEADER, sizeof(PACKET_HEADER));
+    // Start from the fixed system message template
+    memcpy(buffer, PACKET_TEMPLATE, PACKET_SIZE);
 
-    // Insert timestamp (Big Endian)
-    buffer[TS_OFFSET + 0] = (timestamp >> 24) & 0xFF;
-    buffer[TS_OFFSET + 1] = (timestamp >> 16) & 0xFF;
-    buffer[TS_OFFSET + 2] = (timestamp >> 8) & 0xFF;
-    buffer[TS_OFFSET + 3] = timestamp & 0xFF;
+    // Q14 fixed-point: stored integer = seconds * 2^14. Since the SyncServer
+    // only provides whole seconds, the fractional 14 bits are always zero.
+    // Max value 86399 * 16384 fits comfortably in 32 bits.
+    uint32_t q14 = seconds_of_day * Q14_SCALE;
 
-    // Copy tail
-    memcpy(buffer + TS_OFFSET + 4, PACKET_TAIL, sizeof(PACKET_TAIL));
+    // Insert time field (Little Endian - LSB first) at bytes 49-52
+    buffer[TS_OFFSET + 0] = q14 & 0xFF;
+    buffer[TS_OFFSET + 1] = (q14 >> 8) & 0xFF;
+    buffer[TS_OFFSET + 2] = (q14 >> 16) & 0xFF;
+    buffer[TS_OFFSET + 3] = (q14 >> 24) & 0xFF;
+
+    // Recompute the trailing checksum over the data field
+    buffer[CHECKSUM_OFFSET] = computeChecksum(buffer);
+}
+
+uint8_t SerialTimeForwarder::computeChecksum(const uint8_t* buffer) const
+{
+    // Sum the data-field bytes (bytes 5-67; byte 68 and the header are excluded)
+    uint32_t sum = 0;
+    for (size_t i = CHECKSUM_SUM_BEGIN; i < CHECKSUM_SUM_END; i++) {
+        sum += buffer[i];
+    }
+
+    // Two's complement of the low 8 bits (carries ignored). Equivalent to
+    // (-sum) & 0xFF, so that data field + checksum == 0 (mod 256).
+    return static_cast<uint8_t>((~sum + 1) & 0xFF);
 }
 
 } // namespace serial
