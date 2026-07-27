@@ -1,22 +1,25 @@
-# checksum_tool
+# ChecksumTool
 
-SerialTimeForwarder paketlerini elle kontrol etmek için mini CLI aracı.
-Bir hex byte array verirsin; **data field checksum**'ını (byte 5-68 toplamının
-2's complement'i) hesaplar, pakette checksum baytı (byte 69) varsa karşılaştırır
-ve **Q14 zaman alanını** (byte 49-52, little-endian) `HH:MM:SS` olarak çözer.
+Bağımsız bir mini app. Bir hex byte array verirsin; **tüm adımları detaylı
+yazarak** data field checksum'ını (byte 5-68 toplamının 2's complement'i)
+hesaplar, pakette checksum baytı (byte 69) varsa doğrular ve **Q14 zaman
+alanını** (byte 49-52, little-endian) `HH:MM:SS` olarak çözer.
 
-Aritmetik, `src/SerialTimeForwarder.cpp` içindeki gerçek kodun birebir aynısıdır.
+Repo içindeki diğer projelerden **tamamen bağımsızdır** (MainSoftware'e bağlı
+değildir); tek dosya, tek komutla derlenir.
 
 ## Derleme
 
 ```bash
+./build.sh
+# veya
 g++ -std=c++17 -O2 -o checksum_tool checksum_tool.cpp
 ```
 
 ## Kullanım
 
 ```bash
-# Tam paket (69 bayt): checksum + zaman analizi
+# Tam paket (69 bayt): adım adım checksum + zaman analizi
 ./checksum_tool CA E3 40 13 ... B9 07 EA
 
 # stdin'den (pipe ya da çalıştırıp yapıştır + Enter)
@@ -36,6 +39,16 @@ checksum = (-sum) & 0xFF = (~sum + 1) & 0xFF
 ```
 
 Doğrulama: `data field + checksum == 0 (mod 256)`.
+
+## Basılan adımlar
+
+0. Girdiyi parse et (baytları 1-based numaralandır)
+1. Hangi baytlar toplanıyor / hariç
+2. Data field'ı tek tek topla (her adımda çalışan toplam)
+3. Modulo 256 (carries ignored)
+4. 2's complement → checksum
+5. Paketteki checksum ile karşılaştır (+ doğrulama testi)
+6. Q14 zaman alanını çöz → HH:MM:SS
 
 ## Örnek doğrulanmış değerler
 
