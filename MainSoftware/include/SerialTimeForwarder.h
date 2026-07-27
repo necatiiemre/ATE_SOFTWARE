@@ -118,7 +118,7 @@ private:
     static constexpr size_t TS_OFFSET = 48;           // time field, bytes 49-52 (Q14, little-endian)
     static constexpr size_t CHECKSUM_OFFSET = 68;     // trailing checksum, byte 69
     static constexpr size_t CHECKSUM_SUM_BEGIN = 4;   // data field starts at byte 5
-    static constexpr size_t CHECKSUM_SUM_END = 67;    // data field ends at byte 67 (byte 68 excluded)
+    static constexpr size_t CHECKSUM_SUM_END = 68;    // exclusive: sums bytes 5-68 (only header + checksum byte excluded)
     static constexpr uint32_t Q14_SCALE = 16384;      // 2^14 fixed-point scale
 
     // Fixed system message template. Only the time field (bytes 49-52) and the
@@ -181,7 +181,7 @@ private:
     /**
      * @brief Computes the trailing checksum over the data field
      *
-     * Sums the data-field bytes (bytes 5-67) modulo 256 and returns the
+     * Sums the data-field bytes (bytes 5-68) modulo 256 and returns the
      * two's complement of the low 8 bits, so that the data field plus the
      * checksum sum to zero (mod 256).
      *

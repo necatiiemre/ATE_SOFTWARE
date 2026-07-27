@@ -446,7 +446,8 @@ void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t seconds_of_day)
 
 uint8_t SerialTimeForwarder::computeChecksum(const uint8_t* buffer) const
 {
-    // Sum the data-field bytes (bytes 5-67; byte 68 and the header are excluded)
+    // Sum the data-field bytes (bytes 5-68; only the header and the checksum
+    // byte itself are excluded)
     uint32_t sum = 0;
     for (size_t i = CHECKSUM_SUM_BEGIN; i < CHECKSUM_SUM_END; i++) {
         sum += buffer[i];
