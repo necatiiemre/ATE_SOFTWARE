@@ -33,12 +33,20 @@
 #include <vector>
 
 // --- Paket duzeni (0-based offset'ler; ekranda 1-based byte no gosterilir) ---
-static constexpr size_t PACKET_SIZE     = 69;    // tam sistem mesaji
-static constexpr size_t TS_OFFSET       = 48;    // zaman alani, byte 49-52 (Q14 LE)
-static constexpr size_t CHECKSUM_OFFSET = 68;    // checksum, byte 69
+// Checksum kurali her iki pakette de ayni: data field = byte 5 .. son
+// checksum baytindan onceki byte; checksum = son byte.
 static constexpr size_t CHECKSUM_BEGIN  = 4;     // data field baslangici, byte 5
-static constexpr size_t CHECKSUM_END    = 68;    // exclusive: byte 5-68 toplanir
 static constexpr uint32_t Q14_SCALE     = 16384; // 2^14
+
+// Zaman paketi (69 bayt)
+static constexpr size_t TIME_PACKET_SIZE = 69;
+static constexpr size_t TS_OFFSET        = 48;   // zaman alani, byte 49-52 (Q14 LE)
+
+// Tarih paketi (55 bayt)
+static constexpr size_t DATE_PACKET_SIZE = 55;
+static constexpr size_t DATE_YEAR_OFFSET  = 28;  // byte 29-30 (LE)
+static constexpr size_t DATE_MONTH_OFFSET = 30;  // byte 31-32 (LE)
+static constexpr size_t DATE_DAY_OFFSET   = 32;  // byte 33-34 (LE)
 
 static const char* LINE = "--------------------------------------------------------------";
 
@@ -140,24 +148,36 @@ int main(int argc, char** argv)
     }
 
     // ---------------- Tam paket modu ----------------------------------------
-    if (b.size() != PACKET_SIZE) {
-        printf("\nUYARI: paket %zu bayt (beklenen %zu). Yine de byte 5-%zu toplanacak.\n",
-               b.size(), PACKET_SIZE, CHECKSUM_END);
+    // Checksum aralik/ofset paket boyutundan turetilir: data field byte 5'ten
+    // son checksum baytindan onceye kadar; checksum son byte.
+    const size_t N = b.size();
+    const char* pktType =
+        (N == TIME_PACKET_SIZE) ? "ZAMAN paketi (69 bayt)" :
+        (N == DATE_PACKET_SIZE) ? "TARIH paketi (55 bayt)" : "BILINMEYEN boyut";
+    const size_t CK_OFFSET = N - 1;   // son byte = checksum
+    const size_t CK_END    = N - 1;   // data field bunun oncesine kadar
+
+    if (N != TIME_PACKET_SIZE && N != DATE_PACKET_SIZE) {
+        printf("\nUYARI: paket %zu bayt (beklenen 69=zaman ya da 55=tarih).\n", N);
+        printf("       Yine de byte 5-%zu toplanacak (son byte checksum kabul edildi).\n", CK_END);
         printf("       Sadece bir data blogunu toplatmak istersen --data kullan.\n");
+    } else {
+        printf("\nPaket tipi: %s\n", pktType);
     }
 
     section("ADIM 1: HANGI BAYTLAR TOPLANIYOR?");
     printf("  DAHIL DEGIL : byte 1-4  (header)");
-    for (size_t i = 0; i < 4 && i < b.size(); i++) printf(" %02X", b[i]);
+    for (size_t i = 0; i < 4 && i < N; i++) printf(" %02X", b[i]);
     printf("\n");
-    printf("  DAHIL DEGIL : byte 69   (checksum baytinin kendisi)");
-    if (b.size() > CHECKSUM_OFFSET) printf(" -> %02X", b[CHECKSUM_OFFSET]);
-    printf("\n");
-    printf("  TOPLANAN    : byte 5-%zu (data field)\n", CHECKSUM_END);
+    printf("  DAHIL DEGIL : byte %zu   (checksum baytinin kendisi) -> %02X\n",
+           CK_OFFSET + 1, b[CK_OFFSET]);
+    printf("  TOPLANAN    : byte 5-%zu (data field)\n", CK_END);
 
-    section("ADIM 2: DATA FIELD'I TEK TEK TOPLA (byte 5-68)");
+    char step2[80];
+    snprintf(step2, sizeof(step2), "ADIM 2: DATA FIELD'I TEK TEK TOPLA (byte 5-%zu)", CK_END);
+    section(step2);
     uint32_t sum = 0;
-    for (size_t i = CHECKSUM_BEGIN; i < CHECKSUM_END && i < b.size(); i++) {
+    for (size_t i = CHECKSUM_BEGIN; i < CK_END && i < N; i++) {
         uint32_t before = sum;
         sum += b[i];
         printf("  byte %2zu:  0x%02X (%3u)   toplam: %u + %u = %u (0x%X)\n",
@@ -175,19 +195,20 @@ int main(int argc, char** argv)
     printf("  + 1           = 0x%02X\n", (uint8_t)(~s8 + 1));
     printf("\n  >> HESAPLANAN CHECKSUM = 0x%02X\n", calc);
 
-    if (b.size() > CHECKSUM_OFFSET) {
+    {
         section("ADIM 5: PAKETTEKI CHECKSUM ILE KARSILASTIR");
-        uint8_t inPkt = b[CHECKSUM_OFFSET];
-        printf("  Pakette (byte 69) : 0x%02X\n", inPkt);
-        printf("  Hesaplanan        : 0x%02X\n", calc);
-        printf("  Sonuc             : %s\n", (inPkt == calc) ? ">>> [OK] eslesti" : ">>> [MISMATCH] eslesmedi");
+        uint8_t inPkt = b[CK_OFFSET];
+        printf("  Pakette (byte %zu): 0x%02X\n", CK_OFFSET + 1, inPkt);
+        printf("  Hesaplanan       : 0x%02X\n", calc);
+        printf("  Sonuc            : %s\n", (inPkt == calc) ? ">>> [OK] eslesti" : ">>> [MISMATCH] eslesmedi");
         printf("\n  Dogrulama testi (data field + checksum):\n");
         uint32_t chk = (sum + inPkt) & 0xFF;
         printf("    (0x%02X + 0x%02X) & 0xFF = 0x%02X   -> %s\n",
                s8, inPkt, chk, (chk == 0) ? "0x00 (mesaj gecerli)" : "!= 0 (mesaj HATALI)");
     }
 
-    if (b.size() >= TS_OFFSET + 4) {
+    // ADIM 6: alan cozumu paket tipine gore
+    if (N == TIME_PACKET_SIZE) {
         section("ADIM 6: ZAMAN ALANINI COZ (byte 49-52, Q14 little-endian)");
         uint8_t t0 = b[TS_OFFSET+0], t1 = b[TS_OFFSET+1], t2 = b[TS_OFFSET+2], t3 = b[TS_OFFSET+3];
         printf("  Ham baytlar (49-52) : %02X %02X %02X %02X\n", t0, t1, t2, t3);
@@ -199,10 +220,18 @@ int main(int argc, char** argv)
         uint32_t rem = q14 % Q14_SCALE;
         printf("  Q14 -> saniye: %u / 16384 = %u  (kalan %u)\n", q14, sod, rem);
         printf("  Gece yarisindan gecen saniye: %u\n", sod);
-        printf("  Saat = %u/3600, dk = (%u%%3600)/60, sn = %u%%60\n", sod, sod, sod);
         printf("\n  >> ZAMAN = %02u:%02u:%02u\n", sod/3600, (sod%3600)/60, sod%60);
         if (rem != 0)
             printf("  UYARI: kesir kismi != 0 (%u/16384) - tam saniye bekleniyordu\n", rem);
+    } else if (N == DATE_PACKET_SIZE) {
+        section("ADIM 6: TARIH ALANINI COZ (byte 29-34, little-endian 16-bit)");
+        uint32_t year  = (uint32_t)b[DATE_YEAR_OFFSET]  | ((uint32_t)b[DATE_YEAR_OFFSET+1]  << 8);
+        uint32_t month = (uint32_t)b[DATE_MONTH_OFFSET] | ((uint32_t)b[DATE_MONTH_OFFSET+1] << 8);
+        uint32_t day   = (uint32_t)b[DATE_DAY_OFFSET]   | ((uint32_t)b[DATE_DAY_OFFSET+1]   << 8);
+        printf("  Yil   (byte 29-30): %02X %02X -> %u\n", b[DATE_YEAR_OFFSET],  b[DATE_YEAR_OFFSET+1],  year);
+        printf("  Ay    (byte 31-32): %02X %02X -> %u\n", b[DATE_MONTH_OFFSET], b[DATE_MONTH_OFFSET+1], month);
+        printf("  Gun   (byte 33-34): %02X %02X -> %u\n", b[DATE_DAY_OFFSET],   b[DATE_DAY_OFFSET+1],   day);
+        printf("\n  >> TARIH = %04u/%02u/%02u\n", year, month, day);
     }
 
     printf("\n%s\n", LINE);

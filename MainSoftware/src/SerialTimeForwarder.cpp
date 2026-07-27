@@ -13,6 +13,7 @@ namespace serial {
 
 // Static constexpr definitions
 constexpr uint8_t SerialTimeForwarder::PACKET_TEMPLATE[];
+constexpr uint8_t SerialTimeForwarder::DATE_PACKET_TEMPLATE[];
 
 SerialTimeForwarder::SerialTimeForwarder(const std::string& input_device,
                                          const std::string& output_device,
@@ -125,6 +126,7 @@ void SerialTimeForwarder::setLastError(const std::string& error)
 void SerialTimeForwarder::workerLoop()
 {
     uint8_t packet[PACKET_SIZE];
+    uint8_t date_packet[DATE_PACKET_SIZE];
 
     DEBUG_LOG("[TimeForwarder] Worker thread started");
 
@@ -216,6 +218,21 @@ void SerialTimeForwarder::workerLoop()
         } else {
             DEBUG_LOG("[TimeForwarder] Send failed: " << m_output_port.getLastError());
         }
+
+        // Send the date packet back-to-back, right after the time packet.
+        // Derive year/month/day from the same UTC timestamp so both packets
+        // are consistent.
+        struct tm tm_utc;
+        time_t t = static_cast<time_t>(timestamp);
+        if (gmtime_r(&t, &tm_utc) != nullptr) {
+            buildDatePacket(date_packet,
+                            tm_utc.tm_year + 1900,
+                            tm_utc.tm_mon + 1,
+                            tm_utc.tm_mday);
+            if (!m_output_port.sendRawData(date_packet, DATE_PACKET_SIZE)) {
+                DEBUG_LOG("[TimeForwarder] Date packet send failed: " << m_output_port.getLastError());
+            }
+        }
     }
 
     DEBUG_LOG("[TimeForwarder] Worker thread stopped");
@@ -286,7 +303,7 @@ void SerialTimeForwarder::verifyLoop()
                       << std::setfill(' ') << ")" << std::endl;
 
             // Verify the trailing checksum
-            uint8_t expected = computeChecksum(buffer);
+            uint8_t expected = computeChecksum(buffer, CHECKSUM_SUM_BEGIN, CHECKSUM_SUM_END);
             std::cout << "[TimeForwarder] RX Checksum: got 0x" << std::hex << std::uppercase
                       << std::setfill('0') << std::setw(2) << static_cast<int>(buffer[CHECKSUM_OFFSET])
                       << ", expected 0x" << std::setw(2) << static_cast<int>(expected)
@@ -441,15 +458,31 @@ void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t seconds_of_day)
     buffer[TS_OFFSET + 3] = (q14 >> 24) & 0xFF;
 
     // Recompute the trailing checksum over the data field
-    buffer[CHECKSUM_OFFSET] = computeChecksum(buffer);
+    buffer[CHECKSUM_OFFSET] = computeChecksum(buffer, CHECKSUM_SUM_BEGIN, CHECKSUM_SUM_END);
 }
 
-uint8_t SerialTimeForwarder::computeChecksum(const uint8_t* buffer) const
+void SerialTimeForwarder::buildDatePacket(uint8_t* buffer, int year, int month, int day)
 {
-    // Sum the data-field bytes (bytes 5-68; only the header and the checksum
-    // byte itself are excluded)
+    // Start from the fixed date message template
+    memcpy(buffer, DATE_PACKET_TEMPLATE, DATE_PACKET_SIZE);
+
+    // year / month / day as little-endian 16-bit fields (LSB first)
+    buffer[DATE_YEAR_OFFSET + 0]  = year & 0xFF;
+    buffer[DATE_YEAR_OFFSET + 1]  = (year >> 8) & 0xFF;
+    buffer[DATE_MONTH_OFFSET + 0] = month & 0xFF;
+    buffer[DATE_MONTH_OFFSET + 1] = (month >> 8) & 0xFF;
+    buffer[DATE_DAY_OFFSET + 0]   = day & 0xFF;
+    buffer[DATE_DAY_OFFSET + 1]   = (day >> 8) & 0xFF;
+
+    // Recompute the trailing checksum over the data field
+    buffer[DATE_CHECKSUM_OFFSET] = computeChecksum(buffer, DATE_CHECKSUM_SUM_BEGIN, DATE_CHECKSUM_SUM_END);
+}
+
+uint8_t SerialTimeForwarder::computeChecksum(const uint8_t* buffer, size_t begin, size_t end) const
+{
+    // Sum the data-field bytes (header and the checksum byte itself excluded)
     uint32_t sum = 0;
-    for (size_t i = CHECKSUM_SUM_BEGIN; i < CHECKSUM_SUM_END; i++) {
+    for (size_t i = begin; i < end; i++) {
         sum += buffer[i];
     }
 

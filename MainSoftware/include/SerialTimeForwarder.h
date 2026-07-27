@@ -14,11 +14,13 @@ namespace serial {
 /**
  * @brief Forwards time data from MicroChip SyncServer to another serial port
  *
- * Reads time data from input port (format: YYYY DDD HH:MM:SS DZZ),
- * computes seconds-since-midnight, encodes it as a Q14 fixed-point value
- * (little-endian), patches it into a fixed 69-byte system message template
- * (time field at bytes 49-52), recomputes the trailing checksum, and sends
- * the packet to the output port.
+ * Reads time data from input port (format: YYYY DDD HH:MM:SS DZZ) and sends
+ * two packets back-to-back on the output port for each reading:
+ *   1) Time packet (69 bytes): seconds-since-midnight as a Q14 fixed-point
+ *      little-endian value at bytes 49-52.
+ *   2) Date packet (55 bytes): year/month/day as little-endian 16-bit fields
+ *      at bytes 29-34.
+ * Both carry a trailing two's-complement checksum over their data field.
  *
  * Runs in a separate thread, non-blocking to main application.
  *
@@ -134,6 +136,30 @@ private:
         0x00, 0x00, 0x2F, 0x40, 0xB4, 0x15, 0xB9, 0x07, 0xF1         // 60-68 (68: checksum)
     };
 
+    // --- Date packet (sent back-to-back right after the time packet) --------
+    // Carries the calendar date as three little-endian 16-bit fields:
+    //   year  @ bytes 29-30, month @ bytes 31-32, day @ bytes 33-34.
+    // Checksum uses the same rule as the time packet: sum data field bytes
+    // (byte 5 .. byte before the checksum), two's complement, trailing byte.
+    static constexpr size_t DATE_PACKET_SIZE = 55;          // full date message
+    static constexpr size_t DATE_YEAR_OFFSET = 28;          // bytes 29-30 (LE)
+    static constexpr size_t DATE_MONTH_OFFSET = 30;         // bytes 31-32 (LE)
+    static constexpr size_t DATE_DAY_OFFSET = 32;           // bytes 33-34 (LE)
+    static constexpr size_t DATE_CHECKSUM_OFFSET = 54;      // trailing checksum, byte 55
+    static constexpr size_t DATE_CHECKSUM_SUM_BEGIN = 4;    // data field starts at byte 5
+    static constexpr size_t DATE_CHECKSUM_SUM_END = 54;     // exclusive: sums bytes 5-54
+
+    // Fixed date message template. Only the date fields (bytes 29-34) and the
+    // trailing checksum (byte 55) are overwritten per packet.
+    static constexpr uint8_t DATE_PACKET_TEMPLATE[DATE_PACKET_SIZE] = {
+        0xCA, 0xE5, 0x32, 0x1F, 0x30, 0x2E, 0x9F, 0x44, 0x00, 0x00,  // 0-9
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 10-19
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEA, 0x07,  // 20-29 (28-29: year)
+        0x06, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 30-39 (30-31: month, 32-33: day)
+        0x1A, 0x4F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 40-49
+        0x00, 0x00, 0x00, 0x00, 0x47                                 // 50-54 (54: checksum)
+    };
+
     /**
      * @brief Worker thread main loop
      */
@@ -179,16 +205,31 @@ private:
     void buildPacket(uint8_t* buffer, uint32_t seconds_of_day);
 
     /**
-     * @brief Computes the trailing checksum over the data field
+     * @brief Builds the date packet for a given calendar date
      *
-     * Sums the data-field bytes (bytes 5-68) modulo 256 and returns the
-     * two's complement of the low 8 bits, so that the data field plus the
-     * checksum sum to zero (mod 256).
+     * Copies the date template, writes year/month/day as little-endian 16-bit
+     * fields (bytes 29-34) and recomputes the trailing checksum (byte 55).
      *
-     * @param buffer Packet buffer (must be PACKET_SIZE bytes)
+     * @param buffer Output buffer (must be DATE_PACKET_SIZE bytes)
+     * @param year   Full year (e.g. 2026)
+     * @param month  Month (1-12)
+     * @param day    Day of month (1-31)
+     */
+    void buildDatePacket(uint8_t* buffer, int year, int month, int day);
+
+    /**
+     * @brief Computes a trailing checksum over a data field
+     *
+     * Sums buffer bytes in [begin, end) modulo 256 and returns the two's
+     * complement of the low 8 bits, so that the data field plus the checksum
+     * sum to zero (mod 256). Shared by the time and date packets.
+     *
+     * @param buffer Packet buffer
+     * @param begin  First data-field byte offset (inclusive)
+     * @param end    One past the last data-field byte offset (exclusive)
      * @return Checksum byte
      */
-    uint8_t computeChecksum(const uint8_t* buffer) const;
+    uint8_t computeChecksum(const uint8_t* buffer, size_t begin, size_t end) const;
 
     /**
      * @brief Sets last error message
