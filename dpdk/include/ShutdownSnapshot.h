@@ -9,9 +9,10 @@
 // that, the moment a Ctrl+C (SIGINT) / SIGTERM is received, we can dump the
 // LAST FULL SECOND captured BEFORE the signal into a single log file.
 //
-// Two producers, each running on its own thread, overwrite their slot once per
-// second with the text they just printed to the console/log:
+// Three producers, each running on its own thread, overwrite their slot once
+// per second with the text they just printed to the console/log:
 //   - SNAP_SLOT_DTN    : the DTN port statistics table   (main loop thread)
+//   - SNAP_SLOT_PTP    : the PTP session statistics table (main loop thread)
 //   - SNAP_SLOT_HEALTH : Health Monitor + PSU telemetry   (health monitor thread)
 //
 // On shutdown, shutdown_snapshot_dump() writes both slots (in order) to one
@@ -24,7 +25,8 @@
 // Slot identifiers. Keep SNAP_SLOT_COUNT last.
 enum snapshot_slot {
     SNAP_SLOT_DTN = 0,     // DTN statistics table
-    SNAP_SLOT_HEALTH = 1,  // Health Monitor tables + PSU telemetry table
+    SNAP_SLOT_PTP = 1,     // PTP session statistics table
+    SNAP_SLOT_HEALTH = 2,  // Health Monitor tables + PSU telemetry table
     SNAP_SLOT_COUNT
 };
 

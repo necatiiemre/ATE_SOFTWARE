@@ -17,6 +17,7 @@
 #include <rte_lcore.h>
 #include <rte_log.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -30,6 +31,7 @@
 #include "PtpTypes.h"
 #include "PtpSlave.h"
 #include "Config.h"
+#include "ShutdownSnapshot.h"  // capture last-second PTP table for Ctrl+C dump
 
 // Maximum packets to process per poll
 #define PTP_RX_BURST_SIZE 32
@@ -626,7 +628,11 @@ void ptp_get_port_stats(uint16_t port_id,
  * Note: Uses dashes (-) for separators to avoid interfering with main stats
  * grep pattern that looks for '==========' to find stats boundaries
  */
-void ptp_print_stats(void)
+// Render the PTP statistics table into `out`. printf is redirected to `out` so
+// the exact same text is produced whether we print live (out=stdout) or capture
+// into a buffer for the Ctrl+C snapshot. (snprintf is unaffected.)
+#define printf(...) fprintf(out, __VA_ARGS__)
+static void ptp_render_stats(FILE *out)
 {
     printf("\n--- PTP Statistics ---\n");
     printf("%-6s %-6s %-7s %-7s %-12s %12s %12s %8s %8s %8s %6s\n",
@@ -711,6 +717,31 @@ void ptp_print_stats(void)
         }
     }
     printf("\n\n");
+}
+#undef printf
+
+// Wrapper: render the PTP table once into a memory buffer, then (a) print it to
+// stdout exactly as before and (b) hand the captured text to ShutdownSnapshot
+// so the last full second before a Ctrl+C can be dumped to a file.
+void ptp_print_stats(void)
+{
+    char *buf = NULL;
+    size_t buf_size = 0;
+    FILE *ms = open_memstream(&buf, &buf_size);
+    if (ms == NULL) {
+        // Fallback: no capture, render straight to stdout (original behavior).
+        ptp_render_stats(stdout);
+        return;
+    }
+
+    ptp_render_stats(ms);
+    fclose(ms);  // flushes and finalizes `buf`
+
+    if (buf != NULL) {
+        fputs(buf, stdout);
+        shutdown_snapshot_store(SNAP_SLOT_PTP, buf);
+        free(buf);
+    }
 }
 
 /**
