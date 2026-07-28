@@ -398,7 +398,10 @@ bool Dtn::configureSequence()
     sleep(2);
     // Start SerialTimeForwarder after remote_config_sender is running
     // Reads time from MicroChip SyncServer (USB0), forwards to USB1, verifies on USB2
-    serial::SerialTimeForwarder timeForwarder("/dev/ttyUSB0", "/dev/ttyUSB1");
+    // utc_enable = true  -> incoming local time (GMT+3) is converted to UTC before sending
+    // utc_enable = false -> time is forwarded as received (no conversion)
+    const bool utc_enable = true;
+    serial::SerialTimeForwarder timeForwarder("/dev/ttyUSB0", "/dev/ttyUSB1", "", utc_enable);
     if (timeForwarder.start())
     {
         DEBUG_LOG("DTN: SerialTimeForwarder started successfully.");

@@ -17,11 +17,13 @@ constexpr uint8_t SerialTimeForwarder::DATE_PACKET_TEMPLATE[];
 
 SerialTimeForwarder::SerialTimeForwarder(const std::string& input_device,
                                          const std::string& output_device,
-                                         const std::string& verify_device)
+                                         const std::string& verify_device,
+                                         bool utc_enable)
     : m_input_port(input_device, 9600)
     , m_output_port(output_device, 38400)
     , m_verify_port(verify_device.empty() ? "/dev/null" : verify_device, 38400)
     , m_verify_enabled(!verify_device.empty())
+    , m_utc_enable(utc_enable)
 {
 }
 
@@ -171,10 +173,26 @@ void SerialTimeForwarder::workerLoop()
             continue;
         }
 
-        // The time field carries seconds-since-midnight (UTC), not the full
-        // epoch timestamp. Unix time has no leap seconds, so modulo 86400
-        // yields exactly HH*3600 + MM*60 + SS.
-        uint32_t seconds_of_day = timestamp % 86400;
+        // Optionally convert the incoming local time to UTC. parseTimeString
+        // treated the parsed wall-clock as UTC, so the timestamp currently
+        // represents local time. Subtracting the timezone offset yields real
+        // UTC; because both the time field and the date are derived from this
+        // single timestamp, day/month/year rollback happens automatically.
+        uint32_t send_ts = timestamp;
+        if (m_utc_enable) {
+            int offset_sec = 0;
+            if (!parseTzOffset(line, offset_sec)) {
+                offset_sec = DEFAULT_TZ_OFFSET_SEC;  // fallback when no TZ field
+                DEBUG_LOG("[TimeForwarder] No TZ field, assuming +"
+                          << (DEFAULT_TZ_OFFSET_SEC / 3600) << "h");
+            }
+            send_ts = timestamp - static_cast<uint32_t>(offset_sec);
+        }
+
+        // The time field carries seconds-since-midnight, not the full epoch
+        // timestamp. Unix time has no leap seconds, so modulo 86400 yields
+        // exactly HH*3600 + MM*60 + SS.
+        uint32_t seconds_of_day = send_ts % 86400;
 
         // Build packet
         buildPacket(packet, seconds_of_day);
@@ -198,7 +216,7 @@ void SerialTimeForwarder::workerLoop()
             auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(send_end - recv_time).count();
 
             m_packets_sent.fetch_add(1);
-            m_last_timestamp.store(timestamp);
+            m_last_timestamp.store(send_ts);
 
             // // Print packet in hex
             // std::cout << "[TimeForwarder] ========== TX PACKET ==========" << std::endl;
@@ -220,10 +238,11 @@ void SerialTimeForwarder::workerLoop()
         }
 
         // Send the date packet back-to-back, right after the time packet.
-        // Derive year/month/day from the same UTC timestamp so both packets
-        // are consistent.
+        // Derive year/month/day from the same (possibly UTC-adjusted)
+        // timestamp so both packets are consistent and any day/month/year
+        // rollback from the UTC conversion is reflected here too.
         struct tm tm_utc;
-        time_t t = static_cast<time_t>(timestamp);
+        time_t t = static_cast<time_t>(send_ts);
         if (gmtime_r(&t, &tm_utc) != nullptr) {
             buildDatePacket(date_packet,
                             tm_utc.tm_year + 1900,
@@ -400,6 +419,45 @@ uint32_t SerialTimeForwarder::parseTimeString(const std::string& time_str)
     }
 
     return static_cast<uint32_t>(unix_time);
+}
+
+bool SerialTimeForwarder::parseTzOffset(const std::string& time_str, int& offset_seconds)
+{
+    // The timezone field is the trailing token, e.g. "+03", "-05", "S+03",
+    // "+0530", "+05:30". Find the last '+'/'-' and read the digits after it.
+    size_t pos = time_str.find_last_of("+-");
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    int sign = (time_str[pos] == '-') ? -1 : 1;
+
+    std::string digits;
+    for (size_t i = pos + 1; i < time_str.size(); i++) {
+        char c = time_str[i];
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits += c;
+        } else if (c == ':') {
+            continue;  // "+05:30" -> "0530"
+        } else {
+            break;
+        }
+    }
+    if (digits.empty()) {
+        return false;
+    }
+
+    int hours = 0, minutes = 0;
+    if (digits.size() <= 2) {
+        hours = std::stoi(digits);
+    } else {
+        // trailing two digits are minutes, the rest are hours
+        minutes = std::stoi(digits.substr(digits.size() - 2));
+        hours   = std::stoi(digits.substr(0, digits.size() - 2));
+    }
+
+    offset_seconds = sign * (hours * 3600 + minutes * 60);
+    return true;
 }
 
 bool SerialTimeForwarder::isLeapYear(int year)

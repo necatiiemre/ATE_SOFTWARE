@@ -37,10 +37,16 @@ public:
      * @param input_device  Input serial port (default: /dev/ttyUSB0, 9600 baud)
      * @param output_device Output serial port (default: /dev/ttyUSB1, 38400 baud)
      * @param verify_device Verification port to read back sent data (optional, empty = disabled)
+     * @param utc_enable    When true, the incoming local time is converted to
+     *                      UTC before sending (the timezone offset in the
+     *                      SyncServer line, e.g. "+03", is subtracted, with
+     *                      correct day/month/year rollback). When false, the
+     *                      time is forwarded as received (current behavior).
      */
     SerialTimeForwarder(const std::string& input_device = "/dev/ttyUSB0",
                         const std::string& output_device = "/dev/ttyUSB1",
-                        const std::string& verify_device = "");
+                        const std::string& verify_device = "",
+                        bool utc_enable = false);
 
     /**
      * @brief Destructor - stops thread if running
@@ -98,6 +104,7 @@ private:
     std::thread m_verify_thread;
     std::atomic<bool> m_running{false};
     bool m_verify_enabled{false};  // True if verify device is specified
+    bool m_utc_enable{false};      // True: convert incoming local time to UTC before sending
 
     // Statistics
     std::atomic<uint64_t> m_packets_sent{0};
@@ -122,6 +129,10 @@ private:
     static constexpr size_t CHECKSUM_SUM_BEGIN = 4;   // data field starts at byte 5
     static constexpr size_t CHECKSUM_SUM_END = 68;    // exclusive: sums bytes 5-68 (only header + checksum byte excluded)
     static constexpr uint32_t Q14_SCALE = 16384;      // 2^14 fixed-point scale
+
+    // Fallback timezone offset used only when utc_enable is on but the line
+    // has no parseable TZ field (Turkey is fixed GMT+3 year-round).
+    static constexpr int DEFAULT_TZ_OFFSET_SEC = 3 * 3600;
 
     // Fixed system message template. Only the time field (bytes 49-52) and the
     // trailing checksum (byte 69) are overwritten per packet; every other byte
@@ -176,6 +187,19 @@ private:
      * @return Unix timestamp, or 0 on parse error
      */
     uint32_t parseTimeString(const std::string& time_str);
+
+    /**
+     * @brief Extracts the timezone offset from a SyncServer line
+     *
+     * Handles trailing offset fields like "+03", "-05", "S+03", "+0530",
+     * "+05:30". The offset is how far the local time is ahead of UTC, so to
+     * convert local->UTC the caller subtracts it.
+     *
+     * @param time_str       Full input line
+     * @param offset_seconds Output: offset in seconds (e.g. +3h -> 10800)
+     * @return true if an offset field was found and parsed
+     */
+    bool parseTzOffset(const std::string& time_str, int& offset_seconds);
 
     /**
      * @brief Converts day of year to month and day
