@@ -1,6 +1,7 @@
 #include "SerialTimeForwarder.h"
 #include "Utils.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -11,16 +12,18 @@
 namespace serial {
 
 // Static constexpr definitions
-constexpr uint8_t SerialTimeForwarder::PACKET_HEADER[];
-constexpr uint8_t SerialTimeForwarder::PACKET_TAIL[];
+constexpr uint8_t SerialTimeForwarder::PACKET_TEMPLATE[];
+constexpr uint8_t SerialTimeForwarder::DATE_PACKET_TEMPLATE[];
 
 SerialTimeForwarder::SerialTimeForwarder(const std::string& input_device,
                                          const std::string& output_device,
-                                         const std::string& verify_device)
+                                         const std::string& verify_device,
+                                         bool utc_enable)
     : m_input_port(input_device, 9600)
     , m_output_port(output_device, 38400)
     , m_verify_port(verify_device.empty() ? "/dev/null" : verify_device, 38400)
     , m_verify_enabled(!verify_device.empty())
+    , m_utc_enable(utc_enable)
 {
 }
 
@@ -125,6 +128,7 @@ void SerialTimeForwarder::setLastError(const std::string& error)
 void SerialTimeForwarder::workerLoop()
 {
     uint8_t packet[PACKET_SIZE];
+    uint8_t date_packet[DATE_PACKET_SIZE];
 
     DEBUG_LOG("[TimeForwarder] Worker thread started");
 
@@ -169,8 +173,29 @@ void SerialTimeForwarder::workerLoop()
             continue;
         }
 
+        // Optionally convert the incoming local time to UTC. parseTimeString
+        // treated the parsed wall-clock as UTC, so the timestamp currently
+        // represents local time. Subtracting the timezone offset yields real
+        // UTC; because both the time field and the date are derived from this
+        // single timestamp, day/month/year rollback happens automatically.
+        uint32_t send_ts = timestamp;
+        if (m_utc_enable) {
+            int offset_sec = 0;
+            if (!parseTzOffset(line, offset_sec)) {
+                offset_sec = DEFAULT_TZ_OFFSET_SEC;  // fallback when no TZ field
+                DEBUG_LOG("[TimeForwarder] No TZ field, assuming +"
+                          << (DEFAULT_TZ_OFFSET_SEC / 3600) << "h");
+            }
+            send_ts = timestamp - static_cast<uint32_t>(offset_sec);
+        }
+
+        // The time field carries seconds-since-midnight, not the full epoch
+        // timestamp. Unix time has no leap seconds, so modulo 86400 yields
+        // exactly HH*3600 + MM*60 + SS.
+        uint32_t seconds_of_day = send_ts % 86400;
+
         // Build packet
-        buildPacket(packet, timestamp);
+        buildPacket(packet, seconds_of_day);
 
         // Record time just before sending
         auto send_start = std::chrono::high_resolution_clock::now();
@@ -191,7 +216,7 @@ void SerialTimeForwarder::workerLoop()
             auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(send_end - recv_time).count();
 
             m_packets_sent.fetch_add(1);
-            m_last_timestamp.store(timestamp);
+            m_last_timestamp.store(send_ts);
 
             // // Print packet in hex
             // std::cout << "[TimeForwarder] ========== TX PACKET ==========" << std::endl;
@@ -211,6 +236,22 @@ void SerialTimeForwarder::workerLoop()
         } else {
             DEBUG_LOG("[TimeForwarder] Send failed: " << m_output_port.getLastError());
         }
+
+        // Send the date packet back-to-back, right after the time packet.
+        // Derive year/month/day from the same (possibly UTC-adjusted)
+        // timestamp so both packets are consistent and any day/month/year
+        // rollback from the UTC conversion is reflected here too.
+        struct tm tm_utc;
+        time_t t = static_cast<time_t>(send_ts);
+        if (gmtime_r(&t, &tm_utc) != nullptr) {
+            buildDatePacket(date_packet,
+                            tm_utc.tm_year + 1900,
+                            tm_utc.tm_mon + 1,
+                            tm_utc.tm_mday);
+            if (!m_output_port.sendRawData(date_packet, DATE_PACKET_SIZE)) {
+                DEBUG_LOG("[TimeForwarder] Date packet send failed: " << m_output_port.getLastError());
+            }
+        }
     }
 
     DEBUG_LOG("[TimeForwarder] Worker thread stopped");
@@ -218,7 +259,7 @@ void SerialTimeForwarder::workerLoop()
 
 void SerialTimeForwarder::verifyLoop()
 {
-    uint8_t buffer[64];
+    uint8_t buffer[128];  // must hold at least one full PACKET_SIZE (69) message
     int timeout_count = 0;
 
     DEBUG_LOG("[TimeForwarder] Verify thread started (reading from USB2)");
@@ -266,14 +307,27 @@ void SerialTimeForwarder::verifyLoop()
         }
         std::cout << std::dec << std::endl;
 
-        // If we got enough bytes, try to decode timestamp
+        // If we got enough bytes, try to decode the time field
         if (bytes_read >= static_cast<int>(PACKET_SIZE)) {
-            // Extract timestamp (bytes 7-10, big endian)
-            uint32_t ts = (static_cast<uint32_t>(buffer[7]) << 24) |
-                          (static_cast<uint32_t>(buffer[8]) << 16) |
-                          (static_cast<uint32_t>(buffer[9]) << 8) |
-                          static_cast<uint32_t>(buffer[10]);
-            std::cout << "[TimeForwarder] RX Decoded timestamp: " << ts << std::endl;
+            // Extract Q14 time field (bytes 49-52, little endian)
+            uint32_t q14 = static_cast<uint32_t>(buffer[TS_OFFSET + 0]) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 1]) << 8) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 2]) << 16) |
+                           (static_cast<uint32_t>(buffer[TS_OFFSET + 3]) << 24);
+            uint32_t sod = q14 / Q14_SCALE;  // seconds of day
+            std::cout << "[TimeForwarder] RX Decoded seconds-of-day: " << sod
+                      << " (" << std::setfill('0') << std::setw(2) << (sod / 3600)
+                      << ":" << std::setw(2) << ((sod % 3600) / 60)
+                      << ":" << std::setw(2) << (sod % 60)
+                      << std::setfill(' ') << ")" << std::endl;
+
+            // Verify the trailing checksum
+            uint8_t expected = computeChecksum(buffer, CHECKSUM_SUM_BEGIN, CHECKSUM_SUM_END);
+            std::cout << "[TimeForwarder] RX Checksum: got 0x" << std::hex << std::uppercase
+                      << std::setfill('0') << std::setw(2) << static_cast<int>(buffer[CHECKSUM_OFFSET])
+                      << ", expected 0x" << std::setw(2) << static_cast<int>(expected)
+                      << std::dec << std::setfill(' ')
+                      << (buffer[CHECKSUM_OFFSET] == expected ? " [OK]" : " [MISMATCH]") << std::endl;
         }
 
         // Print wire latency
@@ -367,6 +421,45 @@ uint32_t SerialTimeForwarder::parseTimeString(const std::string& time_str)
     return static_cast<uint32_t>(unix_time);
 }
 
+bool SerialTimeForwarder::parseTzOffset(const std::string& time_str, int& offset_seconds)
+{
+    // The timezone field is the trailing token, e.g. "+03", "-05", "S+03",
+    // "+0530", "+05:30". Find the last '+'/'-' and read the digits after it.
+    size_t pos = time_str.find_last_of("+-");
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    int sign = (time_str[pos] == '-') ? -1 : 1;
+
+    std::string digits;
+    for (size_t i = pos + 1; i < time_str.size(); i++) {
+        char c = time_str[i];
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits += c;
+        } else if (c == ':') {
+            continue;  // "+05:30" -> "0530"
+        } else {
+            break;
+        }
+    }
+    if (digits.empty()) {
+        return false;
+    }
+
+    int hours = 0, minutes = 0;
+    if (digits.size() <= 2) {
+        hours = std::stoi(digits);
+    } else {
+        // trailing two digits are minutes, the rest are hours
+        minutes = std::stoi(digits.substr(digits.size() - 2));
+        hours   = std::stoi(digits.substr(0, digits.size() - 2));
+    }
+
+    offset_seconds = sign * (hours * 3600 + minutes * 60);
+    return true;
+}
+
 bool SerialTimeForwarder::isLeapYear(int year)
 {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
@@ -406,19 +499,54 @@ bool SerialTimeForwarder::dayOfYearToDate(int year, int doy, int& month, int& da
     return false;
 }
 
-void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t timestamp)
+void SerialTimeForwarder::buildPacket(uint8_t* buffer, uint32_t seconds_of_day)
 {
-    // Copy header
-    memcpy(buffer, PACKET_HEADER, sizeof(PACKET_HEADER));
+    // Start from the fixed system message template
+    memcpy(buffer, PACKET_TEMPLATE, PACKET_SIZE);
 
-    // Insert timestamp (Big Endian)
-    buffer[TS_OFFSET + 0] = (timestamp >> 24) & 0xFF;
-    buffer[TS_OFFSET + 1] = (timestamp >> 16) & 0xFF;
-    buffer[TS_OFFSET + 2] = (timestamp >> 8) & 0xFF;
-    buffer[TS_OFFSET + 3] = timestamp & 0xFF;
+    // Q14 fixed-point: stored integer = seconds * 2^14. Since the SyncServer
+    // only provides whole seconds, the fractional 14 bits are always zero.
+    // Max value 86399 * 16384 fits comfortably in 32 bits.
+    uint32_t q14 = seconds_of_day * Q14_SCALE;
 
-    // Copy tail
-    memcpy(buffer + TS_OFFSET + 4, PACKET_TAIL, sizeof(PACKET_TAIL));
+    // Insert time field (Little Endian - LSB first) at bytes 49-52
+    buffer[TS_OFFSET + 0] = q14 & 0xFF;
+    buffer[TS_OFFSET + 1] = (q14 >> 8) & 0xFF;
+    buffer[TS_OFFSET + 2] = (q14 >> 16) & 0xFF;
+    buffer[TS_OFFSET + 3] = (q14 >> 24) & 0xFF;
+
+    // Recompute the trailing checksum over the data field
+    buffer[CHECKSUM_OFFSET] = computeChecksum(buffer, CHECKSUM_SUM_BEGIN, CHECKSUM_SUM_END);
+}
+
+void SerialTimeForwarder::buildDatePacket(uint8_t* buffer, int year, int month, int day)
+{
+    // Start from the fixed date message template
+    memcpy(buffer, DATE_PACKET_TEMPLATE, DATE_PACKET_SIZE);
+
+    // year / month / day as little-endian 16-bit fields (LSB first)
+    buffer[DATE_YEAR_OFFSET + 0]  = year & 0xFF;
+    buffer[DATE_YEAR_OFFSET + 1]  = (year >> 8) & 0xFF;
+    buffer[DATE_MONTH_OFFSET + 0] = month & 0xFF;
+    buffer[DATE_MONTH_OFFSET + 1] = (month >> 8) & 0xFF;
+    buffer[DATE_DAY_OFFSET + 0]   = day & 0xFF;
+    buffer[DATE_DAY_OFFSET + 1]   = (day >> 8) & 0xFF;
+
+    // Recompute the trailing checksum over the data field
+    buffer[DATE_CHECKSUM_OFFSET] = computeChecksum(buffer, DATE_CHECKSUM_SUM_BEGIN, DATE_CHECKSUM_SUM_END);
+}
+
+uint8_t SerialTimeForwarder::computeChecksum(const uint8_t* buffer, size_t begin, size_t end) const
+{
+    // Sum the data-field bytes (header and the checksum byte itself excluded)
+    uint32_t sum = 0;
+    for (size_t i = begin; i < end; i++) {
+        sum += buffer[i];
+    }
+
+    // Two's complement of the low 8 bits (carries ignored). Equivalent to
+    // (-sum) & 0xFF, so that data field + checksum == 0 (mod 256).
+    return static_cast<uint8_t>((~sum + 1) & 0xFF);
 }
 
 } // namespace serial
