@@ -3,6 +3,6 @@
 
 /* Component version - single source of truth.
  * prepare_release.sh reads this value when stamping release packages. */
-#define Version "1.0.0"
+#define Version "0.1.0"
 
 #endif /* FLICKER_DETECTION_VERSION_H_ */
