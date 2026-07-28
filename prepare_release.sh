@@ -101,6 +101,21 @@ read_component_version() {
     fi
 }
 
+# Write a component's version next to its prebuilt binary as VERSION.txt.
+#   $1 = component source dir under SCRIPT_DIR (used to read the version)
+#   $2 = destination dir (where the binary lives in the prebuilt tree)
+# Keeps the version travelling alongside the binary, so a deployed folder is
+# self-describing without needing the source tree.
+write_component_version_file() {
+    local component="$1"
+    local dest_dir="$2"
+    local version
+    version="$(read_component_version "$component")"
+    mkdir -p "$dest_dir"
+    echo "$version" > "$dest_dir/VERSION.txt"
+    log_info "Version $version written to $dest_dir/VERSION.txt"
+}
+
 # Write the release package version to MMUComputerTestSoftware/VERSION.txt.
 # By design this mirrors MainSoftware's version - the whole test software
 # package is versioned together with MainSoftware.
@@ -149,6 +164,8 @@ prepare_dpdk() {
     # Step 5: Copy runtime files
     cp -r "$SCRIPT_DIR/dpdk/AteCumulus/AteTestMode/interfaces" "$PREBUILT_DIR/dpdk/AteCumulus/AteTestMode/"
 
+    write_component_version_file dpdk "$PREBUILT_DIR/dpdk"
+
     log_info "DPDK prepared successfully: $PREBUILT_DIR/dpdk/dpdk_app"
 }
 
@@ -176,6 +193,8 @@ prepare_dpdk_vmc() {
     # Step 5: Copy runtime files
     cp -r "$SCRIPT_DIR/dpdk_vmc/AteCumulus/AteTestMode/interfaces" "$PREBUILT_DIR/dpdk_vmc/AteCumulus/AteTestMode/"
 
+    write_component_version_file dpdk_vmc "$PREBUILT_DIR/dpdk_vmc"
+
     log_info "DPDK VMC prepared successfully: $PREBUILT_DIR/dpdk_vmc/dpdk_app"
 }
 
@@ -202,6 +221,8 @@ prepare_dpdk_cmc() {
 
     # Step 5: Copy runtime files
     cp -r "$SCRIPT_DIR/dpdk_cmc/AteCumulus/AteTestMode/interfaces" "$PREBUILT_DIR/dpdk_cmc/AteCumulus/AteTestMode/"
+
+    write_component_version_file dpdk_cmc "$PREBUILT_DIR/dpdk_cmc"
 
     log_info "DPDK CMC prepared successfully: $PREBUILT_DIR/dpdk_cmc/dpdk_app"
 }
@@ -234,6 +255,8 @@ prepare_test_starter_unit() {
     eval $SCP_CMD "$SERVER_USER@$SERVER_HOST:$SERVER_DIR/$prebuilt_name/test_starter" "$PREBUILT_DIR/$prebuilt_name/test_starter"
     chmod +x "$PREBUILT_DIR/$prebuilt_name/test_starter"
 
+    write_component_version_file Test_Starters "$PREBUILT_DIR/$prebuilt_name"
+
     log_info "$prebuilt_name prepared: $PREBUILT_DIR/$prebuilt_name/test_starter"
 }
 
@@ -262,6 +285,8 @@ prepare_remote_config_sender() {
     eval $SCP_CMD "$SERVER_USER@$SERVER_HOST:$SERVER_DIR/RemoteConfigSender/build/RemoteConfigSender" "$PREBUILT_DIR/RemoteConfigSender/RemoteConfigSender"
     chmod +x "$PREBUILT_DIR/RemoteConfigSender/RemoteConfigSender"
 
+    write_component_version_file RemoteConfigSender "$PREBUILT_DIR/RemoteConfigSender"
+
     log_info "RemoteConfigSender prepared: $PREBUILT_DIR/RemoteConfigSender/RemoteConfigSender"
 }
 
@@ -283,6 +308,8 @@ prepare_main_software() {
     log_info "Copying mainSoftware binary to prebuilt..."
     cp "$SCRIPT_DIR/MainSoftware/build/bin/mainSoftware" "$PREBUILT_DIR/MainSoftware/bin/mainSoftware"
     chmod +x "$PREBUILT_DIR/MainSoftware/bin/mainSoftware"
+
+    write_component_version_file MainSoftware "$PREBUILT_DIR/MainSoftware/bin"
 
     log_info "MainSoftware prepared: $PREBUILT_DIR/MainSoftware/bin/mainSoftware"
 }
@@ -327,6 +354,8 @@ prepare_flicker_detection() {
     cp "$SCRIPT_DIR/Flicker_Detection/build/FlickerDetection" "$PREBUILT_DIR/Flicker_Detection/FlickerDetection"
     chmod +x "$PREBUILT_DIR/Flicker_Detection/FlickerDetection"
 
+    write_component_version_file Flicker_Detection "$PREBUILT_DIR/Flicker_Detection"
+
     log_info "Flicker_Detection prepared: $PREBUILT_DIR/Flicker_Detection/FlickerDetection"
 }
 
@@ -362,6 +391,8 @@ prepare_pdf_report_generator() {
 
     # Step 5: Clean PyInstaller build artifacts
     rm -rf "$PDF_SRC/dist" "$PDF_SRC/build_pyinstaller" "$PDF_SRC/ReportGenerator.spec"
+
+    write_component_version_file PdfReportGenerator "$PDF_DST"
 
     log_info "PdfReportGenerator compiled: $PDF_DST/ReportGenerator"
 }
@@ -406,6 +437,8 @@ prepare_firmware_updater() {
         mkdir -p "$FU_DST/firmware/$UNIT"
     done
     log_info "Per-unit SPI folders ready under: $SCRIPT_DIR/FirmwareUpdater/firmware/{CMC,MMC,VMC,DTN,HSN}/"
+
+    write_component_version_file FirmwareUpdater "$FU_DST"
 
     log_info "FirmwareUpdater prepared: $FU_DST/"
 }
