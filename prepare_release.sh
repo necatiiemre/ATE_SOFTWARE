@@ -74,13 +74,28 @@ ssh_exec() {
     eval $SSH_CMD "\"$1\""
 }
 
-# Read a component's version from its VERSION.txt (first line, whitespace
-# stripped). Falls back to 0.0.0 if the file is missing.
+# Read a component's version. The single source of truth is a header:
+#   C/C++ components: <component>/include/Version.h  ->  #define Version "x.y.z"
+#   Python components: <component>/version.py        ->  Version = "x.y.z"
+# The quoted value is extracted from whichever file exists. Falls back to
+# 0.0.0 if neither file is present or no version can be parsed.
 read_component_version() {
     local component="$1"
-    local version_file="$SCRIPT_DIR/$component/VERSION.txt"
-    if [ -f "$version_file" ]; then
-        head -n1 "$version_file" | tr -d '[:space:]'
+    local dir="$SCRIPT_DIR/$component"
+    local header="$dir/include/Version.h"
+    local pyfile="$dir/version.py"
+    local version=""
+
+    if [ -f "$header" ]; then
+        version="$(grep -E '#define[[:space:]]+Version[[:space:]]' "$header" \
+            | head -n1 | sed -E 's/.*"([^"]*)".*/\1/')"
+    elif [ -f "$pyfile" ]; then
+        version="$(grep -E '^[[:space:]]*Version[[:space:]]*=' "$pyfile" \
+            | head -n1 | sed -E 's/.*"([^"]*)".*/\1/')"
+    fi
+
+    if [ -n "$version" ]; then
+        echo "$version"
     else
         echo "0.0.0"
     fi
@@ -94,7 +109,7 @@ write_release_version() {
     version="$(read_component_version MainSoftware)"
     mkdir -p "$PREBUILT_DIR"
     echo "$version" > "$PREBUILT_DIR/VERSION.txt"
-    log_info "Release package version set to $version (from MainSoftware/VERSION.txt)"
+    log_info "Release package version set to $version (from MainSoftware/include/Version.h)"
 }
 
 test_server_connection() {
