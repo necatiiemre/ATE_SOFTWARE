@@ -18,6 +18,7 @@ static const char *slot_name(enum snapshot_slot slot)
 {
     switch (slot) {
         case SNAP_SLOT_DTN:    return "DTN PORT STATS";
+        case SNAP_SLOT_PTP:    return "PTP SESSION STATS";
         case SNAP_SLOT_HEALTH: return "HEALTH MONITOR + POWER SUPPLY";
         default:               return "UNKNOWN";
     }
