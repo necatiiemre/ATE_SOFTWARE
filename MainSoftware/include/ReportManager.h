@@ -73,6 +73,12 @@ private:
     // DTN summary log.
     std::string buildReportHeaderText() const;
 
+    // Returns the DPDK app version deployed for the current unit
+    // (DTN -> dpdk, CMC -> dpdk_cmc, VMC -> dpdk_vmc). Units that run no DPDK
+    // app (MMC, HSN) return "N/A". Values are injected at build time from each
+    // component's include/Version.h via CMake compile definitions.
+    std::string dpdkVersionForUnit() const;
+
     // Prepends `header` to an existing file at `path`. No-op returning false if
     // the file does not exist (e.g. no summary log was fetched for this unit).
     bool prependHeaderToFile(const std::string &path, const std::string &header) const;

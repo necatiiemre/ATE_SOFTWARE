@@ -12,6 +12,22 @@
 #include <cstdlib>
 #include <array>
 
+// Component versions are injected as compile definitions by CMake (read from
+// each component's include/Version.h). Provide fallbacks so the file still
+// builds if compiled outside the CMake flow.
+#ifndef MAINSOFTWARE_VERSION
+#define MAINSOFTWARE_VERSION "unknown"
+#endif
+#ifndef DPDK_DTN_VERSION
+#define DPDK_DTN_VERSION "unknown"
+#endif
+#ifndef DPDK_CMC_VERSION
+#define DPDK_CMC_VERSION "unknown"
+#endif
+#ifndef DPDK_VMC_VERSION
+#define DPDK_VMC_VERSION "unknown"
+#endif
+
 // Global singleton
 ReportManager g_ReportManager;
 
@@ -421,9 +437,22 @@ std::string ReportManager::buildReportHeaderText() const
     h << "Tester Name         : " << m_tester_name << "\n";
     h << "Quality Checker     : " << m_quality_checker_name << "\n";
     h << "Unit Name           : " << m_unit_name << "IRSW" << "\n";
+    h << "----------------------------------------" << "\n";
+    h << "Software Version    : " << MAINSOFTWARE_VERSION << "\n";
+    h << "DPDK Version        : " << dpdkVersionForUnit() << "\n";
     h << "========================================" << "\n";
     h << "\n";
     return h.str();
+}
+
+std::string ReportManager::dpdkVersionForUnit() const
+{
+    // Map the selected unit to the DPDK variant it actually deploys. MMC runs
+    // FlickerDetection and HSN runs no DPDK app, so both report "N/A".
+    if (m_unit_name == "DTN") return DPDK_DTN_VERSION;
+    if (m_unit_name == "CMC") return DPDK_CMC_VERSION;
+    if (m_unit_name == "VMC") return DPDK_VMC_VERSION;
+    return "N/A";
 }
 
 bool ReportManager::prependHeaderToFile(const std::string &path, const std::string &header) const
