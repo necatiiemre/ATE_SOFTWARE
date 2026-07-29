@@ -45,7 +45,7 @@ find_package(Threads REQUIRED)
 # Each component keeps its version in a single source of truth header named
 # after the component:
 #   <component>/include/<Name>Version.h  ->  #define <Name>Version "x.y.z"
-#   (dpdk variants use their unit name: DTNIRSWVersion, CMCVersion, VMCVersion)
+#   (dpdk variants use their unit name: DtnIrswVersion, CmcVersion, VmcVersion)
 # We read those values here and inject them as compile definitions so the
 # report header can print them at runtime. This is the same value that
 # prepare_release.sh stamps into the release package - kept in one place.
@@ -63,9 +63,9 @@ endfunction()
 # MainSoftware's own version + the per-unit DPDK variants it deploys:
 #   DTN -> dpdk, CMC -> dpdk_cmc, VMC -> dpdk_vmc (MMC/HSN run no DPDK app)
 read_component_version(MAINSOFTWARE_VERSION ${CMAKE_SOURCE_DIR}/include/MainSoftwareVersion.h)
-read_component_version(DPDK_DTN_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk/include/DTNIRSWVersion.h)
-read_component_version(DPDK_CMC_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk_cmc/include/CMCVersion.h)
-read_component_version(DPDK_VMC_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk_vmc/include/VMCVersion.h)
+read_component_version(DPDK_DTN_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk/include/DtnIrswVersion.h)
+read_component_version(DPDK_CMC_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk_cmc/include/CmcVersion.h)
+read_component_version(DPDK_VMC_VERSION     ${CMAKE_SOURCE_DIR}/../dpdk_vmc/include/VmcVersion.h)
 
 message(STATUS "MainSoftware version: ${MAINSOFTWARE_VERSION}")
 message(STATUS "DPDK versions - DTN:${DPDK_DTN_VERSION} CMC:${DPDK_CMC_VERSION} VMC:${DPDK_VMC_VERSION}")

@@ -1,8 +1,8 @@
-#ifndef VMC_VERSION_H_
-#define VMC_VERSION_H_
+#ifndef DTNIRSW_VERSION_H_
+#define DTNIRSW_VERSION_H_
 
 /* Component version - single source of truth.
  * prepare_release.sh reads this value when stamping release packages. */
-#define VMCVersion "0.1.0"
+#define DtnIrswVersion "0.1.0"
 
-#endif /* VMC_VERSION_H_ */
+#endif /* DTNIRSW_VERSION_H_ */

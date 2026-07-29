@@ -78,7 +78,7 @@ ssh_exec() {
 # named after the component (the variable inside carries the same name):
 #   C/C++ components:  <component>/include/<Name>Version.h -> #define <Name>Version "x.y.z"
 #   Python components: <component>/<Name>Version.py        -> <Name>Version = "x.y.z"
-#   (dpdk variants use their unit name: DTNIRSWVersion, CMCVersion, VMCVersion, HSNIRSWVersion)
+#   (dpdk variants use their unit name: DtnIrswVersion, CmcVersion, VmcVersion, HsnIrswVersion)
 # The quoted value is extracted from whichever file exists. Falls back to
 # 0.0.0 if neither file is present or no version can be parsed.
 read_component_version() {
