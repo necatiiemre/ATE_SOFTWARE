@@ -1,0 +1,59 @@
+=========================================================================================
+  VERSIONING - Per-Unit Software Versions
+=========================================================================================
+
+Where versions are shown:
+  - Test report header: 'Software Version' and 'DPDK Version'
+  - Next to each binary in the package: MMUComputerTestSoftware/<folder>/VERSION.txt
+
+DTN
++====================+=========+========================================================+
+| Software           | Version | Version file                                           |
++====================+=========+========================================================+
+| MainSoftware       | 0.1.0   | MainSoftware/include/MainSoftwareVersion.h             |
+| DPDK (DTN)         | 0.1.0   | dpdk/include/DtnIrswVersion.h                          |
+| RemoteConfigSender | 0.1.0   | RemoteConfigSender/include/RemoteConfigSenderVersion.h |
+| FirmwareUpdater    | 0.1.0   | FirmwareUpdater/FirmwareUpdaterVersion.py              |
+| PdfReportGenerator | 0.1.0   | PdfReportGenerator/PdfReportGeneratorVersion.py        |
++--------------------+---------+--------------------------------------------------------+
+
+CMC
++====================+=========+========================================================+
+| Software           | Version | Version file                                           |
++====================+=========+========================================================+
+| MainSoftware       | 0.1.0   | MainSoftware/include/MainSoftwareVersion.h             |
+| DPDK (CMC)         | 0.1.0   | dpdk_cmc/include/CmcVersion.h                          |
+| Test_Starters      | 0.1.0   | Test_Starters/include/TestStartersVersion.h            |
+| Flicker_Detection  | 0.1.0   | Flicker_Detection/include/FlickerDetectionVersion.h    |
+| FirmwareUpdater    | 0.1.0   | FirmwareUpdater/FirmwareUpdaterVersion.py              |
+| PdfReportGenerator | 0.1.0   | PdfReportGenerator/PdfReportGeneratorVersion.py        |
++--------------------+---------+--------------------------------------------------------+
+
+VMC
++====================+=========+========================================================+
+| Software           | Version | Version file                                           |
++====================+=========+========================================================+
+| MainSoftware       | 0.1.0   | MainSoftware/include/MainSoftwareVersion.h             |
+| DPDK (VMC)         | 0.1.0   | dpdk_vmc/include/VmcVersion.h                          |
+| FirmwareUpdater    | 0.1.0   | FirmwareUpdater/FirmwareUpdaterVersion.py              |
+| PdfReportGenerator | 0.1.0   | PdfReportGenerator/PdfReportGeneratorVersion.py        |
++--------------------+---------+--------------------------------------------------------+
+
+MMC
++====================+=========+========================================================+
+| Software           | Version | Version file                                           |
++====================+=========+========================================================+
+| MainSoftware       | 0.1.0   | MainSoftware/include/MainSoftwareVersion.h             |
+| Flicker_Detection  | 0.1.0   | Flicker_Detection/include/FlickerDetectionVersion.h    |
+| FirmwareUpdater    | 0.1.0   | FirmwareUpdater/FirmwareUpdaterVersion.py              |
+| PdfReportGenerator | 0.1.0   | PdfReportGenerator/PdfReportGeneratorVersion.py        |
++--------------------+---------+--------------------------------------------------------+
+
+HSN
++====================+=========+========================================================+
+| Software           | Version | Version file                                           |
++====================+=========+========================================================+
+| MainSoftware       | 0.1.0   | MainSoftware/include/MainSoftwareVersion.h             |
+| FirmwareUpdater    | 0.1.0   | FirmwareUpdater/FirmwareUpdaterVersion.py              |
+| PdfReportGenerator | 0.1.0   | PdfReportGenerator/PdfReportGeneratorVersion.py        |
++--------------------+---------+--------------------------------------------------------+
