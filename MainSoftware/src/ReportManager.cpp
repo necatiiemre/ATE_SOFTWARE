@@ -13,7 +13,7 @@
 #include <array>
 
 // Component versions are injected as compile definitions by CMake (read from
-// each component's include/Version.h). Provide fallbacks so the file still
+// each component's include/<Name>Version.h). Provide fallbacks so the file still
 // builds if compiled outside the CMake flow.
 #ifndef MAINSOFTWARE_VERSION
 #define MAINSOFTWARE_VERSION "unknown"

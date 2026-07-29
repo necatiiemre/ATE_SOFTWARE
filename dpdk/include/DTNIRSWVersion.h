@@ -1,8 +1,8 @@
-#ifndef DPDK_VERSION_H_
-#define DPDK_VERSION_H_
+#ifndef DTNIRSW_VERSION_H_
+#define DTNIRSW_VERSION_H_
 
 /* Component version - single source of truth.
  * prepare_release.sh reads this value when stamping release packages. */
-#define Version "0.1.0"
+#define DTNIRSWVersion "0.1.0"
 
-#endif /* DPDK_VERSION_H_ */
+#endif /* DTNIRSW_VERSION_H_ */

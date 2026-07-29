@@ -1,8 +1,8 @@
-#ifndef DPDK_VMC_VERSION_H_
-#define DPDK_VMC_VERSION_H_
+#ifndef HSNIRSW_VERSION_H_
+#define HSNIRSW_VERSION_H_
 
 /* Component version - single source of truth.
  * prepare_release.sh reads this value when stamping release packages. */
-#define Version "0.1.0"
+#define HSNIRSWVersion "0.1.0"
 
-#endif /* DPDK_VMC_VERSION_H_ */
+#endif /* HSNIRSW_VERSION_H_ */

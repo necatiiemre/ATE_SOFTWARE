@@ -74,23 +74,27 @@ ssh_exec() {
     eval $SSH_CMD "\"$1\""
 }
 
-# Read a component's version. The single source of truth is a header:
-#   C/C++ components: <component>/include/Version.h  ->  #define Version "x.y.z"
-#   Python components: <component>/version.py        ->  Version = "x.y.z"
+# Read a component's version. The single source of truth is a header/module
+# named after the component (the variable inside carries the same name):
+#   C/C++ components:  <component>/include/<Name>Version.h -> #define <Name>Version "x.y.z"
+#   Python components: <component>/<Name>Version.py        -> <Name>Version = "x.y.z"
+#   (dpdk variants use their unit name: DTNIRSWVersion, CMCVersion, VMCVersion, HSNIRSWVersion)
 # The quoted value is extracted from whichever file exists. Falls back to
 # 0.0.0 if neither file is present or no version can be parsed.
 read_component_version() {
     local component="$1"
     local dir="$SCRIPT_DIR/$component"
-    local header="$dir/include/Version.h"
-    local pyfile="$dir/version.py"
+    local header
+    local pyfile
+    header="$(ls "$dir"/include/*Version.h 2>/dev/null | head -n1)"
+    pyfile="$(ls "$dir"/*Version.py 2>/dev/null | head -n1)"
     local version=""
 
-    if [ -f "$header" ]; then
-        version="$(grep -E '#define[[:space:]]+Version[[:space:]]' "$header" \
+    if [ -n "$header" ] && [ -f "$header" ]; then
+        version="$(grep -E '#define[[:space:]]+[A-Za-z_][A-Za-z0-9_]*Version[[:space:]]' "$header" \
             | head -n1 | sed -E 's/.*"([^"]*)".*/\1/')"
-    elif [ -f "$pyfile" ]; then
-        version="$(grep -E '^[[:space:]]*Version[[:space:]]*=' "$pyfile" \
+    elif [ -n "$pyfile" ] && [ -f "$pyfile" ]; then
+        version="$(grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*Version[[:space:]]*=' "$pyfile" \
             | head -n1 | sed -E 's/.*"([^"]*)".*/\1/')"
     fi
 
@@ -124,7 +128,7 @@ write_release_version() {
     version="$(read_component_version MainSoftware)"
     mkdir -p "$PREBUILT_DIR"
     echo "$version" > "$PREBUILT_DIR/VERSION.txt"
-    log_info "Release package version set to $version (from MainSoftware/include/Version.h)"
+    log_info "Release package version set to $version (from MainSoftware/include/MainSoftwareVersion.h)"
 }
 
 test_server_connection() {

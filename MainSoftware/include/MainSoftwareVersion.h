@@ -3,6 +3,6 @@
 
 /* Component version - single source of truth.
  * prepare_release.sh reads this value when stamping release packages. */
-#define Version "0.1.0"
+#define MainSoftwareVersion "0.1.0"
 
 #endif /* MAINSOFTWARE_VERSION_H_ */
