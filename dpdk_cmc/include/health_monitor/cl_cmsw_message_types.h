@@ -186,10 +186,11 @@ typedef struct __attribute__((packed)) {
 
 	Cl_cmsw_generic_lrm_status_type lrm_status;
 
-	uint8_t hsm_data_validity:1;			//0: CMSW_VALID, 1: CMSW_INVALID 	//OK
-	uint8_t dsm_hsm_pcie_link_status:1;  	//0: GOOD_LINK, 1:BAD_LINK			//OK
-	uint8_t temperature_data_status:1; 		/*0: DATA_AVAILABLE, 1: DATA_LOSS*/  //FMECA OK
-	uint8_t reserved:5;
+	uint8_t hsm_data_validity:1;		/*0: CMSW_VALID, 1: CMSW_INVALID*/											//OK
+	uint8_t dsm_hsm_pcie_link_status:1;	/*0: GOOD_LINK, 1:BAD_LINK*/												//OK
+	uint8_t temperature_data_status:2; 	/*0: DATA_AVAILABLE, 1: DATA_LOSS, 2: TEMP_ORANGE, 3: TEMP_RED*/			//FMECA OK
+	uint8_t voltage_data_status:2;     	/*0: VOLTAGE_GOOD, 1: VOLTAGE_LOSS, 2: VOLTAGE_ORANGE, 3: VOLTAGE_RED*/   	//FMECA OK
+	uint8_t current_data_status:2;     	/*0: CURRENT_GOOD, 2: CURRENT_LOSS, 2: CURRENT_ORANGE, 3: CURRENT_RED*/   	//FMECA OK
 
 	Cl_cmsw_hsn_port_link_status_type backplane_hsn_port_status_list[8];
 

@@ -893,6 +893,19 @@ static const char *cmsw_advb(unsigned s)
 {
     switch (s) { case 0: return "AVAILABLE"; case 1: return "LOSS"; case 2: return "WARNING"; default: return "?"; }
 }
+// HSM 2-bit sensor durumlari (0: iyi, 1: veri kaybi, 2: turuncu esik, 3: kirmizi esik)
+static const char *cmsw_temp4(unsigned s)
+{
+    switch (s) { case 0: return "AVAILABLE"; case 1: return "LOSS"; case 2: return "ORANGE"; case 3: return "RED"; default: return "?"; }
+}
+static const char *cmsw_volt4(unsigned s)
+{
+    switch (s) { case 0: return "GOOD"; case 1: return "LOSS"; case 2: return "ORANGE"; case 3: return "RED"; default: return "?"; }
+}
+static const char *cmsw_curr4(unsigned s)
+{
+    switch (s) { case 0: return "GOOD"; case 1: return "LOSS"; case 2: return "ORANGE"; case 3: return "RED"; default: return "?"; }
+}
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
@@ -1066,10 +1079,13 @@ void print_clcmsw(const Cl_cmsw_status_report_msg_type *d, uint16_t vl_id, unsig
         hr(); snprintf(sect, sizeof sect, "[ HSM[%u] ]", i); cmsw_section(sect);
         print_cmsw_generic(&p->lrm_status);
 
-        snprintf(buf, sizeof buf, "hsm_valid=%s  pcie_link=%s  temp=%s",
-                 cmsw_validity(p->hsm_data_validity), cmsw_link(p->dsm_hsm_pcie_link_status),
-                 cmsw_data(p->temperature_data_status));
+        snprintf(buf, sizeof buf, "hsm_valid=%s  pcie_link=%s",
+                 cmsw_validity(p->hsm_data_validity), cmsw_link(p->dsm_hsm_pcie_link_status));
         printf("║  %-24s : %-80s ║\n", "HSM Data", buf);
+        snprintf(buf, sizeof buf, "temp=%s  voltage=%s  current=%s",
+                 cmsw_temp4(p->temperature_data_status), cmsw_volt4(p->voltage_data_status),
+                 cmsw_curr4(p->current_data_status));
+        printf("║  %-24s : %-80s ║\n", "HSM Sensors", buf);
 
         // 8 backplane HSN portu — tek satırda özet
         char ports[128];
