@@ -221,8 +221,10 @@ static void swap_counters_dpm_vl(COUNTERS_DPM_VL *c)
 // CL CMSW status report — multi-byte scalar alanların BE→host swap'ı
 // ----------------------------------------------------------------------------
 // swap_es / swap_sw ile aynı yaklaşım: yalnızca çok-baytlı scalar alanlar
-// swap edilir. Tek-baytlık bitfield grupları (validity/mode/status vb.) olduğu
-// gibi bırakılır — mevcut SW_MON kodundaki bitfield konvansiyonuyla tutarlı.
+// swap edilir. Tek-baytlık bitfield grupları (validity/mode/status vb.) burada
+// dokunulmadan bırakılır; bit sırası cl_cmsw_message_types.h içinde derleme
+// zamanında (CL_CMSW_BITFIELD_MSB_FIRST) çözülür — BE üreticinin MSB-first
+// yerleşimi LE host'ta ters sıralı alan tanımıyla karşılanır.
 // firmware_version (3×uint8) ve reset/power/hardware_type (uint8) swap istemez.
 // ============================================================================
 static void swap_cmsw_generic(Cl_cmsw_generic_lrm_status_type *g)

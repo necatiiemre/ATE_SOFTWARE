@@ -867,7 +867,8 @@ void print_temperature_summary(void)
 // ----------------------------------------------------------------------------
 // Chassis içindeki her LRM biriminin durumu ayrı alt-bölüm halinde basılır.
 // Enum/bit alanları okunur değerlere çevrilir. Bitfield'lar struct'tan doğrudan
-// okunur (SW_MON konvansiyonuyla aynı); yalnızca scalar'lar swap edilmiştir.
+// okunur — header BE wire bit sırasını (MSB-first) LE host için ters alan
+// tanımıyla zaten karşılıyor; burada yalnızca scalar'lar swap edilmiştir.
 // ============================================================================
 static const char *cmsw_validity (unsigned b) { return b ? "INVALID"      : "VALID"; }
 static const char *cmsw_module   (unsigned b) { return b ? "LOSS"         : "ALIVE"; }
