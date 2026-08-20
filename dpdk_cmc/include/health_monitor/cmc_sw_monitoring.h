@@ -40,6 +40,29 @@ typedef enum
 // ============================================================================
 
 // SW MONITORING STATUS
+/* ===========================================================================
+ * BITFIELD BIT SIRASI — KRİTİK
+ * ---------------------------------------------------------------------------
+ * DTN SW monitoring mesajını üreten firmware big-endian bir hedefte derlenir;
+ * bitfield'lar storage unit içinde MSB'den başlayarak yerleşir. x86_64 (LE)
+ * derleyici LSB'den başlatır, dolayısıyla aynı ICD sırası aynı struct'ı VERMEZ.
+ *
+ * Örnek (port struct, PORT_ID sonrası 8 baytlık bitfield word'ü):
+ *   BE üretici  → PORT_LINK = son byte'ın bit0'ı
+ *   LE tüketici → PORT_LINK = son byte'ın bit7'si  (padding biti okunuyordu:
+ *                 tüm portlar sürekli aynı değeri gösteriyordu)
+ *
+ * Çözüm: bit sırası bayrağına göre alanlar iki kez tanımlanır. LE dalında sıra
+ * HER BAYT İÇİNDE ters çevrilir (bayt sırası korunur); bunun için çok baytlı
+ * padding'ler bayt sınırından ikiye bölünür (ör. 58 = 56 + 2). Toplam bit
+ * sayısı her iki dalda da aynıdır, struct boyutları değişmez.
+ * =========================================================================== */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#define A664_SW_BITFIELD_MSB_FIRST 1
+#else
+#define A664_SW_BITFIELD_MSB_FIRST 0
+#endif
+
 typedef struct a664SWMonitoringStatus {
 	/**
 	 * @brief Total number of packets DTN Switch sent.
@@ -61,6 +84,7 @@ typedef struct a664SWMonitoringStatus {
 	 */
 	uint64_t A664_SW_SHARED_TRANSCEIVER_TEMP;
 
+#if A664_SW_BITFIELD_MSB_FIRST
 	/**
 	 * @brief Padding added to ensure proper alignment within the structure.
 	 */
@@ -70,6 +94,18 @@ typedef struct a664SWMonitoringStatus {
 	 * @brief Heart-beat signal of DTN Switch.
 	 */
 	uint8_t A664_SW_HEARTBEAT :1;
+#else
+	/** @brief Padding (ilk 2 tam bayt — bayt sırası korunur). */
+	uint32_t A664_SW_PADDING :16;
+
+	/**
+	 * @brief Heart-beat signal of DTN Switch. (wire: son baytın bit0'ı)
+	 */
+	uint8_t A664_SW_HEARTBEAT :1;
+
+	/** @brief Padding (son baytın kalan üst bitleri). */
+	uint8_t A664_SW_PADDING_HI :7;
+#endif
 
 	/**
 	 * @brief Device ID of DTN Switch.
@@ -81,6 +117,7 @@ typedef struct a664SWMonitoringStatus {
 	 */
 	uint8_t A664_SW_PORT_NUM;
 
+#if A664_SW_BITFIELD_MSB_FIRST
 	/**
 	 * @brief Padding added to ensure proper alignment within the structure.
 	 */
@@ -130,6 +167,55 @@ typedef struct a664SWMonitoringStatus {
 	 * @brief Status of the upstream mode activation.
 	 */
 	uint8_t A664_SW_UPSTREAM_MODE_STATUS :1;
+#else
+	/* 80 bit / 10 bayt kesintisiz akış — her bayt kendi içinde ters. */
+
+	/* bayt 0 */
+	/**
+	 * @brief Status of the token bucket activation. (wire: bayt0 bit0)
+	 */
+	uint8_t A664_SW_TOKEN_BUCKET_STATUS :1;
+	/** @brief Padding added to ensure proper alignment within the structure. */
+	uint8_t A664_SW_PADDING1 :7;
+
+	/* bayt 1 */
+	/**
+	 * @brief Current operation mode of DTN Switch. (wire: bayt1 bit5..0)
+	 */
+	uint8_t A664_SW_CURRENT_MODE :6;
+	/** @brief Padding added to ensure proper alignment within the structure. */
+	uint8_t A664_SW_PADDING2 :2;
+
+	/* bayt 2..6 — tam bayt padding, bayt sırası korunur */
+	/** @brief Padding added to ensure proper alignment within the structure. */
+	uint64_t A664_SW_PADDING3 :40;
+
+	/* bayt 7 */
+	/**
+	 * @brief This field indicates the hardware vendor of the DTN ES Device.
+	 *        (wire: bayt7 bit0)
+	 */
+	uint64_t A664_SW_VENDOR_TYPE :1;
+	/** @brief Padding (PADDING3'ün bayt sınırına düşen üst 7 biti). */
+	uint64_t A664_SW_PADDING3_HI :7;
+
+	/* bayt 8 */
+	/**
+	 * @brief Status of the automatic MAC list update activation.
+	 *        (wire: bayt8 bit0)
+	 */
+	uint8_t A664_SW_AUTOMAC_UPDATE_STATUS :1;
+	/** @brief Padding added to ensure proper alignment within the structure. */
+	uint8_t A664_SW_PADDING4 :7;
+
+	/* bayt 9 */
+	/**
+	 * @brief Status of the upstream mode activation. (wire: bayt9 bit0)
+	 */
+	uint8_t A664_SW_UPSTREAM_MODE_STATUS :1;
+	/** @brief Padding added to ensure proper alignment within the structure. */
+	uint8_t A664_SW_PADDING5 :7;
+#endif
 
 	/**
 	 * @brief Firmware version of DTN Switch.
@@ -217,6 +303,7 @@ typedef struct __attribute__((packed)) a664SWMonitoringPort {
 	 */
 	uint64_t A664_SW_PORT_ID;
 
+#if A664_SW_BITFIELD_MSB_FIRST
 	/**
 	 * @brief Padding added to ensure proper alignment within the structure.
 	 */
@@ -234,8 +321,34 @@ typedef struct __attribute__((packed)) a664SWMonitoringPort {
 
 	/**
 	 * @brief Liveliness indication DTN Switch Port.
+	 *        0: LINK_UP, 1: LINK_DOWN.
 	 */
 	uint8_t A664_SW_PORT_LINK : 1;
+#else
+	/* 64 bit / 8 bayt — anlamlı alanlar son bayttadır, o bayt ters çevrilir. */
+
+	/** @brief Padding (ilk 7 tam bayt — bayt sırası korunur). */
+	uint64_t A664_SW_PADDING : 56;
+
+	/**
+	 * @brief Liveliness indication DTN Switch Port.
+	 *        0: LINK_UP, 1: LINK_DOWN. (wire: son baytın bit0'ı)
+	 */
+	uint8_t A664_SW_PORT_LINK : 1;
+
+	/**
+	 * @brief Padding added to ensure proper alignment within the structure.
+	 */
+	uint8_t A664_SW_PADDING2 : 3;
+
+	/**
+	 * @brief Built-in test status of DTN Switch. (wire: son baytın bit5..4'ü)
+	 */
+	uint8_t A664_SW_BIT_STATUS : 2;
+
+	/** @brief Padding (PADDING'in bayt sınırına düşen üst 2 biti). */
+	uint8_t A664_SW_PADDING_HI : 2;
+#endif
 
 	/**
 	 * @brief Total number of dropped packets due to CRC error on the port.
@@ -362,5 +475,10 @@ typedef struct __attribute__((packed)) tA664SWMonitoring{
 	 */
 	a664SWMonitoringPort port[A664_SW_MAX_PORT_COUNT];
 } tA664SWMonitoring;
+
+/* Wire boyutlari ICD ile sabit — bitfield sirasi degisse de degismemeli. */
+_Static_assert(sizeof(a664SWMonitoringStatus) == 136,  "a664SWMonitoringStatus size mismatch");
+_Static_assert(sizeof(a664SWMonitoringPort)   == 184,  "a664SWMonitoringPort size mismatch");
+_Static_assert(sizeof(tA664SWMonitoring)      == 2344, "tA664SWMonitoring size mismatch");
 
 #endif /* CMC_SW_MONITORING_H */

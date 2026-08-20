@@ -157,6 +157,10 @@ static const char *port_speed_str(uint64_t v)
     }
 }
 
+// A664_SW_PORT_LINK polaritesi: 0 = LINK_UP, 1 = LINK_DOWN.
+static const char *sw_port_link_str(unsigned v)   { return v ? "DOWN" : "UP"; }
+static const char *sw_port_link_short(unsigned v) { return v ? "DWN"  : "UP"; }
+
 static const char *ptp_dev_str(uint8_t v)
 {
     switch (v) {
@@ -735,7 +739,7 @@ void print_dtn_sw_monitoring(const tA664SWMonitoring *d, uint16_t vl_id, unsigne
 #if DEBUG_MODE
     snprintf(buf, sizeof(buf), "[ PORTS ]  (DEBUG: tüm 12 port + tüm sayaçlar)");
 #else
-    snprintf(buf, sizeof(buf), "[ PORTS ]  (link=0 ve tüm sayaçları sıfır olanlar gizlendi)");
+    snprintf(buf, sizeof(buf), "[ PORTS ]  (link=DOWN ve tüm sayaçları sıfır olanlar gizlendi)");
 #endif
     printf("║  " C_BOLD C_CYAN "%-107s" C_RESET " ║\n", buf);
 
@@ -758,7 +762,8 @@ void print_dtn_sw_monitoring(const tA664SWMonitoring *d, uint16_t vl_id, unsigne
                        
 #if !DEBUG_MODE
         // Normal mod: boş portları gizle. Debug modda TÜM portlar basılır.
-        if (p->A664_SW_PORT_LINK == 0 && sum == 0) continue;
+        // A664_SW_PORT_LINK: 0 = LINK_UP, 1 = LINK_DOWN.
+        if (p->A664_SW_PORT_LINK != 0 && sum == 0) continue;
 #else
         (void)sum;
 #endif
@@ -770,7 +775,7 @@ void print_dtn_sw_monitoring(const tA664SWMonitoring *d, uint16_t vl_id, unsigne
         // karışıklığı yok, hepsi aynı hizada, eksiksiz (sıfırlar dahil).
         snprintf(buf, sizeof(buf), "[ Port %u ]   ID=%" PRIu64 "   Link=%s   BIT=%u",
                  i, p->A664_SW_PORT_ID,
-                 p->A664_SW_PORT_LINK ? "UP" : "DOWN", p->A664_SW_BIT_STATUS);
+                 sw_port_link_str(p->A664_SW_PORT_LINK), p->A664_SW_BIT_STATUS);
         printf("║  " C_BOLD C_CYAN "%-107.107s" C_RESET " ║\n", buf);
 
         #define PORT_ROW(lbl, v) do {                                          \
@@ -804,8 +809,8 @@ void print_dtn_sw_monitoring(const tA664SWMonitoring *d, uint16_t vl_id, unsigne
         printf("║  " C_DIM "%-107.107s" C_RESET " ║\n", buf);
 #else
         // Normal mod: kompakt tablo satırı.
-        printf("║  P%-3u │ %-4" PRIu64 " │ %-3u │ %-3u │ %-20" PRIu64 " │ %-20" PRIu64 " │ %-16" PRIu64 " │ %-16" PRIu64 " ║\n",
-               i, p->A664_SW_PORT_ID, p->A664_SW_PORT_LINK, p->A664_SW_BIT_STATUS,
+        printf("║  P%-3u │ %-4" PRIu64 " │ %-3s │ %-3u │ %-20" PRIu64 " │ %-20" PRIu64 " │ %-16" PRIu64 " │ %-16" PRIu64 " ║\n",
+               i, p->A664_SW_PORT_ID, sw_port_link_short(p->A664_SW_PORT_LINK), p->A664_SW_BIT_STATUS,
                p->A664_SW_TX_FRAME_CNT, p->A664_SW_RX_FRAME_CNT,
                p->A664_SW_CRC_ERR_CNT, p->A664_SW_MAX_DELAY_ERR_CNT);
 #endif
