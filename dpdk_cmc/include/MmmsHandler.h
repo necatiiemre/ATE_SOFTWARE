@@ -14,18 +14,27 @@ extern "C" {
  * On Ctrl+C the normal PRBS TX is halted and a single request packet is
  * emitted from port 0:
  *
- *   VLAN 97 / VL-IDX 1 / payload = [0x05 0x09] "read-smmm" 0x00*89  [seq=0x00]
+ *   VLAN 97 / VL-IDX 8110 / payload = [0x05 0x09] "read-smmm" 0x00*89 [seq=0x00]
  *
  * The peer then streams back files via VLAN 225 / VL-IDX 8010:
  *
- *   filename packet (101 B payload):
- *     "start"(5) + name_len(1) + name(name_len) + 0x00 pad to 100 + seq(1)
+ *   filename packet (136 B payload):
+ *     "start"(5) + name_len(1) + dir_name_len(1) +
+ *     log_name(64, 0x00 padded) + dir_name(64, 0x00 padded) + seq(1)
+ *
+ *     name_len / dir_name_len give the used length of the two fixed-width
+ *     name fields. Each file is stored under its own directory:
+ *       <output_dir>/<dir_name>/<log_name>
  *
  *   content packet (1467 B payload):
  *     data(1466) + seq(1)
  *
- *   end-of-transfer packet (101 B payload):
- *     "finish-smmm"(11) + 0x00 pad to 100 + seq(1)
+ *   end-of-transfer packet (136 B payload):
+ *     "finish-smmm"(11) + 0x00 pad to 135 + seq(1)
+ *
+ * Control packets are dispatched on payload length exactly as before; the
+ * pre-directory 101 B control size is still accepted for "finish-smmm" so a
+ * peer that only grew its start packet keeps working.
  *
  * Sequence numbers wrap 1..255 (0 is reserved for the trigger). The handler
  * detects gaps in this single global stream and counts corrupted packets
@@ -37,7 +46,22 @@ extern "C" {
 #define MMMS_RESPONSE_VLAN         225
 #define MMMS_RESPONSE_VL_ID        8010
 
-#define MMMS_CONTROL_PAYLOAD_LEN   101    /* "start" / "finish-smmm" + seq */
+/* Trigger ("read-smmm") payload we emit — unrelated to the peer's control
+ * packet size below, so it keeps its own constant. */
+#define MMMS_TRIGGER_PAYLOAD_LEN   101    /* "read-smmm" request + seq */
+
+/* Fixed-width name fields inside the "start" packet. */
+#define MMMS_NAME_FIELD_LEN        64     /* log_name[64]  */
+#define MMMS_DIR_FIELD_LEN         64     /* dir_name[64]  */
+
+/* "start" field offsets. */
+#define MMMS_START_OFF_NAME_LEN    5
+#define MMMS_START_OFF_DIR_LEN     6
+#define MMMS_START_OFF_LOG_NAME    7
+#define MMMS_START_OFF_DIR_NAME    (MMMS_START_OFF_LOG_NAME + MMMS_NAME_FIELD_LEN)  /* 71 */
+
+#define MMMS_CONTROL_PAYLOAD_LEN   136    /* "start" / "finish-smmm" + seq */
+#define MMMS_CONTROL_PAYLOAD_LEN_LEGACY 101 /* pre-directory control size */
 #define MMMS_CONTENT_PAYLOAD_LEN   1467   /* 1466 data + 1 seq */
 #define MMMS_CONTENT_DATA_LEN      1466
 

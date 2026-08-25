@@ -54,12 +54,40 @@ static int mmms_mkdir_p(const char *path)
 {
     struct stat st;
     if (stat(path, &st) == 0) {
-        return S_ISDIR(st.st_mode) ? 0 : -1;
+        if (S_ISDIR(st.st_mode)) {
+            return 0;
+        }
+        errno = ENOTDIR;
+        return -1;
     }
     if (mkdir(path, 0755) == 0) {
         return 0;
     }
     return -1;
+}
+
+/*
+ * Names arrive as fixed-width fields the peer fills in, so they are treated as
+ * untrusted input: a single path component only, no separators and no dot
+ * entries, which keeps every write inside the output directory.
+ */
+static bool mmms_name_is_safe(const char *name, const char *what)
+{
+    if (name[0] == '\0') {
+        printf("MMMS: empty %s name, ignoring start packet\n", what);
+        return false;
+    }
+    for (const char *c = name; *c; c++) {
+        if (*c == '/' || *c == '\\') {
+            printf("MMMS: rejecting %s name with path separator: '%s'\n", what, name);
+            return false;
+        }
+    }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        printf("MMMS: rejecting %s name '%s'\n", what, name);
+        return false;
+    }
+    return true;
 }
 
 static void mmms_close_current_file(void)
@@ -131,7 +159,7 @@ int mmms_send_trigger(struct ports_config *ports_config)
     const uint16_t l2_len = sizeof(struct rte_ether_hdr) + sizeof(struct vlan_hdr);
     const uint16_t ip_len = sizeof(struct rte_ipv4_hdr);
     const uint16_t udp_len = sizeof(struct rte_udp_hdr);
-    const uint16_t payload_len = MMMS_CONTROL_PAYLOAD_LEN;  /* 101 bytes */
+    const uint16_t payload_len = MMMS_TRIGGER_PAYLOAD_LEN;  /* 101 bytes */
     const uint16_t pkt_len = l2_len + ip_len + udp_len + payload_len;
 
     uint8_t *pkt = rte_pktmbuf_mtod(mbuf, uint8_t *);
@@ -200,28 +228,45 @@ int mmms_send_trigger(struct ports_config *ports_config)
 
 static void mmms_handle_start(const uint8_t *payload)
 {
-    /* Layout: "start"(5) + name_len(1) + name(name_len) + pad to 100 + seq(1). */
-    uint8_t name_len = payload[5];
-    if (name_len == 0 || name_len > 94) {
+    /*
+     * Layout: "start"(5) + name_len(1) + dir_name_len(1) +
+     *         log_name[64] + dir_name[64] + seq(1).
+     * The two name fields are fixed-width and 0x00 padded; the *_len bytes
+     * say how much of each is actually used.
+     */
+    uint8_t name_len = payload[MMMS_START_OFF_NAME_LEN];
+    uint8_t dir_len  = payload[MMMS_START_OFF_DIR_LEN];
+
+    if (name_len == 0 || name_len > MMMS_NAME_FIELD_LEN) {
         printf("MMMS: invalid name_len=%u in start packet, ignoring\n", name_len);
         return;
     }
+    if (dir_len == 0 || dir_len > MMMS_DIR_FIELD_LEN) {
+        printf("MMMS: invalid dir_name_len=%u in start packet, ignoring\n", dir_len);
+        return;
+    }
 
-    char fname[128] = {0};
-    memcpy(fname, payload + 6, name_len);
+    char fname[MMMS_NAME_FIELD_LEN + 1] = {0};
+    char dname[MMMS_DIR_FIELD_LEN + 1]  = {0};
+    memcpy(fname, payload + MMMS_START_OFF_LOG_NAME, name_len);
+    memcpy(dname, payload + MMMS_START_OFF_DIR_NAME, dir_len);
 
-    /* Reject names with path separators to keep writes inside output dir. */
-    for (size_t i = 0; i < name_len; i++) {
-        if (fname[i] == '/' || fname[i] == '\\') {
-            printf("MMMS: rejecting filename with path separator: '%s'\n", fname);
-            return;
-        }
+    if (!mmms_name_is_safe(fname, "log") || !mmms_name_is_safe(dname, "directory")) {
+        return;
     }
 
     mmms_close_current_file();
 
-    char fullpath[512];
-    snprintf(fullpath, sizeof(fullpath), "%s/%s", g_output_dir, fname);
+    /* Each log lands in its own directory: <output_dir>/<dir_name>/<log_name>. */
+    char dirpath[512];
+    snprintf(dirpath, sizeof(dirpath), "%s/%s", g_output_dir, dname);
+    if (mmms_mkdir_p(dirpath) != 0) {
+        printf("MMMS: failed to create directory '%s': %s\n", dirpath, strerror(errno));
+        return;
+    }
+
+    char fullpath[768];
+    snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, fname);
     g_current_file = fopen(fullpath, "wb");
     if (!g_current_file) {
         printf("MMMS: fopen('%s') failed: %s\n", fullpath, strerror(errno));
@@ -229,9 +274,9 @@ static void mmms_handle_start(const uint8_t *payload)
         return;
     }
 
-    snprintf(g_current_name, sizeof(g_current_name), "%s", fname);
+    snprintf(g_current_name, sizeof(g_current_name), "%s/%s", dname, fname);
     g_files_received++;
-    printf("MMMS: receiving file '%s' -> %s\n", fname, fullpath);
+    printf("MMMS: receiving file '%s' -> %s\n", g_current_name, fullpath);
 }
 
 static void mmms_handle_finish(void)
@@ -269,9 +314,14 @@ void mmms_handle_packet(const uint8_t *payload, uint16_t payload_len)
         printf("MMMS: first response packet received, entering RECEIVING\n");
     }
 
-    /* Validate payload length up front. */
-    if (payload_len != MMMS_CONTROL_PAYLOAD_LEN &&
-        payload_len != MMMS_CONTENT_PAYLOAD_LEN) {
+    /*
+     * Validate payload length up front. Control packets carry the directory-
+     * aware 136 B layout; the pre-directory 101 B size is still accepted so a
+     * peer whose "finish-smmm" packet did not grow keeps terminating cleanly.
+     */
+    const bool is_control = (payload_len == MMMS_CONTROL_PAYLOAD_LEN ||
+                             payload_len == MMMS_CONTROL_PAYLOAD_LEN_LEGACY);
+    if (!is_control && payload_len != MMMS_CONTENT_PAYLOAD_LEN) {
         printf("MMMS: unexpected payload_len=%u, dropping\n", payload_len);
         return;
     }
@@ -292,9 +342,14 @@ void mmms_handle_packet(const uint8_t *payload, uint16_t payload_len)
     }
     g_expected_seq = mmms_next_seq(g_expected_seq);
 
-    if (payload_len == MMMS_CONTROL_PAYLOAD_LEN) {
+    if (is_control) {
         if (payload[0] == 's' && payload[1] == 't' && payload[2] == 'a' &&
             payload[3] == 'r' && payload[4] == 't') {
+            if (payload_len != MMMS_CONTROL_PAYLOAD_LEN) {
+                printf("MMMS: start packet too short (%u B, need %u), dropping\n",
+                       payload_len, (unsigned)MMMS_CONTROL_PAYLOAD_LEN);
+                return;
+            }
             mmms_handle_start(payload);
         } else if (memcmp(payload, "finish-smmm", 11) == 0) {
             mmms_handle_finish();

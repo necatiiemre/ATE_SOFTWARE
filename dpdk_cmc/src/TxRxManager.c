@@ -1790,7 +1790,7 @@ int rx_worker(void *arg)
                 // MMMS EARLY BRANCH (Ctrl+C handover)
                 // VLAN 225 / VL-IDX 8010 packets carry filename / content /
                 // finish-smmm chunks of the post-shutdown file dump. Their
-                // payload is 101 or 1467 bytes — well below min_len_vlan —
+                // payload is 136 or 1467 bytes — well below min_len_vlan —
                 // so the dispatch has to run before the short-packet filter.
                 // MMMS is dormant until stop_normal_tx is set; bail out
                 // cheaply in the normal hot-path.
