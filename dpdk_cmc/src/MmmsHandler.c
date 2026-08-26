@@ -1,3 +1,9 @@
+/* openat/fstatat/fdopendir/dirfd need the POSIX.1-2008 declarations, which a
+ * strict -std=cNN build would hide. Must precede every include. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "MmmsHandler.h"
 
 #include <stdio.h>
@@ -5,6 +11,9 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -35,6 +44,9 @@ static time_t       g_armed_at       = 0;
 static bool         g_seq_initialized = false;
 static uint8_t      g_expected_seq    = 0;
 
+/* Recursion guard for the startup purge — log trees are two levels deep. */
+#define MMMS_PURGE_MAX_DEPTH 8
+
 /* Stats */
 static uint32_t     g_files_received  = 0;
 static uint32_t     g_corrupted_seq   = 0;
@@ -64,6 +76,74 @@ static int mmms_mkdir_p(const char *path)
         return 0;
     }
     return -1;
+}
+
+/*
+ * Recursively empty an already-open directory. Every step goes through the
+ * *at() calls on a directory fd, so no path is ever re-resolved and a symlink
+ * planted mid-walk cannot redirect a delete outside the tree. Failures are
+ * reported and skipped: a leftover file is not worth aborting startup over.
+ */
+static void mmms_purge_dir_fd(int dir_fd, unsigned depth)
+{
+    DIR *dir = fdopendir(dir_fd);   /* owns dir_fd from here on */
+    if (!dir) {
+        close(dir_fd);
+        return;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+
+        struct stat st;
+        if (fstatat(dirfd(dir), ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            printf("MMMS: cannot stat '%s' while clearing logs: %s\n",
+                   ent->d_name, strerror(errno));
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            if (depth >= MMMS_PURGE_MAX_DEPTH) {
+                printf("MMMS: log tree deeper than %u levels, leaving '%s'\n",
+                       MMMS_PURGE_MAX_DEPTH, ent->d_name);
+                continue;
+            }
+            int sub_fd = openat(dirfd(dir), ent->d_name,
+                                O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+            if (sub_fd >= 0) {
+                mmms_purge_dir_fd(sub_fd, depth + 1);
+            }
+            if (unlinkat(dirfd(dir), ent->d_name, AT_REMOVEDIR) != 0) {
+                printf("MMMS: rmdir('%s') failed: %s\n", ent->d_name, strerror(errno));
+            }
+        } else if (unlinkat(dirfd(dir), ent->d_name, 0) != 0) {
+            printf("MMMS: unlink('%s') failed: %s\n", ent->d_name, strerror(errno));
+        }
+    }
+
+    closedir(dir);
+}
+
+/*
+ * Drop the previous run's logs so a handover never mixes old and new files.
+ * The output directory itself is kept (mmms_init re-creates it when absent);
+ * only its contents go. A missing directory is not an error.
+ */
+static void mmms_purge_output_dir(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd < 0) {
+        if (errno != ENOENT) {
+            printf("MMMS: cannot open '%s' to clear old logs: %s\n",
+                   path, strerror(errno));
+        }
+        return;
+    }
+    mmms_purge_dir_fd(fd, 0);
+    printf("MMMS: cleared previous logs under '%s'\n", path);
 }
 
 /*
@@ -110,7 +190,16 @@ int mmms_init(const char *output_dir)
     if (!output_dir || !*output_dir) {
         return -1;
     }
+    if (strcmp(output_dir, "/") == 0) {
+        printf("MMMS: refusing '/' as output directory\n");
+        return -1;
+    }
+
     snprintf(g_output_dir, sizeof(g_output_dir), "%s", output_dir);
+
+    /* Wipe whatever the previous run left behind before taking new files. */
+    mmms_purge_output_dir(g_output_dir);
+
     if (mmms_mkdir_p(g_output_dir) != 0) {
         printf("MMMS: failed to create output directory '%s': %s\n",
                g_output_dir, strerror(errno));

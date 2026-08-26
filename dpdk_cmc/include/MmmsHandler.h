@@ -87,6 +87,11 @@ typedef enum {
 
 /**
  * Prepare output directory and reset state. Idempotent.
+ *
+ * The directory's existing contents are deleted first, so a run never mixes
+ * its files with the previous run's. Call this before the handover can start
+ * (main does so at startup), never mid-transfer.
+ *
  * @param output_dir e.g. "/tmp/mmms_logs". Created if missing.
  * @return 0 on success, -1 on failure.
  */
