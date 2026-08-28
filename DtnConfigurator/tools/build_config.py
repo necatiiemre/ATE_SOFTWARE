@@ -33,7 +33,10 @@ def records_from_json(spec):
                 records.append(VlRecord(vl, src, {dst}))
                 vl += 1
     for hm in spec.get("health_monitor", []):
-        records.append(VlRecord(hm["vl"], hm["src"], {hm["dst"]}))
+        r = VlRecord(hm["vl"], hm["src"], {hm["dst"]})
+        if "flags" in hm:
+            r.flags = hm["flags"]
+        records.append(r)
     records.sort(key=lambda r: r.vl_id)
     return records
 

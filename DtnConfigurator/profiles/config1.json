@@ -6,16 +6,77 @@
     {
       "comment": "forward direction",
       "vl_id_base": 1024,
-      "links": [[0, 16], [1, 17], [2, 18], [3, 19], [4, 20], [5, 21]]
+      "links": [
+        [
+          0,
+          16
+        ],
+        [
+          1,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          3,
+          19
+        ],
+        [
+          4,
+          20
+        ],
+        [
+          5,
+          21
+        ]
+      ]
     },
     {
       "comment": "reverse direction",
       "vl_id_base": 2024,
-      "links": [[16, 0], [17, 1], [18, 2], [19, 3], [20, 4], [21, 5]]
+      "links": [
+        [
+          16,
+          0
+        ],
+        [
+          17,
+          1
+        ],
+        [
+          18,
+          2
+        ],
+        [
+          19,
+          3
+        ],
+        [
+          20,
+          4
+        ],
+        [
+          21,
+          5
+        ]
+      ]
     }
   ],
   "health_monitor": [
-    {"src": 15, "dst": 33, "vl": 100},
-    {"src": 31, "dst": 33, "vl": 101}
-  ]
+    {
+      "src": 15,
+      "dst": 33,
+      "vl": 100,
+      "flags": 13
+    },
+    {
+      "src": 31,
+      "dst": 33,
+      "vl": 101,
+      "flags": 13
+    }
+  ],
+  "health_monitor_flags_note": "flags 0xD matches VL 4488 in the main software, the VL that carries health monitor data (HEALTH_MONITOR_RESPONSE_VL_IDX). Every other reference VL uses 0x9."
 }
