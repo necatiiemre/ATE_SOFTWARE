@@ -42,6 +42,17 @@ def records_from_json(spec):
 
 
 def check(records):
+    link_ports, hm_ports = set(), set()
+    for r in records:
+        if 33 in r.dest or 32 in r.dest:
+            hm_ports.add(r.src_port)
+        else:
+            link_ports.add(r.src_port)
+            link_ports |= r.dest
+    clash = link_ports & hm_ports
+    if clash:
+        raise SystemExit(f"port(s) {sorted(clash)} carry both fibre traffic and health monitor")
+
     seen = {}
     for r in records:
         if r.vl_id in seen:

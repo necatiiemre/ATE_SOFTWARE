@@ -1,0 +1,82 @@
+{
+  "name": "config2",
+  "description": "Round 2 of 3 - fibre ports 6-11 paired with 22-27, HM out of ports 15 and 31",
+  "vl_block_size": 10,
+  "link_groups": [
+    {
+      "comment": "forward direction",
+      "vl_id_base": 1024,
+      "links": [
+        [
+          6,
+          22
+        ],
+        [
+          7,
+          23
+        ],
+        [
+          8,
+          24
+        ],
+        [
+          9,
+          25
+        ],
+        [
+          10,
+          26
+        ],
+        [
+          11,
+          27
+        ]
+      ]
+    },
+    {
+      "comment": "reverse direction",
+      "vl_id_base": 2024,
+      "links": [
+        [
+          22,
+          6
+        ],
+        [
+          23,
+          7
+        ],
+        [
+          24,
+          8
+        ],
+        [
+          25,
+          9
+        ],
+        [
+          26,
+          10
+        ],
+        [
+          27,
+          11
+        ]
+      ]
+    }
+  ],
+  "health_monitor": [
+    {
+      "src": 15,
+      "dst": 33,
+      "vl": 100,
+      "flags": 13
+    },
+    {
+      "src": 31,
+      "dst": 33,
+      "vl": 101,
+      "flags": 13
+    }
+  ],
+  "health_monitor_flags_note": "flags 0xD matches VL 4488 in the main software, the VL that carries health monitor data (HEALTH_MONITOR_RESPONSE_VL_IDX). Every other reference VL uses 0x9."
+}

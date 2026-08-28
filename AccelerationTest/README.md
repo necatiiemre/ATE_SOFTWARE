@@ -1,4 +1,4 @@
-# DtnConfigurator
+# AccelerationTest
 
 Builds DTN (LRU `0x2600`) configuration frames from a VL profile and sends them
 over a plain Ethernet raw socket, then listens for the health-monitor stream
@@ -11,6 +11,8 @@ src/DtnConfig.c            the encoder
 tests/test_reference.c     rebuilds the 47 reference frames byte for byte
 tests/fixtures/            those frames, extracted from RemoteConfigSender
 profiles/config1.json      round 1 of 3
+profiles/config2.json      round 2 of 3
+profiles/config3.json      round 3 of 3
 tools/                     analysis-side helpers (see below)
 ```
 
@@ -59,6 +61,23 @@ the vendor XML attributes:
 
 `DESTPORT` is a 35-character bit string with port 34 leftmost. Confirmed against
 the reference blob: the vendor line for VL 620 encodes to that record exactly.
+
+## The three rounds
+
+The unit under test on the other side has 12 ports, the DTN has 32 fibre ports,
+so the fibre links are covered in three rounds. Each round pairs six low ports
+with six high ports in both directions, 10 VLs per direction, plus two
+health-monitor VLs out to copper port 33.
+
+| profile | fibre ports | health monitor |
+|---------|-------------|----------------|
+| config1 | 0-5 <-> 16-21  | ports 15, 31 |
+| config2 | 6-11 <-> 22-27 | ports 15, 31 |
+| config3 | 10-15 <-> 26-31 | ports 0, 16 |
+
+Round 3 moves the health monitor because ports 15 and 31 carry fibre traffic in
+that round. The three rounds together cover fibre ports 0-31. Every round is
+122 VL records in 4 frames.
 
 ## Health-monitor VLs
 

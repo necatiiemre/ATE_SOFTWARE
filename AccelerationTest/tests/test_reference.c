@@ -28,7 +28,7 @@ static int load_fixture(const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "cannot open %s - run from the DtnConfigurator directory\n", path);
+        fprintf(stderr, "cannot open %s - run from the AccelerationTest directory\n", path);
         return -1;
     }
     g_blob_len = fread(g_blob, 1, sizeof g_blob, f);
