@@ -79,7 +79,9 @@ def build_frames(records, vlan=None, with_ptp_block=None):
                        (ADDR_SW_END, REF_SW_END)]
         emit(blocks, last, f"vl table {i + 1}/{len(chunks)} ({len(chunk)} records)")
 
-    query = bytes.fromhex("260052000000004400000000000000000000000000")
+    # 0x52 status query, byte-identical to the reference in
+    # RemoteConfigSender/main.cpp and HealthMonitor.c
+    query = bytes.fromhex("26005200000000440000000000000000000000000000")
     frames.append((seq, "status query (0x52)", build_frame(query, seq=seq, vlan=None)))
     return frames
 
