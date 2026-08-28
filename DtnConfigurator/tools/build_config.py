@@ -18,12 +18,20 @@ REF_SW_MISC   = bytes.fromhex("000000000030")
 
 
 def records_from_json(spec):
-    size, base = spec["vl_block_size"], spec["vl_id_base"]
-    records, vl = [], base
-    for src, dst in spec["links"]:
-        for _ in range(size):
-            records.append(VlRecord(vl, src, {dst}))
-            vl += 1
+    """Expand a port map into VL records.
+
+    Each link group walks its own contiguous VL range: the first link takes
+    `vl_block_size` IDs from `vl_id_base`, the next link continues from there.
+    """
+    default_size = spec.get("vl_block_size", 10)
+    records = []
+    for group in spec["link_groups"]:
+        vl = group["vl_id_base"]
+        size = group.get("vl_block_size", default_size)
+        for src, dst in group["links"]:
+            for _ in range(size):
+                records.append(VlRecord(vl, src, {dst}))
+                vl += 1
     for hm in spec.get("health_monitor", []):
         records.append(VlRecord(hm["vl"], hm["src"], {hm["dst"]}))
     records.sort(key=lambda r: r.vl_id)

@@ -2,10 +2,17 @@
   "name": "config1",
   "description": "Round 1 of 3 - fibre ports 0-5 paired with 16-21, HM out on copper port 33",
   "vl_block_size": 10,
-  "vl_id_base": 1024,
-  "links": [
-    [0, 16], [1, 17], [2, 18], [3, 19], [4, 20], [5, 21],
-    [16, 0], [17, 1], [18, 2], [19, 3], [20, 4], [21, 5]
+  "link_groups": [
+    {
+      "comment": "forward direction",
+      "vl_id_base": 1024,
+      "links": [[0, 16], [1, 17], [2, 18], [3, 19], [4, 20], [5, 21]]
+    },
+    {
+      "comment": "reverse direction",
+      "vl_id_base": 2024,
+      "links": [[16, 0], [17, 1], [18, 2], [19, 3], [20, 4], [21, 5]]
+    }
   ],
   "health_monitor": [
     {"src": 15, "dst": 33, "vl": 100},
