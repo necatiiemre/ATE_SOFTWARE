@@ -382,6 +382,17 @@ bool Dtn::configureSequence()
         return false;
     }
 
+    // Clear the switch-side interface counters now that the VLAN state is
+    // final and before any test traffic is generated. Best-effort: a switch
+    // that refuses the clear only means its counters carry over from the
+    // previous run, which must not abort the test.
+    if (!g_cumulus.resetCounters())
+    {
+        ErrorPrinter::warn("CUMULUS",
+            "DTN: Switch interface counters could not be cleared - "
+            "they may include traffic from a previous run.");
+    }
+
     sleep(1);
 
     // Deploy prebuilt RemoteConfigSender binary and run with sudo (required for raw sockets)

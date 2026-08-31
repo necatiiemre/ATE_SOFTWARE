@@ -1392,10 +1392,6 @@ bool CumulusHelper::configureSequence()
         ErrorPrinter::info("CUMULUS",
             "DTN VLAN state already matches expected (" +
             std::to_string(expected.size()) + " entries), skipping configuration");
-        // Counters must be cleared on this path too: a repeat run skips the
-        // VLAN work but still starts a fresh test, so the switch must not
-        // carry the previous run's totals.
-        resetCounters();
         return true;
     }
 
@@ -1472,9 +1468,6 @@ bool CumulusHelper::configureSequence()
     // std::cout << getLogPrefix() << " VLAN Configuration Completed Successfully!" << std::endl;
     // std::cout << "========================================\n"
     //           << std::endl;
-
-    // Start the DTN test from zeroed switch counters.
-    resetCounters();
 
     return true;
 }
