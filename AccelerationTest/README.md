@@ -15,12 +15,39 @@ src/units/DtnTest.c        DTN acceleration test
 src/units/VmcTest.c        placeholder
 src/units/CmcTest.c        placeholder
 src/VlProfile.c            the three DTN configuration rounds
+src/AppConfig.c            interface names and timings
+src/RawSocket.c            AF_PACKET access to a copper link
+src/HealthMonitor.c        recognising the DTN's health-monitor stream
+src/SafeShutdown.c         releases sockets on Ctrl-C or any error path
+src/Log.c                  timestamped run log, flushed line by line
 include/DtnConfig.h        wire format: VL records, config blocks, frame assembly
 src/DtnConfig.c            the encoder
 tests/test_reference.c     rebuilds the 47 reference frames byte for byte
 tests/fixtures/            those frames, extracted from RemoteConfigSender
 tools/                     analysis-side helpers (see below)
 ```
+
+## What the DTN test does
+
+1. The operator picks one of the three rounds.
+2. The profile is expanded into a VL table and validated.
+3. The VL table becomes configuration frames.
+4. The test waits for the unit's health-monitor stream to appear, which is how
+   it knows the DTN has booted.
+5. The frames go out of the copper link, followed by a `0x52` status query.
+6. It watches the health monitor until the operator presses Ctrl-C.
+
+Power is operated separately; the test only observes a unit that is already
+live. What it does watch for is power *dropping* mid-run - on a vibration rig
+that is a likely fault and probably the most valuable thing a run can catch.
+When the health monitor goes quiet and comes back, the DTN has rebooted and lost
+its VL table, so the test re-sends the configuration and records both the loss
+and the recovery with timestamps.
+
+Everything lands in `LOGS/DTN/<profile>_<timestamp>.log`, flushed line by line
+so a run that ends abruptly still leaves what it saw.
+
+Raw sockets need root or `CAP_NET_RAW`.
 
 ## Adding a unit's test
 

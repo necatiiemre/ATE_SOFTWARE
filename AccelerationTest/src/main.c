@@ -6,6 +6,7 @@
  * wiring are already in place when those tests are written.
  */
 
+#include "SafeShutdown.h"
 #include "UnitManager.h"
 
 #include <stdio.h>
@@ -19,6 +20,7 @@ static void banner(void)
 
 int main(void)
 {
+    safe_shutdown_install();
     banner();
 
     for (;;) {
