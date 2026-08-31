@@ -1412,6 +1412,58 @@ static inline struct raw_socket_port* find_raw_socket_port_by_vl_id(uint16_t vl_
     return NULL;
 }
 
+// ==========================================
+// RX WORKER COUNTER FLUSH
+// ==========================================
+// Folds a worker's thread-local counters into the shared statistics and zeroes
+// them. Defined once and used from every flush site - the periodic/deadline
+// flush, the on-demand flush the main loop requests before each render, and
+// the final flush on exit - so those can never drift apart. A macro rather
+// than a function because it works on a dozen locals that would otherwise all
+// have to be passed by pointer. The STATS_MODE_DTN split is done out here:
+// preprocessor directives cannot live inside a macro body.
+#if STATS_MODE_DTN
+#define RX_WORKER_FLUSH_DTN()                                                  \
+    do {                                                                       \
+        if (my_dtn_port != DTN_VLAN_INVALID) {                                 \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].total_rx_pkts, local_rx);  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].good_pkts, local_good);    \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].bad_pkts, local_bad);      \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors, local_bits);   \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].lost_pkts, local_lost);    \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo); \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup); \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes); \
+        }                                                                      \
+    } while (0)
+#else
+#define RX_WORKER_FLUSH_DTN() do { } while (0)
+#endif
+
+#define RX_WORKER_FLUSH_LOCALS()                                               \
+    do {                                                                       \
+        struct rx_stats *_rs = &rx_stats_per_port[params->port_id];            \
+        rte_atomic64_add(&_rs->total_rx_pkts, local_rx);                       \
+        rte_atomic64_add(&_rs->good_pkts, local_good);                         \
+        rte_atomic64_add(&_rs->bad_pkts, local_bad);                           \
+        rte_atomic64_add(&_rs->bit_errors, local_bits);                        \
+        rte_atomic64_add(&_rs->lost_pkts, local_lost);                         \
+        rte_atomic64_add(&_rs->out_of_order_pkts, local_ooo);                  \
+        rte_atomic64_add(&_rs->duplicate_pkts, local_dup);                     \
+        rte_atomic64_add(&_rs->short_pkts, local_short);                       \
+        rte_atomic64_add(&_rs->external_pkts, local_external);                 \
+        rte_atomic64_add(&_rs->raw_socket_rx_pkts, local_raw_rx);              \
+        rte_atomic64_add(&_rs->raw_socket_rx_bytes, local_raw_bytes);          \
+        RX_WORKER_FLUSH_DTN();                                                 \
+        local_rx = local_good = local_bad = local_bits = 0;                    \
+        local_lost = local_ooo = local_dup = local_short = local_external = 0; \
+        local_other = 0;                                                       \
+        local_prbs_bytes = 0;                                                  \
+        local_raw_rx = local_raw_bytes = 0;                                    \
+    } while (0)
+
 int rx_worker(void *arg)
 {
     struct rx_worker_params *params = (struct rx_worker_params *)arg;
@@ -1488,6 +1540,9 @@ int rx_worker(void *arg)
 
     // Snapshot of the reset generation this worker's local counters belong to.
     uint32_t my_stats_gen = txrx_stats_generation();
+    uint32_t my_flush_req = txrx_flush_request_id();
+
+    txrx_rx_worker_enter();
 
     while (!(*params->stop_flag))
     {
@@ -1502,6 +1557,17 @@ int rx_worker(void *arg)
             local_prbs_bytes = 0;
             local_raw_rx = local_raw_bytes = 0;
             my_stats_gen = cur_stats_gen;
+        }
+
+        // Someone wants the counters current. Checked here rather than beside
+        // the periodic flush so an idle queue - which never gets past the empty
+        // burst below - services the request too.
+        uint32_t cur_flush_req = txrx_flush_request_id();
+        if (unlikely(cur_flush_req != my_flush_req)) {
+            RX_WORKER_FLUSH_LOCALS();
+            next_flush_tsc = rte_rdtsc() + flush_period_tsc;
+            my_flush_req = cur_flush_req;
+            txrx_ack_flush();
         }
 
         for (int iter = 0; iter < INNER_LOOPS; iter++)
@@ -2031,76 +2097,23 @@ int rx_worker(void *arg)
 
             if (unlikely(local_rx >= FLUSH || rte_rdtsc() >= next_flush_tsc))
             {
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].total_rx_pkts, local_rx);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].good_pkts, local_good);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].bad_pkts, local_bad);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].bit_errors, local_bits);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].lost_pkts, local_lost);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].out_of_order_pkts, local_ooo);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].duplicate_pkts, local_dup);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].short_pkts, local_short);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].external_pkts, local_external);
-                // Raw socket RX counters
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].raw_socket_rx_pkts, local_raw_rx);
-                rte_atomic64_add(&rx_stats_per_port[params->port_id].raw_socket_rx_bytes, local_raw_bytes);
-
-#if STATS_MODE_DTN
-                // DTN per-port PRBS stats (queue = VLAN = DTN port)
-                if (my_dtn_port != DTN_VLAN_INVALID) {
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].total_rx_pkts, local_rx);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].good_pkts, local_good);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].bad_pkts, local_bad);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors, local_bits);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].lost_pkts, local_lost);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
-                    rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes);
-                }
-#endif
-                local_rx = local_good = local_bad = local_bits = 0;
-                local_lost = local_ooo = local_dup = local_short = local_external = 0;
-                local_other = 0;
-                local_prbs_bytes = 0;
-                local_raw_rx = local_raw_bytes = 0;
-
+                RX_WORKER_FLUSH_LOCALS();
                 next_flush_tsc = rte_rdtsc() + flush_period_tsc;
             }
         }
     }
 
     // Final flush
+    // Final flush. No longer load-bearing: the main loop requests a flush
+    // before every render, so the counters are already current by the time a
+    // worker gets here. Kept so nothing is lost if a worker exits between two
+    // requests.
     if (local_rx || local_raw_rx || local_external || local_other)
     {
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].total_rx_pkts, local_rx);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].good_pkts, local_good);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].bad_pkts, local_bad);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].bit_errors, local_bits);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].lost_pkts, local_lost);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].out_of_order_pkts, local_ooo);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].duplicate_pkts, local_dup);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].short_pkts, local_short);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].external_pkts, local_external);
-        // Raw socket RX counters
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].raw_socket_rx_pkts, local_raw_rx);
-        rte_atomic64_add(&rx_stats_per_port[params->port_id].raw_socket_rx_bytes, local_raw_bytes);
-
-#if STATS_MODE_DTN
-        if (my_dtn_port != DTN_VLAN_INVALID) {
-            rte_atomic64_add(&dtn_stats[my_dtn_port].total_rx_pkts, local_rx);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].good_pkts, local_good);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].bad_pkts, local_bad);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors, local_bits);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].lost_pkts, local_lost);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
-            rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes);
-        }
-#endif
+        RX_WORKER_FLUSH_LOCALS();
     }
+
+    txrx_rx_worker_exit();
 
     // ==========================================
     // CALCULATE LOST PACKETS (watermark-based)
@@ -2209,6 +2222,60 @@ int rx_worker(void *arg)
 // reappear right after it. Each worker compares this against its own copy once
 // per burst and drops whatever it is still holding when it changes.
 static volatile uint32_t g_rx_stats_generation = 0;
+
+// On-demand counter flush. The RX workers hold their counts thread-local and
+// hand them over on a deadline, so anything received since the last handover
+// is invisible to a reader. Rather than let that be resolved by the workers
+// exiting - which ties the completeness of the numbers to shutdown, and only
+// ever produces them once - the main loop asks for a flush and waits for it:
+// bump g_rx_flush_request, and every live worker services it at the top of its
+// next loop pass and acknowledges. g_rx_workers_live says how many
+// acknowledgements to expect.
+static volatile uint32_t g_rx_flush_request = 0;
+static volatile uint32_t g_rx_flush_acks = 0;
+static volatile uint32_t g_rx_workers_live = 0;
+
+void txrx_rx_worker_enter(void)
+{
+    __atomic_fetch_add(&g_rx_workers_live, 1, __ATOMIC_RELEASE);
+}
+
+void txrx_rx_worker_exit(void)
+{
+    __atomic_fetch_sub(&g_rx_workers_live, 1, __ATOMIC_RELEASE);
+}
+
+uint32_t txrx_flush_request_id(void)
+{
+    return __atomic_load_n(&g_rx_flush_request, __ATOMIC_ACQUIRE);
+}
+
+void txrx_ack_flush(void)
+{
+    __atomic_fetch_add(&g_rx_flush_acks, 1, __ATOMIC_RELEASE);
+}
+
+void txrx_flush_now(unsigned timeout_ms)
+{
+    uint32_t expected = __atomic_load_n(&g_rx_workers_live, __ATOMIC_ACQUIRE);
+    if (expected == 0) {
+        return;  // Nothing running - whatever there was has already been folded in.
+    }
+
+    __atomic_store_n(&g_rx_flush_acks, 0, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&g_rx_flush_request, 1, __ATOMIC_RELEASE);
+
+    const uint64_t deadline =
+        rte_rdtsc() + (rte_get_tsc_hz() / 1000) * (uint64_t)timeout_ms;
+    while (__atomic_load_n(&g_rx_flush_acks, __ATOMIC_ACQUIRE) < expected) {
+        if (rte_rdtsc() >= deadline) {
+            // A worker is wedged or exited mid-request. Reading slightly stale
+            // numbers beats stalling the stats loop.
+            break;
+        }
+        rte_pause();
+    }
+}
 
 void txrx_reset_worker_locals(void)
 {

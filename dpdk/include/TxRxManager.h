@@ -307,6 +307,19 @@ uint32_t txrx_stats_generation(void);
 // Empty the foreign-EtherType table (part of a stats reset).
 void     txrx_clear_foreign_ethertypes(void);
 
+// ---- On-demand RX counter flush ----------------------------------------
+// The RX workers keep their counts thread-local and hand them over on a
+// deadline, so a reader always trails them slightly. txrx_flush_now() asks
+// every live worker to hand over now and waits (up to timeout_ms) for them to
+// acknowledge, so the counters are current without having to stop anything.
+void     txrx_flush_now(unsigned timeout_ms);
+
+// Used by the RX workers themselves.
+uint32_t txrx_flush_request_id(void);
+void     txrx_ack_flush(void);
+void     txrx_rx_worker_enter(void);
+void     txrx_rx_worker_exit(void);
+
 /**
  * Print port statistics from DPDK
  */

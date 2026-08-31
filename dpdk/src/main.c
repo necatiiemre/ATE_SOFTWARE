@@ -714,18 +714,15 @@ int main(int argc, char const *argv[])
 
         test_time++;
 
-        // Last second of the drain. Release the RX workers and wait for them
-        // to exit BEFORE rendering: they hold their PRBS counters thread-local
-        // and fold them in on a deadline or every 131072 packets, so the tail
-        // of the drain is still inside a worker at this point. Their exit path
-        // flushes it, and doing that here means the final table - the one the
-        // summary log keeps - is rendered from complete counters, over a normal
-        // one-second interval so its Mbps column stays meaningful.
         const bool final_second = (draining && test_time >= drain_until);
-        if (final_second) {
-            force_quit_rx = true;
-            txrx_wait_rx_workers();
-        }
+
+        // Ask the RX workers to hand over what they are holding before the
+        // table is rendered, and wait for them to do it. Their counters are
+        // thread-local and go out on a deadline, so without this every table -
+        // including the last one - trails them by up to a flush period. Asking
+        // makes the numbers current at the moment they are read, and keeps that
+        // independent of when the workers happen to stop.
+        txrx_flush_now(50);
 
         // Full table + queue distributions (includes DPDK External TX stats)
         helper_print_stats(&ports_config, prev_tx_bytes, prev_rx_bytes,
@@ -764,9 +761,14 @@ int main(int argc, char const *argv[])
         }
 
         // Drain window is over and the table just rendered holds the settled
-        // counters, so it is the one the summary log should keep.
-        if (final_second)
+        // counters, so it is the one the summary log should keep. Stop the RX
+        // workers on the way out - by now their counters are already folded in,
+        // so their exit flush has nothing left to contribute.
+        if (final_second) {
+            force_quit_rx = true;
+            txrx_wait_rx_workers();
             break;
+        }
     }
 
     // The RX workers exited and flushed inside the loop's final iteration, so
