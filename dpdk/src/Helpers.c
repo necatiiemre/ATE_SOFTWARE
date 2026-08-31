@@ -17,6 +17,12 @@
 #include "DpdkExternalTx.h" // for External TX stats
 #include "RawSocketPort.h"  // for reset_raw_socket_stats
 #include "ShutdownSnapshot.h" // capture last-second DTN table for Ctrl+C dump
+#if PTP_ENABLED
+#include "PtpSlave.h"       // ptp_get_stats for the end-of-test totals
+#endif
+#if HEALTH_MONITOR_ENABLED
+#include "HealthMonitor.h"  // get_health_monitor_stats for the totals
+#endif
 
 // Daemon mode flag - when true, ANSI escape codes are disabled
 bool g_daemon_mode = false;
@@ -454,6 +460,181 @@ static void helper_print_server_stats(const struct ports_config *ports_config,
     }
 
     printf("\n  Press Ctrl+C to stop\n");
+}
+
+
+// ==========================================
+// END-OF-TEST TOTALS (printed once)
+// ==========================================
+// Rendered a single time after the RX drain window closes. Three blocks:
+//   1. PRBS totals   - the numbers the DTN table shows, aggregated.
+//   2. Purity check  - proof that no PTP / Health Monitor / other foreign
+//                      traffic reached the PRBS counters. All zeros = the
+//                      totals above are pure PRBS.
+//   3. PTP / Health Monitor totals, which are deliberately NOT part of the
+//      PRBS numbers and are reported separately here.
+// The text is also stored in the shutdown snapshot so it lands in the summary
+// log, so every printf below goes through `out`.
+#define printf(...) fprintf(out, __VA_ARGS__)
+static void helper_render_final_totals(FILE *out,
+                                       const struct ports_config *ports_config,
+                                       unsigned test_time)
+{
+    printf("\n");
+    printf("╔══════════════════════════════════════════════════════════════════════════════╗\n");
+    printf("║                    END OF TEST - TOTALS (%6u sec)                         ║\n", test_time);
+    printf("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+
+#if STATS_MODE_DTN
+    // ---------- 1. PRBS totals ----------
+    struct rte_eth_stats hw[MAX_PORTS];
+    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
+        uint16_t port_id = ports_config->ports[i].port_id;
+        if (rte_eth_stats_get(port_id, &hw[port_id]) != 0) {
+            memset(&hw[port_id], 0, sizeof(hw[port_id]));
+        }
+    }
+
+    uint64_t tot_tx_pkts = 0, tot_tx_bytes = 0;
+    uint64_t tot_rx_pkts = 0, tot_rx_bytes = 0;
+    uint64_t tot_good = 0, tot_bad = 0, tot_lost = 0, tot_bit_err = 0;
+    uint64_t tot_short = 0, tot_other = 0;
+
+    struct raw_socket_port *p12 = &raw_ports[0];
+    struct raw_socket_port *p13 = &raw_ports[1];
+
+    for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
+        const struct dtn_port_map_entry *e = &dtn_port_map[dtn];
+        tot_tx_pkts  += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
+        tot_tx_bytes += hw[e->tx_server_port].q_ibytes[e->tx_server_queue];
+        tot_rx_pkts  += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
+        tot_rx_bytes += hw[e->rx_server_port].q_obytes[e->rx_server_queue];
+    }
+    // Port 12/13 rows: same sources the per-second table uses.
+    struct raw_socket_port *raws[2] = { p12, p13 };
+    for (int r = 0; r < 2; r++) {
+        struct raw_socket_port *rp = raws[r];
+        pthread_spin_lock(&rp->dpdk_ext_rx_stats.lock);
+        tot_tx_pkts  += rp->dpdk_ext_rx_stats.rx_packets;
+        tot_tx_bytes += rp->dpdk_ext_rx_stats.rx_bytes;
+        pthread_spin_unlock(&rp->dpdk_ext_rx_stats.lock);
+        for (uint16_t t = 0; t < rp->tx_target_count; t++) {
+            pthread_spin_lock(&rp->tx_targets[t].stats.lock);
+            tot_rx_pkts  += rp->tx_targets[t].stats.tx_packets;
+            tot_rx_bytes += rp->tx_targets[t].stats.tx_bytes;
+            pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
+        }
+    }
+
+    for (uint16_t dtn = 0; dtn < DTN_PORT_COUNT; dtn++) {
+        tot_good    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts);
+        tot_bad     += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        tot_lost    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].lost_pkts);
+        tot_bit_err += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bit_errors);
+        tot_short   += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].short_pkts);
+        tot_other   += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].other_pkts);
+    }
+
+    double ber = 0.0;
+    uint64_t total_bits = tot_tx_bytes * 8;
+    if (total_bits > 0) ber = (double)tot_bit_err / (double)total_bits;
+
+    printf("\n--- PRBS Totals (all 34 DTN ports) ---\n");
+    printf("  DTN TX  (DTN->Server) : %20lu pkts  %20lu bytes\n", tot_tx_pkts, tot_tx_bytes);
+    printf("  DTN RX  (Server->DTN) : %20lu pkts  %20lu bytes\n", tot_rx_pkts, tot_rx_bytes);
+    printf("  PRBS Good             : %20lu\n", tot_good);
+    printf("  PRBS Bad              : %20lu\n", tot_bad);
+    printf("  Lost                  : %20lu\n", tot_lost);
+    printf("  Bit Errors            : %20lu\n", tot_bit_err);
+    printf("  BER                   : %20.2e\n", ber);
+
+    // ---------- 2. Purity check ----------
+    uint64_t hm12 = 0, fo12 = 0, hm13 = 0, fo13 = 0;
+    raw_socket_get_excluded_counts(0, &hm12, &fo12);
+    raw_socket_get_excluded_counts(1, &hm13, &fo13);
+
+    bool pure = (tot_other == 0 && fo12 == 0 && fo13 == 0);
+
+    printf("\n--- Purity Check (non-PRBS traffic kept OUT of the numbers above) ---\n");
+    printf("  Foreign frames on PRBS queues (DPDK 0-31) : %lu\n", tot_other);
+    printf("  Health Monitor frames excluded  (Port 13) : %lu\n", hm13);
+    printf("  Health Monitor frames excluded  (Port 12) : %lu\n", hm12);
+    printf("  Other foreign frames excluded   (Port 12) : %lu\n", fo12);
+    printf("  Other foreign frames excluded   (Port 13) : %lu\n", fo13);
+    printf("  Undersized frames dropped                 : %lu\n", tot_short);
+    printf("  => PRBS totals are %s\n",
+           pure ? "PURE (no foreign frame reached a PRBS counter)"
+                : "SUSPECT - foreign frames reached a PRBS queue, see above");
+    if (!pure) {
+        printf("     Check the log for \"should be Q5\" (PTP rte_flow rule failed)\n");
+    }
+#else
+    (void)ports_config;
+#endif /* STATS_MODE_DTN */
+
+    // ---------- 3. PTP totals (not part of the PRBS numbers) ----------
+#if PTP_ENABLED
+    {
+        ptp_session_stats_t ps[PTP_MAX_SESSIONS];
+        uint8_t ps_count = 0;
+        memset(ps, 0, sizeof(ps));
+        ptp_get_stats(ps, &ps_count);
+
+        uint64_t sync_rx = 0, dreq_tx = 0, dresp_rx = 0;
+        for (uint8_t i = 0; i < ps_count; i++) {
+            sync_rx  += ps[i].sync_rx_count;
+            dreq_tx  += ps[i].delay_req_tx_count;
+            dresp_rx += ps[i].delay_resp_rx_count;
+        }
+
+        printf("\n--- PTP Totals (separate from PRBS) ---\n");
+        printf("  Sessions              : %20u\n", (unsigned)ps_count);
+        printf("  Sync received         : %20lu\n", sync_rx);
+        printf("  Delay_Req sent        : %20lu\n", dreq_tx);
+        printf("  Delay_Resp received   : %20lu\n", dresp_rx);
+        printf("  PTP packets total     : %20lu\n", sync_rx + dreq_tx + dresp_rx);
+    }
+#endif
+
+    // ---------- 4. Health Monitor totals (not part of the PRBS numbers) ----------
+#if HEALTH_MONITOR_ENABLED
+    {
+        struct health_monitor_stats hs;
+        memset(&hs, 0, sizeof(hs));
+        get_health_monitor_stats(&hs);
+
+        printf("\n--- Health Monitor Totals (separate from PRBS) ---\n");
+        printf("  Queries sent          : %20lu\n", hs.queries_sent);
+        printf("  Responses received    : %20lu\n", hs.responses_received);
+        printf("  Incomplete cycles     : %20lu\n", hs.timeouts);
+        printf("  HM packets total      : %20lu\n",
+               hs.queries_sent + hs.responses_received);
+    }
+#endif
+
+    printf("\n");
+}
+#undef printf
+
+void helper_print_final_totals(const struct ports_config *ports_config,
+                               unsigned test_time)
+{
+    char *buf = NULL;
+    size_t buf_size = 0;
+    FILE *ms = open_memstream(&buf, &buf_size);
+    if (ms == NULL) {
+        helper_render_final_totals(stdout, ports_config, test_time);
+        return;
+    }
+
+    helper_render_final_totals(ms, ports_config, test_time);
+    fclose(ms);
+
+    if (buf != NULL) {
+        fputs(buf, stdout);
+        shutdown_snapshot_store(SNAP_SLOT_TOTALS, buf);
+        free(buf);
+    }
 }
 
 // ==========================================

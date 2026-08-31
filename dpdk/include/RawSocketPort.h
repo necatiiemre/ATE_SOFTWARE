@@ -270,6 +270,13 @@ void stop_multi_queue_rx_workers(struct raw_socket_port *port);
 // stop_flag stops the TX workers, rx_stop_flag stops the RX workers - kept
 // apart so RX can drain in-flight packets after TX is cut at shutdown.
 int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_flag);
+
+// Frames the RX workers saw on this raw port's interface and deliberately did
+// not count as test traffic: health monitor responses (which share Port 13's
+// interface) and anything else foreign. Used by the end-of-test totals table
+// to show that the PRBS counters were not polluted.
+void raw_socket_get_excluded_counts(int raw_index, uint64_t *hm_frames,
+                                    uint64_t *foreign_frames);
 void *raw_tx_worker(void *arg);
 void *raw_rx_worker(void *arg);
 void stop_raw_socket_workers(void);

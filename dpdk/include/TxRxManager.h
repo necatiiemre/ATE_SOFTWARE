@@ -85,6 +85,12 @@ struct dtn_port_stats {
     rte_atomic64_t duplicate_pkts;
     rte_atomic64_t short_pkts;
     rte_atomic64_t total_rx_pkts;     // Server RX = DTN TX packet count
+    // Frames that arrived on a PRBS queue but are not PRBS traffic (PTP that
+    // escaped its rte_flow rule, ARP/LLDP/BPDU, anything foreign). The DTN
+    // table's TX/RX packet+byte columns come from raw HW queue counters, so
+    // they can only be trusted as pure PRBS while this stays at 0. The
+    // end-of-test totals table prints it for exactly that reason.
+    rte_atomic64_t other_pkts;
 };
 
 extern struct dtn_port_stats dtn_stats[DTN_PORT_COUNT];

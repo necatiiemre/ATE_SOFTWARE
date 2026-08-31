@@ -34,3 +34,11 @@ void helper_reset_stats(const struct ports_config *ports_config,
 void helper_print_stats(const struct ports_config *ports_config,
                         const uint64_t prev_tx_bytes[], const uint64_t prev_rx_bytes[],
                         unsigned test_time);
+
+// Call ONCE at the end of the run, after the RX drain window has closed and
+// before the snapshot is frozen. Prints the aggregate PRBS totals, a purity
+// check proving no PTP / Health Monitor / other foreign traffic reached those
+// counters, and the PTP and Health Monitor totals separately. Also stored in
+// the shutdown snapshot so it appears in the summary log.
+void helper_print_final_totals(const struct ports_config *ports_config,
+                               unsigned test_time);

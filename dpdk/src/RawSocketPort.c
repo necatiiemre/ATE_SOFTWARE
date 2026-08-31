@@ -4,6 +4,7 @@
 #include "DpdkExternalTx.h"
 #include "Socket.h"  // for get_unused_cores()
 #include "EmbeddedLatency/EmbeddedLatency.h"  // for ate_mode_enabled()
+#include "HealthMonitor.h"  // for HEALTH_MONITOR_RESPONSE_VL_IDX
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,14 @@
 struct raw_socket_port raw_ports[MAX_RAW_SOCKET_PORTS];
 struct raw_socket_port_config raw_port_configs[MAX_RAW_SOCKET_PORTS] = RAW_SOCKET_PORTS_CONFIG_INIT;
 int active_raw_port_count = NORMAL_RAW_SOCKET_PORT_COUNT;
+
+// Frames seen on the raw socket RX rings that are deliberately NOT counted as
+// test traffic. The AF_PACKET rings see every frame on the interface, and the
+// health monitor shares Port 13's interface (HEALTH_MONITOR_INTERFACE ==
+// RAW_SOCKET_PORT_13_IFACE), so these are what keeps the DTN 32/33 counters
+// pure PRBS. Printed by the end-of-test totals table.
+static uint64_t g_raw_hm_frames[MAX_RAW_SOCKET_PORTS] = {0};
+static uint64_t g_raw_foreign_frames[MAX_RAW_SOCKET_PORTS] = {0};
 
 // Stops the raw socket TX workers.
 static volatile bool *g_stop_flag = NULL;
@@ -1488,6 +1497,18 @@ void *raw_rx_worker(void *arg)
         // Extract VL-ID from DST MAC
         uint16_t vl_id = ((uint16_t)pkt_data[4] << 8) | pkt_data[5];
 
+        // Health monitor shares this interface (Port 13) and its responses are
+        // UDP/IPv4, so they pass the EtherType check above. They are excluded
+        // here explicitly rather than relying on the external-TX VL-ID range
+        // check below happening to reject 4488 - widen those ranges one day
+        // and HM would silently land in the PRBS counters.
+        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX) {
+            g_raw_hm_frames[port->raw_index]++;
+            hdr->tp_status = TP_STATUS_KERNEL;
+            port->rx_ring_offset = (port->rx_ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;
+            continue;
+        }
+
         // ==========================================
         // DPDK EXTERNAL TX PACKET HANDLING
         // Switch strips VLAN header, so packets arrive as IPv4 (0x0800)
@@ -1654,7 +1675,10 @@ void *raw_rx_worker(void *arg)
         }
 
         if (source_idx < 0) {
-            // Not from a known source, skip
+            // Neither external-TX nor a configured raw source: foreign traffic
+            // on this interface. Counted so the totals table can prove the
+            // PRBS counters were not polluted.
+            g_raw_foreign_frames[port->raw_index]++;
             hdr->tp_status = TP_STATUS_KERNEL;
             port->rx_ring_offset = (port->rx_ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;
             continue;
@@ -1926,6 +1950,18 @@ void *multi_queue_rx_worker(void *arg)
         // Extract VL-ID from DST MAC
         uint16_t vl_id = ((uint16_t)pkt_data[4] << 8) | pkt_data[5];
 
+        // Health monitor shares this interface (Port 13) and its responses are
+        // UDP/IPv4, so they pass the EtherType check above. They are excluded
+        // here explicitly rather than relying on the external-TX VL-ID range
+        // check below happening to reject 4488 - widen those ranges one day
+        // and HM would silently land in the PRBS counters.
+        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX) {
+            g_raw_hm_frames[port->raw_index]++;
+            hdr->tp_status = TP_STATUS_KERNEL;
+            queue->ring_offset = (queue->ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;
+            continue;
+        }
+
 #if DPDK_EXT_TX_ENABLED
         int dpdk_src_port = dpdk_ext_tx_get_source_port(vl_id);
         if (dpdk_src_port >= 0) {
@@ -2072,6 +2108,11 @@ void *multi_queue_rx_worker(void *arg)
                 source_idx = s;
                 break;
             }
+        }
+
+        if (source_idx < 0) {
+            // Neither external-TX nor a configured raw source: foreign traffic.
+            g_raw_foreign_frames[port->raw_index]++;
         }
 
         if (source_idx >= 0) {
@@ -2247,6 +2288,18 @@ void stop_multi_queue_rx_workers(struct raw_socket_port *port)
 // ==========================================
 // WORKER MANAGEMENT
 // ==========================================
+
+void raw_socket_get_excluded_counts(int raw_index, uint64_t *hm_frames,
+                                    uint64_t *foreign_frames)
+{
+    if (raw_index < 0 || raw_index >= MAX_RAW_SOCKET_PORTS) {
+        if (hm_frames) *hm_frames = 0;
+        if (foreign_frames) *foreign_frames = 0;
+        return;
+    }
+    if (hm_frames) *hm_frames = g_raw_hm_frames[raw_index];
+    if (foreign_frames) *foreign_frames = g_raw_foreign_frames[raw_index];
+}
 
 int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_flag)
 {

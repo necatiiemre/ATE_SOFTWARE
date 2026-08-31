@@ -15,6 +15,10 @@
 //   - SNAP_SLOT_PTP    : the PTP session statistics table (main loop thread)
 //   - SNAP_SLOT_HEALTH : Health Monitor + PSU telemetry   (health monitor thread)
 //
+// A fourth slot, SNAP_SLOT_TOTALS, is written once at the end of the run
+// instead of every second: the end-of-test totals table (aggregate PRBS
+// counters, the non-PRBS purity check, and the PTP / Health Monitor totals).
+//
 // On shutdown, shutdown_snapshot_dump() writes both slots (in order) to one
 // file. Because the slots are only ever refreshed during normal per-second
 // printing, dumping them right after the main loop exits captures the state as
@@ -27,6 +31,7 @@ enum snapshot_slot {
     SNAP_SLOT_DTN = 0,     // DTN statistics table
     SNAP_SLOT_PTP = 1,     // PTP session statistics table
     SNAP_SLOT_HEALTH = 2,  // Health Monitor tables + PSU telemetry table
+    SNAP_SLOT_TOTALS = 3,  // End-of-test totals (PRBS totals, purity, PTP, HM)
     SNAP_SLOT_COUNT
 };
 

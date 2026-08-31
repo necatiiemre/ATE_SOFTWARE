@@ -461,6 +461,7 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].duplicate_pkts);
         rte_atomic64_init(&dtn_stats[i].short_pkts);
         rte_atomic64_init(&dtn_stats[i].total_rx_pkts);
+        rte_atomic64_init(&dtn_stats[i].other_pkts);
     }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
@@ -1429,6 +1430,7 @@ int rx_worker(void *arg)
     uint64_t local_rx = 0, local_good = 0, local_bad = 0, local_bits = 0;
     uint64_t local_lost = 0, local_ooo = 0, local_dup = 0, local_short = 0;
     uint64_t local_external = 0;  // External packets (VL-ID outside expected range)
+    uint64_t local_other = 0;     // Foreign (non-PRBS) frames seen on this queue
     uint64_t local_raw_rx = 0, local_raw_bytes = 0;  // Raw socket packet counters
     const uint32_t FLUSH = 131072;
 
@@ -1489,8 +1491,13 @@ int rx_worker(void *arg)
 
                 // DEBUG: Check if PTP packets (0x88F7) are arriving on wrong queue
                 // PTP should go to Queue 5 via rte_flow, not here (Queue 0-3)
+                // Classify anything that is not PRBS traffic. PRBS arrives
+                // either VLAN-tagged with an IPv4 payload (DPDK ports) or
+                // untagged IPv4 (raw socket ports); everything else reaching
+                // these queues is foreign and must not be read as test traffic.
                 if (ether_type == 0x88F7) {
                     // Untagged PTP packet on normal queue!
+                    local_other++;
                     static uint64_t ptp_wrong_queue_count = 0;
                     if (ptp_wrong_queue_count++ < 10) {
                         printf("⚠ PTP PACKET on Port %u Q%u (should be Q5)! EtherType=0x%04X UNTAGGED\n",
@@ -1500,13 +1507,20 @@ int rx_worker(void *arg)
                     // VLAN-tagged - check inner EtherType
                     uint16_t inner_type = ((uint16_t)pkt[16] << 8) | pkt[17];
                     if (inner_type == 0x88F7) {
+                        local_other++;
                         static uint64_t ptp_vlan_wrong_queue_count = 0;
                         if (ptp_vlan_wrong_queue_count++ < 10) {
                             uint16_t vlan_id = (((uint16_t)pkt[14] << 8) | pkt[15]) & 0x0FFF;
                             printf("⚠ PTP PACKET on Port %u Q%u (should be Q5)! VLAN=%u EtherType=0x%04X\n",
                                    params->port_id, params->queue_id, vlan_id, inner_type);
                         }
+                    } else if (inner_type != 0x0800) {
+                        // Tagged but not IPv4 - ARP, LLDP, BPDU, ...
+                        local_other++;
                     }
+                } else if (ether_type != 0x0800) {
+                    // Untagged and not IPv4 - foreign frame on a PRBS queue.
+                    local_other++;
                 }
 
                 if (ether_type == 0x0800)
@@ -1981,17 +1995,19 @@ int rx_worker(void *arg)
                     rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo);
                     rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
                     rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
+                    rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
                 }
 #endif
                 local_rx = local_good = local_bad = local_bits = 0;
                 local_lost = local_ooo = local_dup = local_short = local_external = 0;
+                local_other = 0;
                 local_raw_rx = local_raw_bytes = 0;
             }
         }
     }
 
     // Final flush
-    if (local_rx || local_raw_rx || local_external)
+    if (local_rx || local_raw_rx || local_external || local_other)
     {
         rte_atomic64_add(&rx_stats_per_port[params->port_id].total_rx_pkts, local_rx);
         rte_atomic64_add(&rx_stats_per_port[params->port_id].good_pkts, local_good);
@@ -2016,6 +2032,7 @@ int rx_worker(void *arg)
             rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo);
             rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
             rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
+            rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
         }
 #endif
     }

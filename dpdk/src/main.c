@@ -732,6 +732,12 @@ int main(int argc, char const *argv[])
             break;
     }
 
+    // Everything has settled: render the one-shot totals table. Must happen
+    // before the freeze, since the freeze turns snapshot_store into a no-op
+    // and this block belongs in the summary log.
+    helper_print_final_totals(&ports_config, test_time);
+    fflush(stdout);
+
     // Freeze the snapshot on that final table, then let the RX workers go.
     // Order matters: releasing RX first could let a late packet land between
     // the last render and the freeze, and the summary would disagree with the
