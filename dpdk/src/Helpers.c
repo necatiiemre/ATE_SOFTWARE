@@ -568,6 +568,12 @@ static void helper_render_final_totals(FILE *out,
     // Everything the NIC delivered to the PRBS queues, PRBS or not. Compared
     // against the PRBS figure below so the gap is visible rather than implied.
     uint64_t tot_hw_q_pkts = 0;
+    // The sent side is two independent pipelines that happen to cross, and an
+    // aggregate difference cannot say which of them is short. Kept apart:
+    //   loop leg  - DPDK queues 0-3 and the raw ports' own TX, both of which
+    //               come back and are validated on the DPDK queues
+    //   ext leg   - the external-TX queue, which comes back at Ports 12/13
+    uint64_t sent_loop = 0, sent_ext = 0;
     // Validated packets from the DPDK rows alone. The HW queue counter above
     // covers those rows only, so comparing it against the grand total - which
     // also carries the raw ports - was comparing different sets and produced
@@ -592,6 +598,7 @@ static void helper_render_final_totals(FILE *out,
         // nothing but PRBS (external TX uses queue 4, PTP queue 5).
         tot_rx_pkts  += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
         tot_rx_bytes += hw[e->rx_server_port].q_obytes[e->rx_server_queue];
+        sent_loop    += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
     }
     // Port 12/13 rows: same sources the per-second table uses. Their PRBS
     // quality counters live in dpdk_ext_rx_stats and the global sequence
@@ -614,6 +621,7 @@ static void helper_render_final_totals(FILE *out,
             pthread_spin_lock(&rp->tx_targets[t].stats.lock);
             tot_rx_pkts  += rp->tx_targets[t].stats.tx_packets;
             tot_rx_bytes += rp->tx_targets[t].stats.tx_bytes;
+            sent_loop    += rp->tx_targets[t].stats.tx_packets;
             pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
         }
     }
@@ -636,6 +644,7 @@ static void helper_render_final_totals(FILE *out,
             if (p >= MAX_PORTS) continue;
             tot_rx_pkts  += hw[p].q_opackets[DPDK_EXT_TX_QUEUE_ID];
             tot_rx_bytes += hw[p].q_obytes[DPDK_EXT_TX_QUEUE_ID];
+            sent_ext     += hw[p].q_opackets[DPDK_EXT_TX_QUEUE_ID];
         }
     }
 #endif
@@ -699,7 +708,12 @@ static void helper_render_final_totals(FILE *out,
     if (hw_over) {
         printf("    OVER-COUNTED                            : %lu\n", hw_over);
     } else {
-        printf("    unaccounted                             : %lu\n", hw_unaccounted);
+        // Not a mystery: rx_worker gives up on a frame whose VL-ID belongs to
+        // no PRBS stream it can check against - "if raw_port not found, just
+        // count as external (no PRBS check)" - and such a frame lands in none
+        // of the categories above.
+        printf("    unrecognised VL-ID, nothing to check     : %lu\n",
+               hw_unaccounted);
     }
     // Name the foreign traffic rather than just counting it: "319 foreign
     // frames" does not say whether PTP escaped its queue or the switch is
@@ -739,6 +753,22 @@ static void helper_render_final_totals(FILE *out,
         (tot_rx_pkts > tot_tx_pkts) ? (tot_rx_pkts - tot_tx_pkts) : 0;
     const uint64_t extra_returned =
         (tot_tx_pkts > tot_rx_pkts) ? (tot_tx_pkts - tot_rx_pkts) : 0;
+
+    // Per leg, because the aggregate cannot say which pipeline is short.
+    const uint64_t loop_diff = (sent_loop > tot_dpdk_validated)
+                                   ? (sent_loop - tot_dpdk_validated) : 0;
+    const uint64_t ext_diff  = (sent_ext > tot_raw_validated)
+                                   ? (sent_ext - tot_raw_validated) : 0;
+
+    printf("\n--- Sent vs came back, by path ---\n");
+    printf("  Loopback leg (DPDK queues 0-3 + Ports 12/13 TX)\n");
+    printf("    sent                                    : %lu\n", sent_loop);
+    printf("    returned and validated on DPDK queues   : %lu\n", tot_dpdk_validated);
+    printf("    difference                              : %lu\n", loop_diff);
+    printf("  External TX leg (queue 4 -> Ports 12/13)\n");
+    printf("    sent                                    : %lu\n", sent_ext);
+    printf("    returned and validated at Ports 12/13   : %lu\n", tot_raw_validated);
+    printf("    difference                              : %lu\n", ext_diff);
 
     printf("\n--- Sent vs came back ---\n");
     printf("  Sent      (Server->DTN)                   : %lu\n", tot_rx_pkts);
