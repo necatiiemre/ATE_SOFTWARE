@@ -1440,6 +1440,13 @@ int rx_worker(void *arg)
     uint64_t local_prbs_bytes = 0;
     uint64_t local_raw_rx = 0, local_raw_bytes = 0;  // Raw socket packet counters
     const uint32_t FLUSH = 131072;
+    // The per-second table reads these counters straight out of dtn_stats, so
+    // a purely packet-count-based flush made the DTN TX columns move in jumps
+    // of 131072 packets - every second in between showed a zero delta and the
+    // Mbps column read 0.00. Flush on a deadline as well so the table always
+    // has numbers from within the last quarter second, whatever the rate.
+    const uint64_t flush_period_tsc = rte_get_tsc_hz() / 4;
+    uint64_t next_flush_tsc = rte_rdtsc() + flush_period_tsc;
 
 #if STATS_MODE_DTN
     // In DTN mode: queue_id -> VLAN -> DTN port (1:1 mapping, flow steering active)
@@ -2002,7 +2009,7 @@ int rx_worker(void *arg)
                 rte_pktmbuf_free(pkts[i]);
             }
 
-            if (unlikely(local_rx >= FLUSH))
+            if (unlikely(local_rx >= FLUSH || rte_rdtsc() >= next_flush_tsc))
             {
                 rte_atomic64_add(&rx_stats_per_port[params->port_id].total_rx_pkts, local_rx);
                 rte_atomic64_add(&rx_stats_per_port[params->port_id].good_pkts, local_good);
@@ -2037,6 +2044,8 @@ int rx_worker(void *arg)
                 local_other = 0;
                 local_prbs_bytes = 0;
                 local_raw_rx = local_raw_bytes = 0;
+
+                next_flush_tsc = rte_rdtsc() + flush_period_tsc;
             }
         }
     }
