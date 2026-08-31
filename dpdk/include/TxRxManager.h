@@ -288,6 +288,20 @@ void txrx_note_foreign_ethertype(uint16_t ethertype);
 // `types`/`counts` with up to `max` entries and returns how many were written.
 int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max);
 
+// Discard whatever the RX workers are still holding in their thread-local
+// counters, and clear the foreign-EtherType table. Called by
+// helper_reset_stats(): zeroing dtn_stats alone is not a reset, because each
+// worker only folds its locals in every 131072 packets and would otherwise
+// carry pre-reset counts across the boundary.
+void     txrx_reset_worker_locals(void);
+
+// Current reset generation. Workers compare it against their own copy once per
+// burst and drop their locals when it changes.
+uint32_t txrx_stats_generation(void);
+
+// Empty the foreign-EtherType table (part of a stats reset).
+void     txrx_clear_foreign_ethertypes(void);
+
 /**
  * Print port statistics from DPDK
  */

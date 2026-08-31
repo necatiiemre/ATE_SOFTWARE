@@ -461,6 +461,23 @@ int main(int argc, char const *argv[])
     printf("\n=== Latency test complete, starting normal TX/RX workers ===\n\n");
 #endif
 
+#if PTP_ENABLED
+    // Steer PTP to queue 5 BEFORE the RX workers start polling queues 0-3.
+    // The rule used to be installed inside ptp_start(), which runs several
+    // seconds later - after the raw socket workers, the health monitor and
+    // external TX are all up. Every PTP frame arriving in that window had no
+    // rule to match, fell back to RSS, landed on a PRBS queue and was counted
+    // as test traffic. The rule itself needs nothing from the PTP context,
+    // only a port id, so it can be installed this early; ptp_start() sees the
+    // handles already in place and leaves them alone.
+    if (!ate_mode_enabled()) {
+        printf("\n=== Installing PTP flow rules (before RX workers start) ===\n");
+        for (uint16_t i = 0; i < (uint16_t)nb_ports; i++) {
+            ptp_flow_rule_install(ports_config.ports[i].port_id);
+        }
+    }
+#endif
+
     int start_ret = start_txrx_workers(&ports_config, &force_quit, &force_quit_rx);
     if (start_ret < 0)
     {

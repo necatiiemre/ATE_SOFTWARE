@@ -238,6 +238,16 @@ int ptp_flow_rules_install_all(void)
             continue;
         }
 
+        // Already installed - main() puts the rules in place before the RX
+        // workers start so PTP never reaches a PRBS queue. Reinstalling here
+        // would briefly remove the rule and reopen that hole, so skip it.
+        if (ptp_flow_handles[port->port_id] != NULL) {
+            printf("PTP: Port %u already has a flow rule, keeping it\n",
+                   port->port_id);
+            success++;
+            continue;
+        }
+
         if (ptp_flow_rule_install(port->port_id) == 0) {
             success++;
         } else {

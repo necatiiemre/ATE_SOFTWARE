@@ -60,6 +60,12 @@ void helper_reset_stats(const struct ports_config *ports_config,
 
     // Reset raw socket and global sequence tracking
     reset_raw_socket_stats();
+
+    // Zeroing the atomics above is only half a reset: the RX workers keep
+    // their PRBS counters thread-local and fold them in every 131072 packets,
+    // so anything they counted before this point would reappear right after
+    // it. Tell them to drop what they are holding.
+    txrx_reset_worker_locals();
 }
 
 #if STATS_MODE_DTN

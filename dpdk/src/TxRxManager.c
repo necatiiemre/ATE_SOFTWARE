@@ -1451,8 +1451,23 @@ int rx_worker(void *arg)
 
     const uint16_t INNER_LOOPS = 8;
 
+    // Snapshot of the reset generation this worker's local counters belong to.
+    uint32_t my_stats_gen = txrx_stats_generation();
+
     while (!(*params->stop_flag))
     {
+        // A reset happened: everything still held locally was counted before
+        // it and must not be folded into the new window. One relaxed load per
+        // burst - the variable is read-mostly and stays in cache.
+        uint32_t cur_stats_gen = txrx_stats_generation();
+        if (unlikely(cur_stats_gen != my_stats_gen)) {
+            local_rx = local_good = local_bad = local_bits = 0;
+            local_lost = local_ooo = local_dup = local_short = local_external = 0;
+            local_other = 0;
+            local_raw_rx = local_raw_bytes = 0;
+            my_stats_gen = cur_stats_gen;
+        }
+
         for (int iter = 0; iter < INNER_LOOPS; iter++)
         {
             uint16_t nb_rx = rte_eth_rx_burst(params->port_id, params->queue_id,
@@ -2139,6 +2154,24 @@ int rx_worker(void *arg)
 // per second at most, so the atomics here never sit in the hot path. Read once
 // by the end-of-test totals table: without it "328 foreign frames" says
 // something is wrong but not what.
+// Bumped by helper_reset_stats(). The RX workers keep their counters in
+// thread-local variables and only fold them into dtn_stats every 131072
+// packets, so zeroing dtn_stats alone let everything counted before the reset
+// reappear right after it. Each worker compares this against its own copy once
+// per burst and drops whatever it is still holding when it changes.
+static volatile uint32_t g_rx_stats_generation = 0;
+
+void txrx_reset_worker_locals(void)
+{
+    __atomic_fetch_add(&g_rx_stats_generation, 1, __ATOMIC_RELEASE);
+    txrx_clear_foreign_ethertypes();
+}
+
+uint32_t txrx_stats_generation(void)
+{
+    return __atomic_load_n(&g_rx_stats_generation, __ATOMIC_ACQUIRE);
+}
+
 #define FOREIGN_ETHERTYPE_SLOTS 8
 static uint16_t g_foreign_et_type[FOREIGN_ETHERTYPE_SLOTS];
 static uint64_t g_foreign_et_count[FOREIGN_ETHERTYPE_SLOTS];
@@ -2165,6 +2198,13 @@ void txrx_note_foreign_ethertype(uint16_t ethertype)
     }
     // Table full: further distinct types are not tracked. The aggregate
     // other_pkts counter still reflects them.
+    pthread_mutex_unlock(&g_foreign_et_lock);
+}
+
+void txrx_clear_foreign_ethertypes(void)
+{
+    pthread_mutex_lock(&g_foreign_et_lock);
+    g_foreign_et_used = 0;
     pthread_mutex_unlock(&g_foreign_et_lock);
 }
 
