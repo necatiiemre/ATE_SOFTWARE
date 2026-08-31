@@ -553,7 +553,7 @@ int dpdk_ext_tx_start_workers(struct ports_config *ports_config, volatile bool *
         // Worker uses queue 4 (extra dedicated queue for external TX)
         struct dpdk_ext_tx_worker_params *params = &ext_worker_params[worker_idx];
         params->port_id = port_id;
-        params->queue_id = 4;  // Use queue 4 for external TX (queue 0-3 for normal TX)
+        params->queue_id = DPDK_EXT_TX_QUEUE_ID;  // queues 0-3 are the PRBS loopback streams
         params->lcore_id = ext_lcore;
         params->mbuf_pool = ext_port->mbuf_pool;
         params->stop_flag = stop_flag;

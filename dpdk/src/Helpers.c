@@ -581,6 +581,26 @@ static void helper_render_final_totals(FILE *out,
     tot_lost += get_global_sequence_lost();
     tot_lost += get_global_sequence_lost_p13();
 
+#if DPDK_EXT_TX_ENABLED
+    // External TX closes the books. The DTN 32/33 rows count what came back
+    // to Ports 12/13 on the TX side, but those packets left the server from
+    // the DPDK ports' external-TX queue, which none of the sums above touch:
+    // the DPDK rows only read queues 0-3. Left out, the server appears to have
+    // received more than it ever sent. Queue 4 carries external TX alone, so
+    // its HW counter measures exactly the missing leg - and being a HW
+    // counter, rte_eth_stats_reset() clears it with everything else.
+    {
+        static const struct dpdk_ext_tx_port_config ext_cfgs[] =
+            DPDK_EXT_TX_PORTS_CONFIG_INIT;
+        for (size_t i = 0; i < sizeof(ext_cfgs) / sizeof(ext_cfgs[0]); i++) {
+            uint16_t p = ext_cfgs[i].port_id;
+            if (p >= MAX_PORTS) continue;
+            tot_rx_pkts  += hw[p].q_opackets[DPDK_EXT_TX_QUEUE_ID];
+            tot_rx_bytes += hw[p].q_obytes[DPDK_EXT_TX_QUEUE_ID];
+        }
+    }
+#endif
+
     // DPDK rows only: dtn_stats[32]/[33] are never populated (see above).
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         tot_good    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts);
