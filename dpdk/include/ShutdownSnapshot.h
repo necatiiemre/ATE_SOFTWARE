@@ -53,10 +53,11 @@ void shutdown_snapshot_init(void);
 // by each producer with the block it just rendered.
 void shutdown_snapshot_store(enum snapshot_slot slot, const char *text);
 
-// Stop updating the slots. Called once when a stop (Ctrl+C) is requested so
-// the summary keeps the last full second captured BEFORE the signal, while the
-// normal per-second log keeps printing as usual. Thread-safe; irreversible for
-// the remainder of the run.
+// Stop updating the per-second slots. Called once when a stop (Ctrl+C) is
+// requested so the summary keeps the last full second captured BEFORE the
+// signal, while the normal per-second log keeps printing as usual. Thread-safe;
+// irreversible for the remainder of the run. SNAP_SLOT_TOTALS is exempt - it is
+// written once by the shutdown path itself, after the freeze.
 void shutdown_snapshot_freeze(void);
 
 // Write every non-empty slot (in slot order) to SHUTDOWN_SNAPSHOT_PATH,

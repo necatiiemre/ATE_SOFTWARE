@@ -272,6 +272,13 @@ int start_txrx_workers(struct ports_config *ports_config,
                        volatile bool *stop_flag,
                        volatile bool *rx_stop_flag);
 
+// Block until every RX worker lcore has returned. Call after setting the RX
+// stop flag and before reading dtn_stats: the workers keep their PRBS counters
+// in thread-local variables and only fold them into dtn_stats every 131072
+// packets or on exit, so totals read before this returns are short by whatever
+// each worker still held.
+void txrx_wait_rx_workers(void);
+
 /**
  * Print port statistics from DPDK
  */

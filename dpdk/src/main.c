@@ -732,18 +732,23 @@ int main(int argc, char const *argv[])
             break;
     }
 
-    // Everything has settled: render the one-shot totals table. Must happen
-    // before the freeze, since the freeze turns snapshot_store into a no-op
-    // and this block belongs in the summary log.
+    // Freeze the per-second slots on that final table before releasing RX:
+    // the other way round, a late packet could land between the last render
+    // and the freeze and the summary would disagree with the per-second log.
+    shutdown_snapshot_freeze();
+
+    // Release the RX workers and wait for them to return. They keep their PRBS
+    // counters thread-local and only fold them into dtn_stats every 131072
+    // packets or on exit, so the totals below would otherwise be short by
+    // whatever each of them still held - up to 131071 packets per worker.
+    force_quit_rx = true;
+    txrx_wait_rx_workers();
+
+    // Everything has settled and every counter is folded in: render the
+    // one-shot totals table. SNAP_SLOT_TOTALS is exempt from the freeze above,
+    // so this still reaches the summary log.
     helper_print_final_totals(&ports_config, test_time);
     fflush(stdout);
-
-    // Freeze the snapshot on that final table, then let the RX workers go.
-    // Order matters: releasing RX first could let a late packet land between
-    // the last render and the freeze, and the summary would disagree with the
-    // per-second log.
-    shutdown_snapshot_freeze();
-    force_quit_rx = true;
 
     // Dump the DTN table + Health Monitor + PSU block into a single file. The
     // DTN table is the one rendered at the end of the RX drain, so its RX and

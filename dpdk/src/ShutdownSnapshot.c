@@ -46,7 +46,11 @@ void shutdown_snapshot_store(enum snapshot_slot slot, const char *text)
     }
 
     pthread_mutex_lock(&g_lock);
-    if (g_frozen) {
+    // SNAP_SLOT_TOTALS is exempt from the freeze: the freeze exists to stop the
+    // per-second producers from overwriting the last pre-stop second, whereas
+    // the totals block is written exactly once, after the freeze, by the
+    // shutdown path itself.
+    if (g_frozen && slot != SNAP_SLOT_TOTALS) {
         // A stop was requested: keep the pre-signal snapshot untouched.
         pthread_mutex_unlock(&g_lock);
         free(copy);

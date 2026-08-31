@@ -2126,6 +2126,20 @@ int rx_worker(void *arg)
 // START TX/RX WORKERS
 // ==========================================
 
+// Lcores the RX workers were launched on, so shutdown can wait for exactly
+// those and not for every worker lcore. rte_eal_mp_wait_lcore() cannot be used
+// here: the PTP workers run off ptp_workers_running rather than force_quit and
+// only exit once ptp_stop() is called, which happens later in teardown.
+static unsigned g_rx_worker_lcores[MAX_PORTS * NUM_RX_CORES];
+static int      g_rx_worker_lcore_count = 0;
+
+void txrx_wait_rx_workers(void)
+{
+    for (int i = 0; i < g_rx_worker_lcore_count; i++) {
+        rte_eal_wait_lcore(g_rx_worker_lcores[i]);
+    }
+}
+
 int start_txrx_workers(struct ports_config *ports_config,
                        volatile bool *stop_flag,
                        volatile bool *rx_stop_flag)
@@ -2209,6 +2223,10 @@ int start_txrx_workers(struct ports_config *ports_config,
             else
             {
                 printf("    ✓ RX Worker launched successfully\n");
+                if (g_rx_worker_lcore_count <
+                    (int)(sizeof(g_rx_worker_lcores) / sizeof(g_rx_worker_lcores[0]))) {
+                    g_rx_worker_lcores[g_rx_worker_lcore_count++] = lcore_id;
+                }
             }
 
             rx_param_idx++;
