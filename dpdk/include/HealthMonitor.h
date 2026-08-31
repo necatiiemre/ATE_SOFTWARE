@@ -92,7 +92,12 @@ int init_health_monitor(void);
  * @param stop_flag Pointer to global stop flag
  * @return 0 on success, -1 on failure
  */
-int start_health_monitor(volatile bool *stop_flag);
+// stop_flag: what the monitor watches to know when to stop. Pass the RX drain
+//   flag rather than force_quit so the monitor keeps running through the
+//   post-Ctrl+C drain window and the final health block is not stale.
+// abort_flag: what the monitor sets when it finds a condition that must end the
+//   test (28V power-status mismatch). Must be the app-wide stop flag.
+int start_health_monitor(volatile bool *stop_flag, volatile bool *abort_flag);
 
 /**
  * @brief Stop health monitor thread

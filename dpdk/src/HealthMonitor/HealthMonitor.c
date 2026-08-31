@@ -21,7 +21,16 @@
 // ==========================================
 
 static struct health_monitor_state g_health_monitor;
+// What the monitor watches to know when to stop. Points at the RX drain flag,
+// not the app-wide force_quit, so the monitor keeps querying the DTN through
+// the post-Ctrl+C drain window instead of going dark exactly when the final
+// health snapshot is taken.
 static volatile bool *g_stop_flag = NULL;
+// What the monitor SETS when it finds a condition that must end the test (a
+// 28V power-status mismatch). That has to stop the whole application, so it is
+// a separate pointer - writing to g_stop_flag would only stop the RX workers
+// and leave the main loop running.
+static volatile bool *g_abort_flag = NULL;
 
 // ==========================================
 // QUERY PACKET TEMPLATE (64 bytes, no VLAN)
@@ -820,7 +829,7 @@ static void *health_monitor_thread_func(void *arg)
                         printf("[HEALTH] Stopping test due to 28V power status mismatch!\n");
                         printf("[HEALTH] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
                         printf("\n");
-                        *g_stop_flag = true;
+                        if (g_abort_flag) *g_abort_flag = true;
                     }
                 } else {
                     printf("[HEALTH] WARNING: MCU data not received at cycle 10 - cannot verify 28V power status\n");
@@ -923,7 +932,7 @@ int init_health_monitor(void)
     return 0;
 }
 
-int start_health_monitor(volatile bool *stop_flag)
+int start_health_monitor(volatile bool *stop_flag, volatile bool *abort_flag)
 {
     struct health_monitor_state *state = &g_health_monitor;
 
@@ -938,6 +947,7 @@ int start_health_monitor(volatile bool *stop_flag)
     }
 
     g_stop_flag = stop_flag;
+    g_abort_flag = abort_flag;
     state->running = true;
 
     // Create thread

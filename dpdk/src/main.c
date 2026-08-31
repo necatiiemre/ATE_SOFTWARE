@@ -526,7 +526,9 @@ int main(int argc, char const *argv[])
                            (g_expected_power_status & 0x01) ? "FAIL" : "SUCCESS",
                            (g_expected_power_status & 0x02) ? "FAIL" : "SUCCESS");
                 }
-                if (start_health_monitor(&force_quit) != 0) {
+                // Watches force_quit_rx so it keeps polling the DTN through the
+                // RX drain window; sets force_quit if it has to abort the test.
+                if (start_health_monitor(&force_quit_rx, &force_quit) != 0) {
                     printf("Warning: Failed to start health monitor\n");
                 }
             } else {
@@ -629,8 +631,12 @@ int main(int argc, char const *argv[])
     // MainSoftware (PC) and makes them available to the health print cycle.
     // Failure here is non-fatal: the test can still run, DPDK just won't
     // show a power-supply row in the health table.
+    // Bound to force_quit_rx, not force_quit: the health block the monitor
+    // renders carries the PSU row, MainSoftware keeps publishing telemetry for
+    // the whole drain, and a receiver that stopped at Ctrl+C would leave that
+    // row dead in exactly the snapshot we care about.
     if (psu_telem_init(PSU_TELEM_PORT) == 0) {
-        if (psu_telem_start(&force_quit) != 0) {
+        if (psu_telem_start(&force_quit_rx) != 0) {
             printf("Warning: PSU telemetry listener failed to start\n");
         }
     } else {
@@ -700,7 +706,8 @@ int main(int argc, char const *argv[])
             printf("═══════════════════════════════════════════════════════════════\n");
             printf("   TX STOPPED - DRAINING RX FOR %u SECONDS\n",
                    (unsigned)RX_DRAIN_SECONDS);
-            printf("   (in-flight packets are still being counted)\n");
+            printf("   (in-flight packets are still being counted;\n");
+            printf("    the health monitor keeps querying the DTN)\n");
             printf("═══════════════════════════════════════════════════════════════\n");
             printf("\n");
         }
