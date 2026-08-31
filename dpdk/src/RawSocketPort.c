@@ -1787,6 +1787,21 @@ void *raw_rx_worker(void *arg)
         port->rx_ring_offset = (port->rx_ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;
     }
 
+    // Final flush. The idle path above only runs when the ring empties, so
+    // whatever arrived in the last burst before the stop flag is still local
+    // here - without this it is discarded outright, not merely reported late.
+    // multi_queue_rx_worker has always done this; this path did not.
+    if (local_dpdk_rx_pkts > 0) {
+        pthread_spin_lock(&port->dpdk_ext_rx_stats.lock);
+        port->dpdk_ext_rx_stats.rx_packets += local_dpdk_rx_pkts;
+        port->dpdk_ext_rx_stats.rx_bytes += local_dpdk_rx_bytes;
+        port->dpdk_ext_rx_stats.good_pkts += local_dpdk_good;
+        port->dpdk_ext_rx_stats.bad_pkts += local_dpdk_bad;
+        port->dpdk_ext_rx_stats.bit_errors += local_dpdk_bit_errors;
+        port->dpdk_ext_rx_stats.lost_pkts += local_dpdk_lost;
+        pthread_spin_unlock(&port->dpdk_ext_rx_stats.lock);
+    }
+
     printf("[Port %u RX Worker] Stopped\n", port->port_id);
     port->rx_running = false;
     return NULL;
