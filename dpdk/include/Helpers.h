@@ -25,11 +25,12 @@ static void signal_handler(int signum)
     }
 }
 
-// Resets HW statistics and local counters during warm-up
+// Resets HW statistics and local counters. Called once just before the test
+// loop starts so the first printed second is the first second of the test.
 void helper_reset_stats(const struct ports_config *ports_config,
                         uint64_t prev_tx_bytes[], uint64_t prev_rx_bytes[]);
 
 // Call every second: prints full statistics table + queue distributions
 void helper_print_stats(const struct ports_config *ports_config,
                         const uint64_t prev_tx_bytes[], const uint64_t prev_rx_bytes[],
-                        bool warmup_complete, unsigned loop_count, unsigned test_time);
+                        unsigned test_time);

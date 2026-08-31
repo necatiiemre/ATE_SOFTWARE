@@ -78,25 +78,18 @@ static uint64_t dtn_prev_rx_bytes[DTN_PORT_COUNT];
 #define printf(...) fprintf(out, __VA_ARGS__)
 static void helper_render_dtn_stats(FILE *out,
                                     const struct ports_config *ports_config,
-                                    bool warmup_complete, unsigned loop_count,
                                     unsigned test_time)
 {
     // Clear the screen
     if (!g_daemon_mode) {
         printf("\033[2J\033[H");
     } else {
-        printf("\n========== [%s %u sec] ==========\n",
-               warmup_complete ? "TEST" : "WARM-UP",
-               warmup_complete ? test_time : loop_count);
+        printf("\n========== [TEST %u sec] ==========\n", test_time);
     }
 
     // Header
     printf("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n");
-    if (!warmup_complete) {
-        printf("║                                                              DTN PORT STATS - WARM-UP (%3u/120 sec)                                                                                                                          ║\n", loop_count);
-    } else {
-        printf("║                                                              DTN PORT STATS - TEST Duration: %5u sec                                                                                                                         ║\n", test_time);
-    }
+    printf("║                                                              DTN PORT STATS - TEST Duration: %5u sec                                                                                                                         ║\n", test_time);
     printf("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝\n\n");
 
     // Table header
@@ -321,7 +314,6 @@ static void helper_render_dtn_stats(FILE *out,
 // stdout exactly as before and (b) hand the captured text to ShutdownSnapshot
 // so the last full second before a Ctrl+C can be dumped to a file.
 static void helper_print_dtn_stats(const struct ports_config *ports_config,
-                                   bool warmup_complete, unsigned loop_count,
                                    unsigned test_time)
 {
     char *buf = NULL;
@@ -329,13 +321,11 @@ static void helper_print_dtn_stats(const struct ports_config *ports_config,
     FILE *ms = open_memstream(&buf, &buf_size);
     if (ms == NULL) {
         // Fallback: no capture, render straight to stdout (original behavior).
-        helper_render_dtn_stats(stdout, ports_config, warmup_complete,
-                                loop_count, test_time);
+        helper_render_dtn_stats(stdout, ports_config, test_time);
         return;
     }
 
-    helper_render_dtn_stats(ms, ports_config, warmup_complete,
-                            loop_count, test_time);
+    helper_render_dtn_stats(ms, ports_config, test_time);
     fclose(ms);  // flushes and finalizes `buf`
 
     if (buf != NULL) {
@@ -352,7 +342,6 @@ static void helper_print_dtn_stats(const struct ports_config *ports_config,
 static void helper_print_server_stats(const struct ports_config *ports_config,
                                       const uint64_t prev_tx_bytes[],
                                       const uint64_t prev_rx_bytes[],
-                                      bool warmup_complete, unsigned loop_count,
                                       unsigned test_time)
 {
     // Clear screen (only in interactive mode, disabled in daemon mode for log files)
@@ -360,18 +349,12 @@ static void helper_print_server_stats(const struct ports_config *ports_config,
         printf("\033[2J\033[H");
     } else {
         // Daemon mode: separator line between tables
-        printf("\n========== [%s %u sec] ==========\n",
-               warmup_complete ? "TEST" : "WARM-UP",
-               warmup_complete ? test_time : loop_count);
+        printf("\n========== [TEST %u sec] ==========\n", test_time);
     }
 
     // Header (240 characters wide)
     printf("╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗\n");
-    if (!warmup_complete) {
-        printf("║                                                                    WARM-UP PHASE (%3u/120 sec) - Statistics will be reset at 120 seconds                                                                                        ║\n", loop_count);
-    } else {
-        printf("║                                                                    TEST IN PROGRESS - Test Duration: %5u sec                                                                                                                   ║\n", test_time);
-    }
+    printf("║                                                                    TEST IN PROGRESS - Test Duration: %5u sec                                                                                                                   ║\n", test_time);
     printf("╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝\n\n");
 
     // Main statistics table (240 characters)
@@ -480,14 +463,14 @@ static void helper_print_server_stats(const struct ports_config *ports_config,
 
 void helper_print_stats(const struct ports_config *ports_config,
                         const uint64_t prev_tx_bytes[], const uint64_t prev_rx_bytes[],
-                        bool warmup_complete, unsigned loop_count, unsigned test_time)
+                        unsigned test_time)
 {
 #if STATS_MODE_DTN
-    helper_print_dtn_stats(ports_config, warmup_complete, loop_count, test_time);
+    helper_print_dtn_stats(ports_config, test_time);
     (void)prev_tx_bytes;
     (void)prev_rx_bytes;
 #else
     helper_print_server_stats(ports_config, prev_tx_bytes, prev_rx_bytes,
-                              warmup_complete, loop_count, test_time);
+                              test_time);
 #endif
 }

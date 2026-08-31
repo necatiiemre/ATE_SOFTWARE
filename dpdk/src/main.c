@@ -115,7 +115,7 @@ int main(int argc, char const *argv[])
     );
     printf("PRBS Method: Sequence-based with ~268MB cache per port\n");
     printf("Payload format: [8-byte sequence][PRBS-31 data]\n");
-    printf("WARM-UP: First 60 seconds (stats will reset at 60s)\n");
+    printf("WARM-UP: Disabled (stats are zeroed once, the test starts immediately)\n");
     printf("Sequence Validation: Enabled (Lost/Out-of-Order/Duplicate detection)\n");
 #if ENABLE_RAW_SOCKET_PORTS
     printf("Raw Socket Ports: Enabled (%d ports, multi-target)\n", MAX_RAW_SOCKET_PORTS);
@@ -616,15 +616,43 @@ int main(int argc, char const *argv[])
     }
 
     printf("\n=== Running (Press Ctrl+C to stop) ===\n");
-    printf("  WARM-UP PHASE: First 60 seconds (stats will reset)\n\n");
+    printf("  No warm-up phase: second 1 of the table is second 1 of the test\n\n");
 
     // Previous TX/RX bytes for per-second rate calculation
     static uint64_t prev_tx_bytes[MAX_PORTS] = {0};
     static uint64_t prev_rx_bytes[MAX_PORTS] = {0};
 
+    // There is no warm-up phase, so zero every counter right here instead.
+    // Workers have been forwarding for a few seconds already (port bring-up,
+    // raw sockets, health monitor, external TX, PTP, PSU listener); without
+    // this reset that start-up traffic would be counted as test traffic.
+    helper_reset_stats(&ports_config, prev_tx_bytes, prev_rx_bytes);
+
+#if PTP_ENABLED
+    if (ptp_active)
+        ptp_reset_stats();
+#endif
+
+#if HEALTH_MONITOR_ENABLED
+    // Arms the post-start cycle counter that gates the FW-version and 28V
+    // power-status checks (they fire on its 10th cycle). Despite the name,
+    // this now simply means "the test has started".
+    if (health_active && is_health_monitor_running()) {
+        health_monitor_set_warmup_complete();
+    }
+#endif
+
+    // Log Test Start Time for PDF report
+    {
+        time_t now_t = time(NULL);
+        struct tm *tm_info = localtime(&now_t);
+        char time_buf[64];
+        strftime(time_buf, sizeof(time_buf), "%B %d, %Y %H:%M:%S", tm_info);
+        printf("Test Start Time : %s\n", time_buf);
+    }
+    fflush(stdout);
+
     // Main loop - print stats table every second
-    uint32_t loop_count = 0;
-    bool warmup_complete = false;
     uint32_t test_time = 0;
 
     while (!force_quit)
@@ -641,55 +669,11 @@ int main(int argc, char const *argv[])
             shutdown_snapshot_freeze();
         }
 
-        loop_count++;
-
-        // Reset when warm-up is complete
-        if (loop_count == 120 && !warmup_complete)
-        {
-            printf("\n");
-            printf("═══════════════════════════════════════════════════════════════\n");
-            printf("   WARM-UP COMPLETE - RESETTING STATS - TEST STARTING NOW\n");
-            printf("═══════════════════════════════════════════════════════════════\n");
-            printf("\n");
-
-            // Log Test Start Time for PDF report
-            {
-                time_t now_t = time(NULL);
-                struct tm *tm_info = localtime(&now_t);
-                char time_buf[64];
-                strftime(time_buf, sizeof(time_buf), "%B %d, %Y %H:%M:%S", tm_info);
-                printf("Test Start Time : %s\n", time_buf);
-            }
-
-            helper_reset_stats(&ports_config, prev_tx_bytes, prev_rx_bytes);
-
-#if PTP_ENABLED
-            ptp_reset_stats();
-#endif
-
-            warmup_complete = true;
-            test_time = 0;
-
-#if HEALTH_MONITOR_ENABLED
-            if (health_active && is_health_monitor_running()) {
-                health_monitor_set_warmup_complete();
-            }
-#endif
-
-            // Short wait for visibility
-            sleep(2);
-            continue;
-        }
-
-        // Increment test time after warm-up
-        if (warmup_complete)
-        {
-            test_time++;
-        }
+        test_time++;
 
         // Full table + queue distributions (includes DPDK External TX stats)
         helper_print_stats(&ports_config, prev_tx_bytes, prev_rx_bytes,
-                           warmup_complete, loop_count, test_time);
+                           test_time);
 
 #if ENABLE_RAW_SOCKET_PORTS
         // Print raw socket port stats (only if initialized)
@@ -730,13 +714,8 @@ int main(int argc, char const *argv[])
     // pre-stop state (not values re-rendered during shutdown).
     {
         char note[96];
-        if (warmup_complete) {
-            snprintf(note, sizeof(note),
-                     "stop requested at test second %u", test_time);
-        } else {
-            snprintf(note, sizeof(note),
-                     "stop requested during warm-up (%u/120 s)", loop_count);
-        }
+        snprintf(note, sizeof(note),
+                 "stop requested at test second %u", test_time);
         if (shutdown_snapshot_dump(note) == 0) {
             printf("[SUMMARY] Last-second summary written to %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);
@@ -821,10 +800,7 @@ int main(int argc, char const *argv[])
 
     printf("Application exited cleanly\n");
 
-    if (warmup_complete)
-    {
-        printf("\n Total test duration: %u seconds (after warm-up)\n", test_time);
-    }
+    printf("\n Total test duration: %u seconds\n", test_time);
 
     return 0;
 }
