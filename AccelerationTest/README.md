@@ -1,25 +1,37 @@
 # AccelerationTest
 
-Builds DTN (LRU `0x2600`) configuration frames from a VL profile and sends them
-over a plain Ethernet raw socket, then listens for the health-monitor stream
-coming back. No DPDK, no fibre, no VLAN — the workstation only needs the two
+Acceleration test rig for the ATE units. The operator picks a unit and the
+application runs that unit's acceleration test. Only the DTN test exists today;
+VMC and CMC are registered so their wiring is already in place.
+
+The DTN test configures the switch's VL routing table and reads its health
+monitor back. No DPDK, no fibre, no VLAN — the workstation only needs the two
 copper links to the DTN's end-system ports.
 
 ```
+src/main.c                 unit menu
+src/UnitManager.c          the unit registry
+src/units/DtnTest.c        DTN acceleration test
+src/units/VmcTest.c        placeholder
+src/units/CmcTest.c        placeholder
+src/VlProfile.c            the three DTN configuration rounds
 include/DtnConfig.h        wire format: VL records, config blocks, frame assembly
 src/DtnConfig.c            the encoder
 tests/test_reference.c     rebuilds the 47 reference frames byte for byte
 tests/fixtures/            those frames, extracted from RemoteConfigSender
-profiles/config1.json      round 1 of 3
-profiles/config2.json      round 2 of 3
-profiles/config3.json      round 3 of 3
 tools/                     analysis-side helpers (see below)
 ```
+
+## Adding a unit's test
+
+Write `src/units/<Unit>Test.c` exposing a `unit_result_t <unit>_test_run(void)`
+and flip its `implemented` flag in the table at the top of `src/UnitManager.c`.
+Nothing else in the application needs to change.
 
 ## Build and test
 
 ```
-$ make            # build/libdtnconfig.a
+$ make            # build/acceleration_test
 $ make test
 47 reference frames, 4488 VL records
 PASS: every reference frame reproduced byte for byte
@@ -106,6 +118,7 @@ Python helpers from the reverse-engineering work, kept until the C application
 covers the same ground:
 
 * `build_config.py` — expands a JSON profile into frames; a second implementation
-  to diff the C encoder against. That cross-check has already caught a real bug.
+  to diff the C encoder against. That cross-check has already caught a real bug,
+  and confirms all three rounds still encode identically after refactoring.
 * `vl_xml.py` — vendor `<VL .../>` XML to VL records.
 * `dump_reference_fixture.py` — regenerates `tests/fixtures/reference_frames.bin`.

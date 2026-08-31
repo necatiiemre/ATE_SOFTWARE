@@ -141,4 +141,21 @@ uint8_t dtn_next_seq(uint8_t seq);
 /** Per-port table payload (address 0x73). Writes 4 * @p port_count bytes. */
 size_t dtn_encode_port_table(uint8_t *out, size_t cap, uint16_t value, uint8_t port_count);
 
+/** Upper bound on the frames dtn_build_config_frames can produce. */
+#define DTN_MAX_CONFIG_FRAMES 16
+
+/**
+ * @brief Turn a VL table into the frames that configure the DTN.
+ *
+ * Emits the end-system blocks, then the VL table split across as many
+ * datagrams as it needs, closing the last one with the port table and the
+ * switch end markers, and finishes with a 0x52 status query so the caller can
+ * read back what the device made of it. No PTP block is emitted.
+ *
+ * @param vlan 802.1Q tag, or -1 for untagged (the copper path)
+ * @return frame count, or -1 if the VL table does not fit
+ */
+int dtn_build_config_frames(const dtn_vl_t *vls, size_t count, int vlan,
+                            dtn_frame_t *frames, size_t max_frames);
+
 #endif /* DTN_CONFIG_H */
