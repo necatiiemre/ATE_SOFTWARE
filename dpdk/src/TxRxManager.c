@@ -1671,6 +1671,8 @@ int rx_worker(void *arg)
                     if (unlikely(m->pkt_len < min_raw_pkt_len))
                     {
                         local_short++;
+                        txrx_note_undersized(params->port_id, params->queue_id,
+                                             m->pkt_len, /*vlan_tagged=*/false, pkt);
                         continue;
                     }
 
@@ -1810,6 +1812,8 @@ int rx_worker(void *arg)
 #endif
                 {
                     local_short++;
+                    txrx_note_undersized(params->port_id, params->queue_id,
+                                         m->pkt_len, /*vlan_tagged=*/true, pkt);
                     continue;
                 }
 
@@ -2317,6 +2321,88 @@ void txrx_note_foreign_ethertype(uint16_t ethertype)
     // Table full: further distinct types are not tracked. The aggregate
     // other_pkts counter still reflects them.
     pthread_mutex_unlock(&g_foreign_et_lock);
+}
+
+// ==========================================
+// UNDERSIZED FRAME IDENTIFICATION
+// ==========================================
+// Frames that land on a PRBS queue but are too short to be PRBS are dropped
+// as `short`. They still count as arrivals in the HW queue counter, so they
+// sit in the gap between "sent" and "returned and validated" without ever
+// saying what they are. This records enough of the first few to identify
+// them, plus a length histogram over all of them.
+#define UNDERSIZED_LOG_LIMIT   12
+#define UNDERSIZED_LEN_SLOTS   8
+
+static pthread_mutex_t g_undersized_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned g_undersized_logged = 0;
+static uint32_t g_undersized_len[UNDERSIZED_LEN_SLOTS];
+static uint64_t g_undersized_len_count[UNDERSIZED_LEN_SLOTS];
+static int      g_undersized_len_used = 0;
+
+void txrx_note_undersized(uint16_t port_id, uint16_t queue_id,
+                          uint32_t pkt_len, bool vlan_tagged,
+                          const uint8_t *pkt)
+{
+    pthread_mutex_lock(&g_undersized_lock);
+
+    // Length histogram over every undersized frame.
+    int slot = -1;
+    for (int i = 0; i < g_undersized_len_used; i++) {
+        if (g_undersized_len[i] == pkt_len) { slot = i; break; }
+    }
+    if (slot >= 0) {
+        g_undersized_len_count[slot]++;
+    } else if (g_undersized_len_used < UNDERSIZED_LEN_SLOTS) {
+        g_undersized_len[g_undersized_len_used] = pkt_len;
+        g_undersized_len_count[g_undersized_len_used] = 1;
+        g_undersized_len_used++;
+    }
+
+    // Full detail for the first few, which is what actually identifies them.
+    if (g_undersized_logged < UNDERSIZED_LOG_LIMIT) {
+        g_undersized_logged++;
+        const uint16_t vlan_id   = vlan_tagged
+            ? ((((uint16_t)pkt[14] << 8) | pkt[15]) & 0x0FFF) : 0;
+        const uint16_t inner_type = vlan_tagged
+            ? (((uint16_t)pkt[16] << 8) | pkt[17])
+            : (((uint16_t)pkt[12] << 8) | pkt[13]);
+        const uint16_t vl_id = ((uint16_t)pkt[4] << 8) | pkt[5];
+        // IP protocol and UDP ports, where the headers reach that far.
+        const uint32_t ip_off = vlan_tagged ? 18u : 14u;
+        unsigned proto = 0, sport = 0, dport = 0;
+        if (pkt_len >= ip_off + 20u) {
+            proto = pkt[ip_off + 9];
+            if (proto == 17 && pkt_len >= ip_off + 28u) {
+                sport = ((unsigned)pkt[ip_off + 20] << 8) | pkt[ip_off + 21];
+                dport = ((unsigned)pkt[ip_off + 22] << 8) | pkt[ip_off + 23];
+            }
+        }
+        printf("[UNDERSIZED %u/%u] Port %u Q%u len=%u %s vlan=%u vl_id=%u "
+               "ethertype=0x%04X ip_proto=%u udp=%u->%u "
+               "dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x\n",
+               g_undersized_logged, (unsigned)UNDERSIZED_LOG_LIMIT,
+               port_id, queue_id, pkt_len,
+               vlan_tagged ? "tagged" : "untagged",
+               vlan_id, vl_id, inner_type, proto, sport, dport,
+               pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5],
+               pkt[6], pkt[7], pkt[8], pkt[9], pkt[10], pkt[11]);
+    }
+
+    pthread_mutex_unlock(&g_undersized_lock);
+}
+
+int txrx_get_undersized_lengths(uint32_t *lengths, uint64_t *counts, int max)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_undersized_lock);
+    for (int i = 0; i < g_undersized_len_used && n < max; i++) {
+        lengths[n] = g_undersized_len[i];
+        counts[n] = g_undersized_len_count[i];
+        n++;
+    }
+    pthread_mutex_unlock(&g_undersized_lock);
+    return n;
 }
 
 void txrx_clear_foreign_ethertypes(void)

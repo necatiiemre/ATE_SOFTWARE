@@ -653,6 +653,19 @@ static void helper_render_final_totals(FILE *out,
     printf("  DPDK queues 0-3, HW packets received      : %lu\n", tot_hw_q_pkts);
     printf("    validated as PRBS (counted above)       : %lu\n", tot_dpdk_validated);
     printf("    undersized, never validated             : %lu\n", tot_short);
+    // Name them by size. One dominant length points at a specific protocol;
+    // a spread points at something variable. The per-frame detail for the
+    // first dozen is logged as they arrive, earlier in the run.
+    if (tot_short > 0) {
+        uint32_t ulens[8];
+        uint64_t ucounts[8];
+        int un = txrx_get_undersized_lengths(ulens, ucounts,
+                                             (int)(sizeof(ulens) / sizeof(ulens[0])));
+        for (int i = 0; i < un; i++) {
+            printf("        %5u bytes                          : %lu\n",
+                   ulens[i], ucounts[i]);
+        }
+    }
     printf("    foreign (PTP/ARP/...), never validated  : %lu\n", tot_other);
     if (hw_over) {
         printf("    OVER-COUNTED                            : %lu\n", hw_over);

@@ -307,6 +307,17 @@ uint32_t txrx_stats_generation(void);
 // Empty the foreign-EtherType table (part of a stats reset).
 void     txrx_clear_foreign_ethertypes(void);
 
+// ---- Undersized frame identification ------------------------------------
+// Frames that reach a PRBS queue but are too short to be PRBS are dropped as
+// `short`. They still count as arrivals in the HW queue counter, so they sit
+// in the gap between "sent" and "returned and validated" without saying what
+// they are. txrx_note_undersized() records enough of the first few to identify
+// them and keeps a length histogram over all of them.
+void txrx_note_undersized(uint16_t port_id, uint16_t queue_id,
+                          uint32_t pkt_len, bool vlan_tagged,
+                          const uint8_t *pkt);
+int  txrx_get_undersized_lengths(uint32_t *lengths, uint64_t *counts, int max);
+
 // ---- On-demand RX counter flush ----------------------------------------
 // The RX workers keep their counts thread-local and hand them over on a
 // deadline, so a reader always trails them slightly. txrx_flush_now() asks
