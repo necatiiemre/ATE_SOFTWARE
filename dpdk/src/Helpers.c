@@ -40,6 +40,15 @@ static inline double to_mbps(uint64_t bytes) {
     return (bytes * 8.0) / 1e6;
 }
 
+#if STATS_MODE_DTN
+// Rate baselines for the DTN table: the byte counters the previous render saw,
+// used to turn cumulative counters into a per-second rate. Declared here
+// because helper_reset_stats() has to clear them alongside the HW counters
+// they are measured against.
+static uint64_t dtn_prev_tx_bytes[DTN_PORT_COUNT];
+static uint64_t dtn_prev_rx_bytes[DTN_PORT_COUNT];
+#endif
+
 void helper_reset_stats(const struct ports_config *ports_config,
                         uint64_t prev_tx_bytes[], uint64_t prev_rx_bytes[])
 {
@@ -61,6 +70,15 @@ void helper_reset_stats(const struct ports_config *ports_config,
     // Reset raw socket and global sequence tracking
     reset_raw_socket_stats();
 
+#if STATS_MODE_DTN
+    // The DTN table's own rate baselines. rte_eth_stats_reset() above zeroes
+    // the HW byte counters the TX rate is measured from, so leaving these at
+    // their pre-reset values would make the next render compute a delta
+    // against a counter that has gone backwards.
+    memset(dtn_prev_tx_bytes, 0, sizeof(dtn_prev_tx_bytes));
+    memset(dtn_prev_rx_bytes, 0, sizeof(dtn_prev_rx_bytes));
+#endif
+
     // Zeroing the atomics above is only half a reset: the RX workers keep
     // their PRBS counters thread-local and fold them in every 131072 packets,
     // so anything they counted before this point would reappear right after
@@ -78,11 +96,6 @@ void helper_reset_stats(const struct ports_config *ports_config,
 // DTN TX (DTN→Server) = Server RX = HW q_ipackets[queue]
 // DTN RX (Server→DTN) = Server TX = HW q_opackets[queue]
 // PRBS = dtn_stats[dtn_port] (from RX worker)
-
-// Per-queue prev bytes (for per-DTN-port delta calculation)
-// [dtn_port][0=tx_bytes, 1=rx_bytes]
-static uint64_t dtn_prev_tx_bytes[DTN_PORT_COUNT];
-static uint64_t dtn_prev_rx_bytes[DTN_PORT_COUNT];
 
 // Renders the DTN statistics table to `out`. All printf calls below are
 // redirected to `out` by the macro so the exact same text can be both printed
@@ -165,14 +178,25 @@ static void helper_render_dtn_stats(FILE *out,
             }
         }
 
-        // Mbps delta calculation
-        uint64_t tx_delta = dtn_tx_bytes - dtn_prev_tx_bytes[dtn];
+        // Mbps delta calculation.
+        //
+        // The rate is measured from the HW byte counter, not from the PRBS
+        // byte total shown in the column beside it. The PRBS counters live in
+        // the RX workers and are folded in on a flush cadence that does not
+        // line up with this one-second render, so a delta taken from them
+        // swings by whatever fraction of a flush period happened to land
+        // inside the interval. The HW counter is exact at every instant, which
+        // is what a rate needs. The packet and byte columns keep their PRBS
+        // values - only the rate reads the wire.
+        uint64_t hw_tx_bytes =
+            port_hw_stats[entry->tx_server_port].q_ibytes[entry->tx_server_queue];
+        uint64_t tx_delta = hw_tx_bytes - dtn_prev_tx_bytes[dtn];
         uint64_t rx_delta = dtn_rx_bytes - dtn_prev_rx_bytes[dtn];
         double tx_mbps = to_mbps(tx_delta);
         double rx_mbps = to_mbps(rx_delta);
 
         // Update prev values
-        dtn_prev_tx_bytes[dtn] = dtn_tx_bytes;
+        dtn_prev_tx_bytes[dtn] = hw_tx_bytes;
         dtn_prev_rx_bytes[dtn] = dtn_rx_bytes;
 
         // PRBS statistics (from dtn_stats)
