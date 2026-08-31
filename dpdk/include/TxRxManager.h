@@ -314,11 +314,14 @@ void     txrx_clear_foreign_ethertypes(void);
 // acknowledge, so the counters are current without having to stop anything.
 void     txrx_flush_now(unsigned timeout_ms);
 
-// Used by the RX workers themselves.
+// Used by the workers themselves. Any worker that accumulates statistics in
+// thread-local variables registers here, so a flush request covers the DPDK RX
+// workers, the raw socket TX/RX workers and the external TX workers alike -
+// otherwise "the counters are current" would only be true of some of them.
 uint32_t txrx_flush_request_id(void);
 void     txrx_ack_flush(void);
-void     txrx_rx_worker_enter(void);
-void     txrx_rx_worker_exit(void);
+void     txrx_flush_participant_enter(void);
+void     txrx_flush_participant_exit(void);
 
 /**
  * Print port statistics from DPDK

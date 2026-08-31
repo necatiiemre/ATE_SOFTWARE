@@ -1542,7 +1542,7 @@ int rx_worker(void *arg)
     uint32_t my_stats_gen = txrx_stats_generation();
     uint32_t my_flush_req = txrx_flush_request_id();
 
-    txrx_rx_worker_enter();
+    txrx_flush_participant_enter();
 
     while (!(*params->stop_flag))
     {
@@ -2113,7 +2113,7 @@ int rx_worker(void *arg)
         RX_WORKER_FLUSH_LOCALS();
     }
 
-    txrx_rx_worker_exit();
+    txrx_flush_participant_exit();
 
     // ==========================================
     // CALCULATE LOST PACKETS (watermark-based)
@@ -2230,17 +2230,19 @@ static volatile uint32_t g_rx_stats_generation = 0;
 // ever produces them once - the main loop asks for a flush and waits for it:
 // bump g_rx_flush_request, and every live worker services it at the top of its
 // next loop pass and acknowledges. g_rx_workers_live says how many
-// acknowledgements to expect.
+// acknowledgements to expect. Participants are not just the DPDK RX workers:
+// the raw socket TX/RX workers and the external TX workers register too, since
+// their counters feed the same tables.
 static volatile uint32_t g_rx_flush_request = 0;
 static volatile uint32_t g_rx_flush_acks = 0;
 static volatile uint32_t g_rx_workers_live = 0;
 
-void txrx_rx_worker_enter(void)
+void txrx_flush_participant_enter(void)
 {
     __atomic_fetch_add(&g_rx_workers_live, 1, __ATOMIC_RELEASE);
 }
 
-void txrx_rx_worker_exit(void)
+void txrx_flush_participant_exit(void)
 {
     __atomic_fetch_sub(&g_rx_workers_live, 1, __ATOMIC_RELEASE);
 }

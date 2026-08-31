@@ -338,8 +338,26 @@ int dpdk_ext_tx_worker(void *arg)
     uint64_t local_tx_bytes = 0;
     const uint32_t STATS_FLUSH = 1024;
 
+    uint32_t my_flush_req = txrx_flush_request_id();
+    txrx_flush_participant_enter();
+
     while (!(*params->stop_flag))
     {
+        // Hand the counters over when the stats loop asks. The packet
+        // threshold below is a poor substitute at a low send rate, where 1024
+        // packets can be many seconds away.
+        uint32_t cur_flush_req = txrx_flush_request_id();
+        if (cur_flush_req != my_flush_req) {
+            if (local_tx_pkts > 0) {
+                rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_pkts, local_tx_pkts);
+                rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_bytes, local_tx_bytes);
+                local_tx_pkts = 0;
+                local_tx_bytes = 0;
+            }
+            my_flush_req = cur_flush_req;
+            txrx_ack_flush();
+        }
+
         // ==========================================
         // SMOOTH PACING: Each packet is sent exactly on time
         // NO burst - traffic is evenly spread over 1 second
@@ -510,6 +528,8 @@ int dpdk_ext_tx_worker(void *arg)
         rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_pkts, local_tx_pkts);
         rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_bytes, local_tx_bytes);
     }
+
+    txrx_flush_participant_exit();
 
     free(vl_offsets);
     printf("ExtTX Worker stopped: Port %u Q%u\n", params->port_id, params->queue_id);

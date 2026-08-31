@@ -5,6 +5,7 @@
 #include "Socket.h"  // for get_unused_cores()
 #include "EmbeddedLatency/EmbeddedLatency.h"  // for ate_mode_enabled()
 #include "HealthMonitor.h"  // for HEALTH_MONITOR_RESPONSE_VL_IDX
+#include "TxRxManager.h"    // on-demand counter flush participation
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1164,6 +1165,9 @@ void *raw_tx_worker(void *arg)
     const uint64_t STATS_FLUSH_INTERVAL = 1024;    // Flush local stats every N packets (smaller = more accurate rate display)
 
     // Local stats accumulators per target (avoid per-packet lock)
+    uint32_t my_flush_req = txrx_flush_request_id();
+    txrx_flush_participant_enter();
+
     uint64_t local_tx_packets[MAX_RAW_TARGETS] = {0};
     uint64_t local_tx_bytes[MAX_RAW_TARGETS] = {0};
     uint64_t local_tx_errors[MAX_RAW_TARGETS] = {0};
@@ -1309,8 +1313,14 @@ void *raw_tx_worker(void *arg)
             batch_count = 0;
         }
 
+        // Hand the counters over when the stats loop asks, as well as on the
+        // packet threshold below: at a low rate the threshold can be minutes
+        // away, and the table would show numbers that old.
+        uint32_t cur_flush_req = txrx_flush_request_id();
+        bool flush_requested = (cur_flush_req != my_flush_req);
+
         // Periodically flush local stats to shared counters
-        if (total_local_pkts >= STATS_FLUSH_INTERVAL) {
+        if (total_local_pkts >= STATS_FLUSH_INTERVAL || flush_requested) {
             for (int t = 0; t < port->tx_target_count; t++) {
                 if (local_tx_packets[t] > 0) {
                     struct raw_tx_target_state *target = &port->tx_targets[t];
@@ -1325,6 +1335,10 @@ void *raw_tx_worker(void *arg)
                 }
             }
             total_local_pkts = 0;
+        }
+        if (flush_requested) {
+            my_flush_req = cur_flush_req;
+            txrx_ack_flush();
         }
 
         if (!any_sent) {
@@ -1350,6 +1364,8 @@ exit_tx:
             pthread_spin_unlock(&target->stats.lock);
         }
     }
+
+    txrx_flush_participant_exit();
 
     printf("[Port %u TX Worker] Stopped\n", port->port_id);
     port->tx_running = false;
@@ -1430,7 +1446,34 @@ void *raw_rx_worker(void *arg)
     uint32_t empty_polls = 0;
     const uint32_t BUSY_POLL_COUNT = 64;  // Spin this many times before blocking poll
 
+    uint32_t my_flush_req = txrx_flush_request_id();
+    txrx_flush_participant_enter();
+
     while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
+        // Checked before the ring is examined so a quiet port answers too -
+        // the idle flush below only runs once the busy-poll budget is spent.
+        uint32_t cur_flush_req = txrx_flush_request_id();
+        if (cur_flush_req != my_flush_req) {
+            if (local_dpdk_rx_pkts > 0) {
+                pthread_spin_lock(&port->dpdk_ext_rx_stats.lock);
+                port->dpdk_ext_rx_stats.rx_packets += local_dpdk_rx_pkts;
+                port->dpdk_ext_rx_stats.rx_bytes += local_dpdk_rx_bytes;
+                port->dpdk_ext_rx_stats.good_pkts += local_dpdk_good;
+                port->dpdk_ext_rx_stats.bad_pkts += local_dpdk_bad;
+                port->dpdk_ext_rx_stats.bit_errors += local_dpdk_bit_errors;
+                port->dpdk_ext_rx_stats.lost_pkts += local_dpdk_lost;
+                pthread_spin_unlock(&port->dpdk_ext_rx_stats.lock);
+                local_dpdk_rx_pkts = 0;
+                local_dpdk_rx_bytes = 0;
+                local_dpdk_good = 0;
+                local_dpdk_bad = 0;
+                local_dpdk_bit_errors = 0;
+                local_dpdk_lost = 0;
+            }
+            my_flush_req = cur_flush_req;
+            txrx_ack_flush();
+        }
+
         struct tpacket2_hdr *hdr = (struct tpacket2_hdr *)(
             (uint8_t *)port->rx_ring +
             (port->rx_ring_offset * RAW_SOCKET_RING_FRAME_SIZE));
@@ -1802,6 +1845,8 @@ void *raw_rx_worker(void *arg)
         pthread_spin_unlock(&port->dpdk_ext_rx_stats.lock);
     }
 
+    txrx_flush_participant_exit();
+
     printf("[Port %u RX Worker] Stopped\n", port->port_id);
     port->rx_running = false;
     return NULL;
@@ -1883,7 +1928,38 @@ void *multi_queue_rx_worker(void *arg)
     queue->vl_id_max = 0;
     queue->unique_vl_ids = 0;
 
+    uint32_t my_flush_req = txrx_flush_request_id();
+    txrx_flush_participant_enter();
+
     while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
+        // Before the ring is examined, so a quiet queue answers as well.
+        uint32_t cur_flush_req = txrx_flush_request_id();
+        if (cur_flush_req != my_flush_req) {
+            if (local_rx_pkts > 0) {
+                pthread_spin_lock(&port->dpdk_ext_rx_stats.lock);
+                port->dpdk_ext_rx_stats.rx_packets += local_rx_pkts;
+                port->dpdk_ext_rx_stats.rx_bytes += local_rx_bytes;
+                port->dpdk_ext_rx_stats.good_pkts += local_good;
+                port->dpdk_ext_rx_stats.bad_pkts += local_bad;
+                port->dpdk_ext_rx_stats.bit_errors += local_bit_errors;
+                pthread_spin_unlock(&port->dpdk_ext_rx_stats.lock);
+
+                queue->rx_packets += local_rx_pkts;
+                queue->rx_bytes += local_rx_bytes;
+                queue->good_pkts += local_good;
+                queue->bad_pkts += local_bad;
+                queue->bit_errors += local_bit_errors;
+
+                local_rx_pkts = 0;
+                local_rx_bytes = 0;
+                local_good = 0;
+                local_bad = 0;
+                local_bit_errors = 0;
+            }
+            my_flush_req = cur_flush_req;
+            txrx_ack_flush();
+        }
+
         struct tpacket2_hdr *hdr = (struct tpacket2_hdr *)(
             (uint8_t *)queue->ring +
             (queue->ring_offset * RAW_SOCKET_RING_FRAME_SIZE));
@@ -2233,6 +2309,8 @@ void *multi_queue_rx_worker(void *arg)
         queue->bad_pkts += local_bad;
         queue->bit_errors += local_bit_errors;
     }
+
+    txrx_flush_participant_exit();
 
     printf("[Port %u Q%d RX Worker] Stopped (pkts=%lu, good=%lu, bad=%lu)\n",
            port->port_id, queue->queue_id, queue->rx_packets,
