@@ -714,6 +714,19 @@ int main(int argc, char const *argv[])
 
         test_time++;
 
+        // Last second of the drain. Release the RX workers and wait for them
+        // to exit BEFORE rendering: they hold their PRBS counters thread-local
+        // and fold them in on a deadline or every 131072 packets, so the tail
+        // of the drain is still inside a worker at this point. Their exit path
+        // flushes it, and doing that here means the final table - the one the
+        // summary log keeps - is rendered from complete counters, over a normal
+        // one-second interval so its Mbps column stays meaningful.
+        const bool final_second = (draining && test_time >= drain_until);
+        if (final_second) {
+            force_quit_rx = true;
+            txrx_wait_rx_workers();
+        }
+
         // Full table + queue distributions (includes DPDK External TX stats)
         helper_print_stats(&ports_config, prev_tx_bytes, prev_rx_bytes,
                            test_time);
@@ -750,35 +763,27 @@ int main(int argc, char const *argv[])
             }
         }
 
-        // Drain window is over. The table just rendered holds the settled
+        // Drain window is over and the table just rendered holds the settled
         // counters, so it is the one the summary log should keep.
-        if (draining && test_time >= drain_until)
+        if (final_second)
             break;
     }
 
-    // Freeze the per-second slots on that final table before releasing RX:
-    // the other way round, a late packet could land between the last render
-    // and the freeze and the summary would disagree with the per-second log.
-    shutdown_snapshot_freeze();
-
-    // Release the RX workers and wait for them to return. They keep their PRBS
-    // counters thread-local and only fold them into dtn_stats every 131072
-    // packets or on exit, so the totals below would otherwise be short by
-    // whatever each of them still held - up to 131071 packets per worker.
-    force_quit_rx = true;
-    txrx_wait_rx_workers();
-
-    // Everything has settled and every counter is folded in: render the
-    // one-shot totals table. SNAP_SLOT_TOTALS is exempt from the freeze above,
-    // so this still reaches the summary log.
+    // The RX workers exited and flushed inside the loop's final iteration, so
+    // every counter is complete here.
     helper_print_final_totals(&ports_config, test_time);
     fflush(stdout);
 
+    // Everything that belongs in the summary has been stored; stop the
+    // per-second producers from overwriting it during teardown.
+    shutdown_snapshot_freeze();
+
     // Dump the DTN table + Health Monitor + PSU block into a single file. The
-    // DTN table is the one rendered at the end of the RX drain, so its RX and
-    // PRBS counters include the packets that were still in flight when Ctrl+C
-    // arrived. Done here, before any teardown prints, so the snapshot holds
-    // those settled values and not something re-rendered during shutdown.
+    // DTN table is the one rendered on the loop's final iteration, after the RX
+    // workers exited and flushed, so its counters include every packet that was
+    // still in flight when Ctrl+C arrived. Done before any teardown prints so
+    // the snapshot holds those settled values, not something re-rendered during
+    // shutdown.
     {
         char note[96];
         snprintf(note, sizeof(note),
