@@ -539,6 +539,12 @@ static void helper_render_final_totals(FILE *out,
     // Everything the NIC delivered to the PRBS queues, PRBS or not. Compared
     // against the PRBS figure below so the gap is visible rather than implied.
     uint64_t tot_hw_q_pkts = 0;
+    // Validated packets from the DPDK rows alone. The HW queue counter above
+    // covers those rows only, so comparing it against the grand total - which
+    // also carries the raw ports - was comparing different sets and produced
+    // more "validated" packets than the hardware ever delivered.
+    uint64_t tot_dpdk_validated = 0;
+    uint64_t tot_raw_validated = 0;
 
     struct raw_socket_port *p12 = &raw_ports[0];
     struct raw_socket_port *p13 = &raw_ports[1];
@@ -546,8 +552,11 @@ static void helper_render_final_totals(FILE *out,
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *e = &dtn_port_map[dtn];
         // TX side: PRBS-validated packets only, matching the DTN table.
-        tot_tx_pkts  += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
-                        (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        const uint64_t dtn_validated =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        tot_tx_pkts       += dtn_validated;
+        tot_dpdk_validated += dtn_validated;
         tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
         tot_hw_q_pkts += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
         // RX side: the server's own transmissions on queues 0-3, which carry
@@ -565,7 +574,8 @@ static void helper_render_final_totals(FILE *out,
     for (int r = 0; r < 2; r++) {
         struct raw_socket_port *rp = raws[r];
         pthread_spin_lock(&rp->dpdk_ext_rx_stats.lock);
-        tot_tx_pkts  += rp->dpdk_ext_rx_stats.rx_packets;
+        tot_tx_pkts       += rp->dpdk_ext_rx_stats.rx_packets;
+        tot_raw_validated += rp->dpdk_ext_rx_stats.rx_packets;
         tot_tx_bytes += rp->dpdk_ext_rx_stats.rx_bytes;
         tot_good     += rp->dpdk_ext_rx_stats.good_pkts;
         tot_bad      += rp->dpdk_ext_rx_stats.bad_pkts;
@@ -624,67 +634,83 @@ static void helper_render_final_totals(FILE *out,
     printf("  Bit Errors            : %20lu\n", tot_bit_err);
     printf("  BER                   : %20.2e\n", ber);
 
-    // ---------- 2. Purity check ----------
+    // ---------- 2. Where every arrival went ----------
+    // Each line below is measured, and they are meant to add up: the hardware
+    // says how many packets it put on the PRBS queues, and every one of them
+    // was either validated as PRBS or turned away for a stated reason.
     uint64_t hm12 = 0, fo12 = 0, hm13 = 0, fo13 = 0;
     raw_socket_get_excluded_counts(0, &hm12, &fo12);
     raw_socket_get_excluded_counts(1, &hm13, &fo13);
 
-    // The totals above count PRBS-validated packets only, so foreign traffic
-    // cannot get into them by construction. What this block reports is how
-    // much was turned away - and, via the HW delta, whether anything arrived
-    // that none of the named buckets accounts for.
-    uint64_t hw_delta = (tot_hw_q_pkts > tot_tx_pkts)
-                            ? (tot_hw_q_pkts - tot_tx_pkts) : 0;
-    uint64_t accounted = tot_short + tot_other;
-    bool pure = (hw_delta == accounted);
+    const uint64_t turned_away = tot_short + tot_other;
+    const uint64_t hw_accounted = tot_dpdk_validated + turned_away;
+    const uint64_t hw_unaccounted =
+        (tot_hw_q_pkts > hw_accounted) ? (tot_hw_q_pkts - hw_accounted) : 0;
+    const uint64_t hw_over =
+        (hw_accounted > tot_hw_q_pkts) ? (hw_accounted - tot_hw_q_pkts) : 0;
 
-    printf("\n--- Purity Check (non-PRBS traffic kept OUT of the numbers above) ---\n");
-    printf("  HW packets on PRBS queues (DPDK 0-31)     : %lu\n", tot_hw_q_pkts);
-    printf("  Of which PRBS-validated (counted above)   : %lu\n", tot_tx_pkts);
-    printf("  Turned away                               : %lu\n", hw_delta);
-    printf("  Foreign frames on PRBS queues (DPDK 0-31) : %lu\n", tot_other);
-    printf("  Health Monitor frames excluded  (Port 13) : %lu\n", hm13);
-    printf("  Health Monitor frames excluded  (Port 12) : %lu\n", hm12);
-    printf("  Other foreign frames excluded   (Port 12) : %lu\n", fo12);
-    printf("  Other foreign frames excluded   (Port 13) : %lu\n", fo13);
-    printf("  Undersized frames dropped                 : %lu\n", tot_short);
-
-    // Name the foreign traffic rather than just counting it: "328 foreign
+    printf("\n--- Where every arrival went ---\n");
+    printf("  DPDK queues 0-3, HW packets received      : %lu\n", tot_hw_q_pkts);
+    printf("    validated as PRBS (counted above)       : %lu\n", tot_dpdk_validated);
+    printf("    undersized, never validated             : %lu\n", tot_short);
+    printf("    foreign (PTP/ARP/...), never validated  : %lu\n", tot_other);
+    if (hw_over) {
+        printf("    OVER-COUNTED                            : %lu\n", hw_over);
+    } else {
+        printf("    unaccounted                             : %lu\n", hw_unaccounted);
+    }
+    // Name the foreign traffic rather than just counting it: "319 foreign
     // frames" does not say whether PTP escaped its queue or the switch is
     // simply flooding LLDP at us.
-    {
+    if (tot_other > 0) {
         uint16_t ftypes[8];
         uint64_t fcounts[8];
         int fn = txrx_get_foreign_ethertypes(ftypes, fcounts,
                                              (int)(sizeof(ftypes) / sizeof(ftypes[0])));
-        if (fn > 0) {
-            printf("  Foreign traffic by EtherType:\n");
-            for (int i = 0; i < fn; i++) {
-                const char *name;
-                switch (ftypes[i]) {
-                    case 0x88F7: name = "PTP (escaped queue 5!)"; break;
-                    case 0x88CC: name = "LLDP (switch)";          break;
-                    case 0x0806: name = "ARP";                    break;
-                    case 0x8809: name = "LACP/slow protocols";    break;
-                    case 0x86DD: name = "IPv6";                   break;
-                    case 0x8892: name = "PROFINET";               break;
-                    default:     name = (ftypes[i] < 0x0600) ? "802.3 LLC (STP/BPDU)"
-                                                             : "unknown";     break;
-                }
-                printf("      0x%04X %-24s : %lu\n", ftypes[i], name, fcounts[i]);
+        for (int i = 0; i < fn; i++) {
+            const char *name;
+            switch (ftypes[i]) {
+                case 0x88F7: name = "PTP (escaped queue 5!)"; break;
+                case 0x88CC: name = "LLDP (switch)";          break;
+                case 0x0806: name = "ARP";                    break;
+                case 0x8809: name = "LACP/slow protocols";    break;
+                case 0x86DD: name = "IPv6";                   break;
+                case 0x8892: name = "PROFINET";               break;
+                default:     name = (ftypes[i] < 0x0600) ? "802.3 LLC (STP/BPDU)"
+                                                         : "unknown";     break;
             }
+            printf("      0x%04X %-24s : %lu\n", ftypes[i], name, fcounts[i]);
         }
     }
-    printf("  => PRBS totals count validated PRBS packets only.\n");
-    if (pure) {
-        printf("     Every non-PRBS frame on those queues is accounted for above.\n");
+    printf("  Raw Ports 12/13, validated as PRBS        : %lu\n", tot_raw_validated);
+    printf("  Health Monitor frames excluded  (P12/P13) : %lu / %lu\n", hm12, hm13);
+    printf("  Other foreign frames excluded   (P12/P13) : %lu / %lu\n", fo12, fo13);
+
+    // ---------- 3. Sent vs came back ----------
+    // The two headline figures are not the same kind of measurement. The
+    // Server->DTN side counts a packet when the NIC puts it on the wire; the
+    // DTN->Server side counts it only if it comes back AND validates. Waiting
+    // longer cannot close that - the RX drain already removes everything that
+    // was merely still in flight - so whatever is left here is packets that
+    // went out and did not return as valid PRBS.
+    const uint64_t not_returned =
+        (tot_rx_pkts > tot_tx_pkts) ? (tot_rx_pkts - tot_tx_pkts) : 0;
+    const uint64_t extra_returned =
+        (tot_tx_pkts > tot_rx_pkts) ? (tot_tx_pkts - tot_rx_pkts) : 0;
+
+    printf("\n--- Sent vs came back ---\n");
+    printf("  Sent      (Server->DTN)                   : %lu\n", tot_rx_pkts);
+    printf("  Returned and validated (DTN->Server)      : %lu\n", tot_tx_pkts);
+    if (extra_returned) {
+        printf("  MORE RETURNED THAN SENT                   : %lu  <- impossible,\n",
+               extra_returned);
+        printf("     the two sides are not measuring the same traffic\n");
     } else {
-        printf("     NOTE: %lu turned-away frames vs %lu accounted for - %lu\n",
-               hw_delta, accounted,
-               (hw_delta > accounted) ? (hw_delta - accounted)
-                                      : (accounted - hw_delta));
-        printf("     unexplained. The totals stay PRBS-only either way.\n");
+        printf("  Sent but not returned as valid PRBS       : %lu  (%.5f%%)\n",
+               not_returned,
+               tot_rx_pkts ? (double)not_returned * 100.0 / (double)tot_rx_pkts : 0.0);
     }
+
 #else
     (void)ports_config;
 #endif /* STATS_MODE_DTN */
