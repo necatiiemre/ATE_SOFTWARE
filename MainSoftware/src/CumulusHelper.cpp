@@ -111,6 +111,14 @@ std::string extractSection(const std::string& text, const std::string& title) {
     return out.str();
 }
 
+// Per-port marker echoed before each "nv show" so one SSH session's combined
+// output can be split back up locally. Deliberately alphanumeric+underscore:
+// the remote command travels inside double quotes, so anything needing shell
+// quoting (or a leading '#', which would start a comment) cannot be used.
+std::string counterPortMarker(const std::string& port) {
+    return "__CUMULUS_PORT_" + port + "__";
+}
+
 // Compute MD5 of a local file by shelling out to md5sum - the binary is
 // always present on Linux and we already rely on it on the remote side.
 // Returns empty string on error.
@@ -2080,11 +2088,19 @@ bool CumulusHelper::saveCounterReport(const std::string &local_path,
     // line so the combined output can be split back up per port locally.
     // 'nv show' never fails the session hard, so no 'set -e' here - a port
     // that errors just yields an empty section and is reported as such.
-    static const std::string kMarker = "##### CUMULUS-PORT ";
+    //
+    // Quoting: SSHDeployer wraps the remote command in double quotes and hands
+    // it to the local shell, so the body must contain no double quotes and no
+    // '$' - both would be consumed locally before ssh ever sees them. Hence
+    // the marker is plain [A-Za-z0-9_] (needs no quoting, and cannot start a
+    // comment the way '#' would) and there is no PATH export: nv lives in
+    // /usr/bin, which is always on the switch's PATH.
     std::ostringstream body;
-    body << "export PATH=/sbin:/usr/sbin:/bin:/usr/bin:$PATH";
+    bool first = true;
     for (const auto &port : ports) {
-        body << "; echo \"" << kMarker << port << " #####\"";
+        if (!first) body << "; ";
+        first = false;
+        body << "echo " << counterPortMarker(port);
         body << "; nv show interface " << port << " counters 2>&1";
     }
     std::string command = "sh -c '" + body.str() + "'";
@@ -2112,14 +2128,17 @@ bool CumulusHelper::saveCounterReport(const std::string &local_path,
 
     size_t ports_with_data = 0;
     for (size_t i = 0; i < ports.size(); ++i) {
-        // The block for this port runs from its marker to the next one.
-        const std::string marker = kMarker + ports[i] + " #####";
+        // The block for this port runs from its marker to the next one. Skip
+        // the marker echoed back by the shell itself, if any, by searching
+        // for the last occurrence-free start: the first hit is the command
+        // echo, which ssh -n never produces, so a plain find is enough.
+        const std::string marker = counterPortMarker(ports[i]);
         size_t start = raw.find(marker);
         if (start == std::string::npos) continue;
         start += marker.size();
 
         size_t end = (i + 1 < ports.size())
-                         ? raw.find(kMarker + ports[i + 1] + " #####", start)
+                         ? raw.find(counterPortMarker(ports[i + 1]), start)
                          : std::string::npos;
         const std::string block = raw.substr(
             start, end == std::string::npos ? std::string::npos : end - start);
