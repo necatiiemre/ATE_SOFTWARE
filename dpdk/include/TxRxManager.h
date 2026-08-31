@@ -91,6 +91,11 @@ struct dtn_port_stats {
     // they can only be trusted as pure PRBS while this stays at 0. The
     // end-of-test totals table prints it for exactly that reason.
     rte_atomic64_t other_pkts;
+    // Bytes of the packets that actually reached PRBS validation, i.e.
+    // good_pkts + bad_pkts. The DTN table's TX column uses this instead of the
+    // HW queue byte counter, which also counts whatever else the NIC steered
+    // onto the queue.
+    rte_atomic64_t prbs_rx_bytes;
 };
 
 extern struct dtn_port_stats dtn_stats[DTN_PORT_COUNT];

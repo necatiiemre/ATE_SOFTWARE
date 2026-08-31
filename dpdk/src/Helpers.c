@@ -138,11 +138,17 @@ static void helper_render_dtn_stats(FILE *out,
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *entry = &dtn_port_map[dtn];
 
-        // DTN TX (DTN→Server) = Server RX = HW q_ipackets[queue] on tx_server_port
-        uint16_t srv_rx_port = entry->tx_server_port;
-        uint16_t srv_rx_queue = entry->tx_server_queue;
-        uint64_t dtn_tx_pkts = port_hw_stats[srv_rx_port].q_ipackets[srv_rx_queue];
-        uint64_t dtn_tx_bytes = port_hw_stats[srv_rx_port].q_ibytes[srv_rx_queue];
+        // DTN TX (DTN→Server) = what the server received on this DTN port's
+        // queue. Taken from the PRBS counters, NOT from the HW queue counter:
+        // the NIC also steers non-PRBS traffic onto queues 0-3 (roughly one
+        // small frame per port per second, counted as `short` below), and
+        // q_ipackets would report those as test traffic. good+bad is exactly
+        // the set of packets that reached PRBS validation.
+        uint64_t dtn_tx_pkts =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        uint64_t dtn_tx_bytes =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
 
         // DTN RX (Server→DTN) = Server TX = HW q_opackets[queue] on rx_server_port
         uint16_t srv_tx_port = entry->rx_server_port;
@@ -505,14 +511,22 @@ static void helper_render_final_totals(FILE *out,
     uint64_t tot_rx_pkts = 0, tot_rx_bytes = 0;
     uint64_t tot_good = 0, tot_bad = 0, tot_lost = 0, tot_bit_err = 0;
     uint64_t tot_short = 0, tot_other = 0;
+    // Everything the NIC delivered to the PRBS queues, PRBS or not. Compared
+    // against the PRBS figure below so the gap is visible rather than implied.
+    uint64_t tot_hw_q_pkts = 0;
 
     struct raw_socket_port *p12 = &raw_ports[0];
     struct raw_socket_port *p13 = &raw_ports[1];
 
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *e = &dtn_port_map[dtn];
-        tot_tx_pkts  += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
-        tot_tx_bytes += hw[e->tx_server_port].q_ibytes[e->tx_server_queue];
+        // TX side: PRBS-validated packets only, matching the DTN table.
+        tot_tx_pkts  += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+                        (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
+        tot_hw_q_pkts += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
+        // RX side: the server's own transmissions on queues 0-3, which carry
+        // nothing but PRBS (external TX uses queue 4, PTP queue 5).
         tot_rx_pkts  += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
         tot_rx_bytes += hw[e->rx_server_port].q_obytes[e->rx_server_queue];
     }
@@ -570,9 +584,19 @@ static void helper_render_final_totals(FILE *out,
     raw_socket_get_excluded_counts(0, &hm12, &fo12);
     raw_socket_get_excluded_counts(1, &hm13, &fo13);
 
-    bool pure = (tot_other == 0 && fo12 == 0 && fo13 == 0);
+    // The totals above count PRBS-validated packets only, so foreign traffic
+    // cannot get into them by construction. What this block reports is how
+    // much was turned away - and, via the HW delta, whether anything arrived
+    // that none of the named buckets accounts for.
+    uint64_t hw_delta = (tot_hw_q_pkts > tot_tx_pkts)
+                            ? (tot_hw_q_pkts - tot_tx_pkts) : 0;
+    uint64_t accounted = tot_short + tot_other;
+    bool pure = (hw_delta == accounted);
 
     printf("\n--- Purity Check (non-PRBS traffic kept OUT of the numbers above) ---\n");
+    printf("  HW packets on PRBS queues (DPDK 0-31)     : %lu\n", tot_hw_q_pkts);
+    printf("  Of which PRBS-validated (counted above)   : %lu\n", tot_tx_pkts);
+    printf("  Turned away                               : %lu\n", hw_delta);
     printf("  Foreign frames on PRBS queues (DPDK 0-31) : %lu\n", tot_other);
     printf("  Health Monitor frames excluded  (Port 13) : %lu\n", hm13);
     printf("  Health Monitor frames excluded  (Port 12) : %lu\n", hm12);
@@ -606,11 +630,15 @@ static void helper_render_final_totals(FILE *out,
             }
         }
     }
-    printf("  => PRBS totals are %s\n",
-           pure ? "PURE (no foreign frame reached a PRBS counter)"
-                : "SUSPECT - foreign frames reached a PRBS queue, see above");
-    if (!pure) {
-        printf("     Check the log for \"should be Q5\" (PTP rte_flow rule failed)\n");
+    printf("  => PRBS totals count validated PRBS packets only.\n");
+    if (pure) {
+        printf("     Every non-PRBS frame on those queues is accounted for above.\n");
+    } else {
+        printf("     NOTE: %lu turned-away frames vs %lu accounted for - %lu\n",
+               hw_delta, accounted,
+               (hw_delta > accounted) ? (hw_delta - accounted)
+                                      : (accounted - hw_delta));
+        printf("     unexplained. The totals stay PRBS-only either way.\n");
     }
 #else
     (void)ports_config;

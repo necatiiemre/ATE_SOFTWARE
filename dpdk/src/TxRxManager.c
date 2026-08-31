@@ -463,6 +463,7 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].short_pkts);
         rte_atomic64_init(&dtn_stats[i].total_rx_pkts);
         rte_atomic64_init(&dtn_stats[i].other_pkts);
+        rte_atomic64_init(&dtn_stats[i].prbs_rx_bytes);
     }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
@@ -1432,6 +1433,11 @@ int rx_worker(void *arg)
     uint64_t local_lost = 0, local_ooo = 0, local_dup = 0, local_short = 0;
     uint64_t local_external = 0;  // External packets (VL-ID outside expected range)
     uint64_t local_other = 0;     // Foreign (non-PRBS) frames seen on this queue
+    // Bytes of packets that actually reached PRBS validation. The DTN table's
+    // TX column used to come straight from the HW queue counter, which counts
+    // whatever the NIC steered onto the queue - including the ~1/s per port of
+    // small non-PRBS frames that show up as `short` below.
+    uint64_t local_prbs_bytes = 0;
     uint64_t local_raw_rx = 0, local_raw_bytes = 0;  // Raw socket packet counters
     const uint32_t FLUSH = 131072;
 
@@ -1464,6 +1470,7 @@ int rx_worker(void *arg)
             local_rx = local_good = local_bad = local_bits = 0;
             local_lost = local_ooo = local_dup = local_short = local_external = 0;
             local_other = 0;
+            local_prbs_bytes = 0;
             local_raw_rx = local_raw_bytes = 0;
             my_stats_gen = cur_stats_gen;
         }
@@ -1583,6 +1590,8 @@ int rx_worker(void *arg)
                     struct raw_socket_port *raw_port = find_raw_socket_port_by_vl_id(raw_vl_id);
                     if (raw_port != NULL && raw_port->prbs_cache_ext != NULL)
                     {
+                        local_prbs_bytes += m->pkt_len;
+
                         // Get sequence number from payload
                         uint64_t raw_seq = *(uint64_t *)(pkt + raw_payload_off);
 
@@ -1726,6 +1735,8 @@ int rx_worker(void *arg)
                     struct raw_socket_port *raw_port = find_raw_socket_port_by_vl_id(vl_id);
                     if (raw_port != NULL && raw_port->prbs_cache_ext != NULL)
                     {
+                        local_prbs_bytes += m->pkt_len;
+
                         // Get sequence number from payload
                         uint64_t ext_seq = *(uint64_t *)(pkt + payload_off);
 
@@ -1910,6 +1921,8 @@ int rx_worker(void *arg)
                 // ==========================================
                 // PRBS-31 VERIFICATION
                 // ==========================================
+                local_prbs_bytes += m->pkt_len;
+
                 uint8_t *recv = pkt + payload_off + SEQ_BYTES;
 
 #if IMIX_ENABLED
@@ -2016,11 +2029,13 @@ int rx_worker(void *arg)
                     rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
                     rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
                     rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
+                    rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes);
                 }
 #endif
                 local_rx = local_good = local_bad = local_bits = 0;
                 local_lost = local_ooo = local_dup = local_short = local_external = 0;
                 local_other = 0;
+                local_prbs_bytes = 0;
                 local_raw_rx = local_raw_bytes = 0;
             }
         }
@@ -2053,6 +2068,7 @@ int rx_worker(void *arg)
             rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup);
             rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);
             rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);
+            rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes);
         }
 #endif
     }
