@@ -609,10 +609,6 @@ struct port_vlan_config
 
 #define DPDK_EXT_TX_ENABLED 1
 #define DPDK_EXT_TX_PORT_COUNT 6 // Port 2,3,4,5 → Port 12 | Port 0,6 → Port 13
-// TX queue the external-TX workers use. Queues 0-3 carry the PRBS loopback
-// streams and queue 5 is PTP, so this one holds external TX and nothing else -
-// which is what makes q_opackets[DPDK_EXT_TX_QUEUE_ID] a clean measure of it.
-#define DPDK_EXT_TX_QUEUE_ID 4
 #define DPDK_EXT_TX_QUEUES_PER_PORT 4
 
 // External TX target configuration

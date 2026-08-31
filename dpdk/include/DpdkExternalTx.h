@@ -32,6 +32,16 @@ struct dpdk_ext_tx_worker_params {
 };
 
 // Per-port external TX statistics
+// TX queue the external-TX workers use. Queues 0-3 carry the PRBS loopback
+// streams and queue 5 is PTP, so this queue holds external TX and nothing
+// else - which is what makes q_opackets[DPDK_EXT_TX_QUEUE_ID] a clean measure
+// of how much external TX left the server. Defined here rather than in
+// Config.h so it travels with the header both the sender and the statistics
+// code already include.
+#ifndef DPDK_EXT_TX_QUEUE_ID
+#define DPDK_EXT_TX_QUEUE_ID 4
+#endif
+
 struct dpdk_ext_tx_stats {
     rte_atomic64_t tx_pkts;     // Number of packets sent
     rte_atomic64_t tx_bytes;    // Number of bytes sent

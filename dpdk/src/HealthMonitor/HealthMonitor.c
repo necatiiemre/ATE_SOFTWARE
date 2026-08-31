@@ -54,13 +54,14 @@ static const uint8_t health_query_template[HEALTH_MONITOR_QUERY_SIZE] = {
     0x00, 0x64, 0x00, 0x64,              // SRC Port: 100, DST Port: 100
     0x00, 0x1e, 0x00, 0x00,              // Length: 30, Checksum: 0
 
-    // Payload (22 bytes)
+    // Payload (22 bytes). The last byte, at offset 63, is the sequence number:
+    // 14 + 20 + 8 + 22 = 64, which is the whole packet, so it has no room of
+    // its own - listing it separately put a 65th element in a 64-byte array
+    // and the compiler dropped it. Its value here only documents where
+    // HEALTH_MONITOR_SEQ_INIT starts; every send overwrites it.
     0x26, 0x00, 0x52, 0x00, 0x00, 0x00,
     0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-
-    // Sequence Number (1 byte) - offset 63
-    0x2f
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f
 };
 
 // ==========================================
