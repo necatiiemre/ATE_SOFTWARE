@@ -379,7 +379,13 @@ void init_vlan_config(void)
     printf("Loaded VLAN configuration for %d ports\n", MAX_PORTS_CONFIG);
 }
 
-void init_rx_stats(void)
+// counters_only: clear the aggregate counters but leave the VL-ID sequence
+// trackers alone. Used by helper_reset_stats(), which runs on the main thread
+// while the RX workers are live: wiping max_seq / pkt_count / initialized
+// underneath them destroys the watermark baseline the shutdown loss
+// calculation depends on, and races with their atomic updates besides. Only
+// the startup call, made before any worker exists, clears the trackers.
+static void init_rx_stats_impl(bool counters_only)
 {
     for (int i = 0; i < MAX_PORTS; i++)
     {
@@ -398,14 +404,30 @@ void init_rx_stats(void)
         rte_atomic64_init(&rx_stats_per_port[i].raw_socket_rx_bytes);
 
         // Initialize VL-ID sequence trackers (lock-free, watermark-based)
-        for (int vl = 0; vl <= MAX_VL_ID; vl++)
+        if (!counters_only)
         {
-            port_vl_trackers[i].vl_trackers[vl].max_seq = 0;
-            port_vl_trackers[i].vl_trackers[vl].pkt_count = 0;
-            port_vl_trackers[i].vl_trackers[vl].initialized = 0;  // 0=false, 1=true
+            for (int vl = 0; vl <= MAX_VL_ID; vl++)
+            {
+                port_vl_trackers[i].vl_trackers[vl].max_seq = 0;
+                port_vl_trackers[i].vl_trackers[vl].min_seq = 0;
+                port_vl_trackers[i].vl_trackers[vl].pkt_count = 0;
+                port_vl_trackers[i].vl_trackers[vl].initialized = 0;  // 0=false, 1=true
+            }
         }
     }
-    printf("RX statistics and VL-ID sequence trackers initialized for all ports\n");
+    printf(counters_only
+               ? "RX statistics reset (VL-ID sequence trackers kept)\n"
+               : "RX statistics and VL-ID sequence trackers initialized for all ports\n");
+}
+
+void init_rx_stats(void)
+{
+    init_rx_stats_impl(/*counters_only=*/false);
+}
+
+void reset_rx_stats_counters(void)
+{
+    init_rx_stats_impl(/*counters_only=*/true);
 }
 
 #if STATS_MODE_DTN
@@ -1663,9 +1685,11 @@ int rx_worker(void *arg)
                                                                 &expected_init, 1,
                                                                 false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
                                 {
-#if TOKEN_BUCKET_TX_ENABLED
+                                    // Watermark baseline: the first sequence this
+                                    // tracker ever saw. Recorded unconditionally -
+                                    // a tracker can start mid-stream, so "the
+                                    // stream starts at 0" is not a safe assumption.
                                     __atomic_store_n(&raw_seq_tracker->min_seq, raw_seq, __ATOMIC_RELEASE);
-#endif
                                     __atomic_store_n(&raw_seq_tracker->expected_seq, raw_seq + 1, __ATOMIC_RELEASE);
                                 }
                             }
@@ -1815,9 +1839,7 @@ int rx_worker(void *arg)
                                                                 &expected_init, 1,
                                                                 false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
                                 {
-#if TOKEN_BUCKET_TX_ENABLED
                                     __atomic_store_n(&ext_seq_tracker->min_seq, ext_seq, __ATOMIC_RELEASE);
-#endif
                                     __atomic_store_n(&ext_seq_tracker->expected_seq, ext_seq + 1, __ATOMIC_RELEASE);
                                 }
                             }
@@ -1884,9 +1906,7 @@ int rx_worker(void *arg)
                                                         false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
                         {
                             // We won the race - initialize expected_seq
-#if TOKEN_BUCKET_TX_ENABLED
                             __atomic_store_n(&seq_tracker->min_seq, seq, __ATOMIC_RELEASE);
-#endif
                             __atomic_store_n(&seq_tracker->expected_seq, seq + 1, __ATOMIC_RELEASE);
                         }
                     }
@@ -2102,12 +2122,14 @@ int rx_worker(void *arg)
                 uint64_t max_seq = __atomic_load_n(&seq_tracker->max_seq, __ATOMIC_ACQUIRE);
                 uint64_t pkt_count = __atomic_load_n(&seq_tracker->pkt_count, __ATOMIC_ACQUIRE);
 
-#if TOKEN_BUCKET_TX_ENABLED
+                // Count against the first sequence this tracker saw, not
+                // against 0. A tracker that starts mid-stream has a first
+                // sequence of whatever the transmitter had already reached,
+                // and counting from 0 reported exactly that many packets per
+                // VL-ID as lost - tens of thousands per port, out of nowhere.
                 uint64_t min_seq = __atomic_load_n(&seq_tracker->min_seq, __ATOMIC_ACQUIRE);
-                uint64_t expected_count = max_seq - min_seq + 1;
-#else
-                uint64_t expected_count = max_seq + 1;
-#endif
+                uint64_t expected_count = (max_seq >= min_seq)
+                                              ? (max_seq - min_seq + 1) : 0;
                 if (expected_count > pkt_count)
                 {
                     queue_lost += (expected_count - pkt_count);
@@ -2141,12 +2163,14 @@ int rx_worker(void *arg)
                 uint64_t max_seq = __atomic_load_n(&seq_tracker->max_seq, __ATOMIC_ACQUIRE);
                 uint64_t pkt_count = __atomic_load_n(&seq_tracker->pkt_count, __ATOMIC_ACQUIRE);
 
-#if TOKEN_BUCKET_TX_ENABLED
+                // Count against the first sequence this tracker saw, not
+                // against 0. A tracker that starts mid-stream has a first
+                // sequence of whatever the transmitter had already reached,
+                // and counting from 0 reported exactly that many packets per
+                // VL-ID as lost - tens of thousands per port, out of nowhere.
                 uint64_t min_seq = __atomic_load_n(&seq_tracker->min_seq, __ATOMIC_ACQUIRE);
-                uint64_t expected_count = max_seq - min_seq + 1;
-#else
-                uint64_t expected_count = max_seq + 1;
-#endif
+                uint64_t expected_count = (max_seq >= min_seq)
+                                              ? (max_seq - min_seq + 1) : 0;
                 if (expected_count > pkt_count)
                 {
                     total_lost += (expected_count - pkt_count);

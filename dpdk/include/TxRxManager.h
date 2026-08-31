@@ -317,6 +317,12 @@ void print_port_stats(struct ports_config *ports_config);
  */
 void init_rx_stats(void);
 
+// Clear the aggregate RX counters but keep the VL-ID sequence trackers. Use
+// this for a mid-run stats reset: the trackers hold the watermark baseline the
+// shutdown loss calculation works from, and the main thread cannot safely wipe
+// them while the RX workers are updating them.
+void reset_rx_stats_counters(void);
+
 // ==========================================
 // LATENCY TEST STRUCTURES & FUNCTIONS
 // ==========================================

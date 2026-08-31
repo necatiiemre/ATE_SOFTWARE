@@ -60,8 +60,9 @@ void helper_reset_stats(const struct ports_config *ports_config,
         prev_rx_bytes[port_id] = 0;
     }
 
-    // Reset RX validation statistics (PRBS)
-    init_rx_stats();
+    // Reset RX validation statistics (PRBS). Counters only - the VL-ID
+    // sequence trackers must survive, see reset_rx_stats_counters().
+    reset_rx_stats_counters();
 
 #if STATS_MODE_DTN
     init_dtn_stats();
