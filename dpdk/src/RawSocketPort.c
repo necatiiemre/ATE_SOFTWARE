@@ -1497,12 +1497,16 @@ void *raw_rx_worker(void *arg)
         // Extract VL-ID from DST MAC
         uint16_t vl_id = ((uint16_t)pkt_data[4] << 8) | pkt_data[5];
 
-        // Health monitor shares this interface (Port 13) and its responses are
-        // UDP/IPv4, so they pass the EtherType check above. They are excluded
-        // here explicitly rather than relying on the external-TX VL-ID range
-        // check below happening to reject 4488 - widen those ranges one day
-        // and HM would silently land in the PRBS counters.
-        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX) {
+        // Health monitor shares Port 13's interface and its frames are
+        // UDP/IPv4, so they pass the EtherType check above. Both directions
+        // are matched: responses carry VL-ID 4488, and our own queries carry
+        // VL-ID 0 (multicast DST MAC) and get flooded by the switch onto the
+        // other ports too. Excluded explicitly rather than relying on the
+        // external-TX VL-ID range check below happening to reject them -
+        // widen those ranges one day and HM would silently land in the PRBS
+        // counters.
+        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX ||
+            vl_id == HEALTH_MONITOR_QUERY_VL_IDX) {
             g_raw_hm_frames[port->raw_index]++;
             hdr->tp_status = TP_STATUS_KERNEL;
             port->rx_ring_offset = (port->rx_ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;
@@ -1950,12 +1954,16 @@ void *multi_queue_rx_worker(void *arg)
         // Extract VL-ID from DST MAC
         uint16_t vl_id = ((uint16_t)pkt_data[4] << 8) | pkt_data[5];
 
-        // Health monitor shares this interface (Port 13) and its responses are
-        // UDP/IPv4, so they pass the EtherType check above. They are excluded
-        // here explicitly rather than relying on the external-TX VL-ID range
-        // check below happening to reject 4488 - widen those ranges one day
-        // and HM would silently land in the PRBS counters.
-        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX) {
+        // Health monitor shares Port 13's interface and its frames are
+        // UDP/IPv4, so they pass the EtherType check above. Both directions
+        // are matched: responses carry VL-ID 4488, and our own queries carry
+        // VL-ID 0 (multicast DST MAC) and get flooded by the switch onto the
+        // other ports too. Excluded explicitly rather than relying on the
+        // external-TX VL-ID range check below happening to reject them -
+        // widen those ranges one day and HM would silently land in the PRBS
+        // counters.
+        if (vl_id == HEALTH_MONITOR_RESPONSE_VL_IDX ||
+            vl_id == HEALTH_MONITOR_QUERY_VL_IDX) {
             g_raw_hm_frames[port->raw_index]++;
             hdr->tp_status = TP_STATUS_KERNEL;
             queue->ring_offset = (queue->ring_offset + 1) % RAW_SOCKET_RING_FRAME_NR;

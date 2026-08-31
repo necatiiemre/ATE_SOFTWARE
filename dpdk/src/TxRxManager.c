@@ -8,6 +8,7 @@
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_flow.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1498,6 +1499,7 @@ int rx_worker(void *arg)
                 if (ether_type == 0x88F7) {
                     // Untagged PTP packet on normal queue!
                     local_other++;
+                    txrx_note_foreign_ethertype(ether_type);
                     static uint64_t ptp_wrong_queue_count = 0;
                     if (ptp_wrong_queue_count++ < 10) {
                         printf("⚠ PTP PACKET on Port %u Q%u (should be Q5)! EtherType=0x%04X UNTAGGED\n",
@@ -1508,6 +1510,7 @@ int rx_worker(void *arg)
                     uint16_t inner_type = ((uint16_t)pkt[16] << 8) | pkt[17];
                     if (inner_type == 0x88F7) {
                         local_other++;
+                        txrx_note_foreign_ethertype(inner_type);
                         static uint64_t ptp_vlan_wrong_queue_count = 0;
                         if (ptp_vlan_wrong_queue_count++ < 10) {
                             uint16_t vlan_id = (((uint16_t)pkt[14] << 8) | pkt[15]) & 0x0FFF;
@@ -1517,10 +1520,12 @@ int rx_worker(void *arg)
                     } else if (inner_type != 0x0800) {
                         // Tagged but not IPv4 - ARP, LLDP, BPDU, ...
                         local_other++;
+                        txrx_note_foreign_ethertype(inner_type);
                     }
                 } else if (ether_type != 0x0800) {
                     // Untagged and not IPv4 - foreign frame on a PRBS queue.
                     local_other++;
+                    txrx_note_foreign_ethertype(ether_type);
                 }
 
                 if (ether_type == 0x0800)
@@ -2125,6 +2130,56 @@ int rx_worker(void *arg)
 // ==========================================
 // START TX/RX WORKERS
 // ==========================================
+
+// ==========================================
+// FOREIGN ETHERTYPE HISTOGRAM
+// ==========================================
+// Small table recording what non-PRBS traffic actually turned up on the PRBS
+// queues. Only touched on the foreign-frame path, which is a handful of frames
+// per second at most, so the atomics here never sit in the hot path. Read once
+// by the end-of-test totals table: without it "328 foreign frames" says
+// something is wrong but not what.
+#define FOREIGN_ETHERTYPE_SLOTS 8
+static uint16_t g_foreign_et_type[FOREIGN_ETHERTYPE_SLOTS];
+static uint64_t g_foreign_et_count[FOREIGN_ETHERTYPE_SLOTS];
+static int      g_foreign_et_used = 0;   // guarded by g_foreign_et_lock
+// pthread rather than rte_spinlock: statically initialisable with no DPDK
+// version dependency, and this path is cold (a few hundred calls per run).
+static pthread_mutex_t g_foreign_et_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void txrx_note_foreign_ethertype(uint16_t ethertype)
+{
+    pthread_mutex_lock(&g_foreign_et_lock);
+    for (int i = 0; i < g_foreign_et_used; i++) {
+        if (g_foreign_et_type[i] == ethertype) {
+            g_foreign_et_count[i]++;
+            pthread_mutex_unlock(&g_foreign_et_lock);
+            return;
+        }
+    }
+    if (g_foreign_et_used < FOREIGN_ETHERTYPE_SLOTS) {
+        g_foreign_et_type[g_foreign_et_used] = ethertype;
+        g_foreign_et_count[g_foreign_et_used] = 1;
+        g_foreign_et_used++;
+        printf("⚠ Foreign EtherType 0x%04X seen on a PRBS queue\n", ethertype);
+    }
+    // Table full: further distinct types are not tracked. The aggregate
+    // other_pkts counter still reflects them.
+    pthread_mutex_unlock(&g_foreign_et_lock);
+}
+
+int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_foreign_et_lock);
+    for (int i = 0; i < g_foreign_et_used && n < max; i++) {
+        types[n] = g_foreign_et_type[i];
+        counts[n] = g_foreign_et_count[i];
+        n++;
+    }
+    pthread_mutex_unlock(&g_foreign_et_lock);
+    return n;
+}
 
 // Lcores the RX workers were launched on, so shutdown can wait for exactly
 // those and not for every worker lcore. rte_eal_mp_wait_lcore() cannot be used

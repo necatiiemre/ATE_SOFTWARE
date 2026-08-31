@@ -279,6 +279,15 @@ int start_txrx_workers(struct ports_config *ports_config,
 // each worker still held.
 void txrx_wait_rx_workers(void);
 
+// Record that a non-PRBS frame with this EtherType turned up on a PRBS RX
+// queue. Called only on the foreign-frame path, so the small lock it takes is
+// never in the hot path.
+void txrx_note_foreign_ethertype(uint16_t ethertype);
+
+// Read back the foreign-EtherType table for the end-of-test totals. Fills
+// `types`/`counts` with up to `max` entries and returns how many were written.
+int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max);
+
 /**
  * Print port statistics from DPDK
  */

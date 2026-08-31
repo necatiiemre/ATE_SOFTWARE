@@ -20,6 +20,12 @@
 
 // VL_IDX for response filtering (DST MAC offset 4-5)
 #define HEALTH_MONITOR_RESPONSE_VL_IDX 0x1188  // 4488 decimal
+// VL_IDX carried by our own query packets: their DST MAC is the multicast
+// 03:00:00:00:00:00, so bytes 4-5 read back as 0. The switch floods those
+// queries to the other ports, where the raw socket RX rings see them, so the
+// PRBS filters need to recognise them too. VL-ID 0 is never a valid PRBS
+// VL-ID, so matching it costs nothing.
+#define HEALTH_MONITOR_QUERY_VL_IDX 0x0000
 #define HEALTH_MONITOR_RESPONSE_VL_IDX_HIGH 0x11
 #define HEALTH_MONITOR_RESPONSE_VL_IDX_LOW 0x88
 

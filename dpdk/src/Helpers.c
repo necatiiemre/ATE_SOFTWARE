@@ -562,6 +562,33 @@ static void helper_render_final_totals(FILE *out,
     printf("  Other foreign frames excluded   (Port 12) : %lu\n", fo12);
     printf("  Other foreign frames excluded   (Port 13) : %lu\n", fo13);
     printf("  Undersized frames dropped                 : %lu\n", tot_short);
+
+    // Name the foreign traffic rather than just counting it: "328 foreign
+    // frames" does not say whether PTP escaped its queue or the switch is
+    // simply flooding LLDP at us.
+    {
+        uint16_t ftypes[8];
+        uint64_t fcounts[8];
+        int fn = txrx_get_foreign_ethertypes(ftypes, fcounts,
+                                             (int)(sizeof(ftypes) / sizeof(ftypes[0])));
+        if (fn > 0) {
+            printf("  Foreign traffic by EtherType:\n");
+            for (int i = 0; i < fn; i++) {
+                const char *name;
+                switch (ftypes[i]) {
+                    case 0x88F7: name = "PTP (escaped queue 5!)"; break;
+                    case 0x88CC: name = "LLDP (switch)";          break;
+                    case 0x0806: name = "ARP";                    break;
+                    case 0x8809: name = "LACP/slow protocols";    break;
+                    case 0x86DD: name = "IPv6";                   break;
+                    case 0x8892: name = "PROFINET";               break;
+                    default:     name = (ftypes[i] < 0x0600) ? "802.3 LLC (STP/BPDU)"
+                                                             : "unknown";     break;
+                }
+                printf("      0x%04X %-24s : %lu\n", ftypes[i], name, fcounts[i]);
+            }
+        }
+    }
     printf("  => PRBS totals are %s\n",
            pure ? "PURE (no foreign frame reached a PRBS counter)"
                 : "SUSPECT - foreign frames reached a PRBS queue, see above");
