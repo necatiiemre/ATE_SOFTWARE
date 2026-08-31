@@ -259,7 +259,12 @@ int rx_worker(void *arg);
 /**
  * Start TX/RX workers for all ports
  */
-int start_txrx_workers(struct ports_config *ports_config, volatile bool *stop_flag);
+// stop_flag stops the TX workers, rx_stop_flag stops the RX workers. They are
+// separate so that on shutdown TX can be cut while RX keeps draining the
+// packets still in flight (see RX_DRAIN_SECONDS).
+int start_txrx_workers(struct ports_config *ports_config,
+                       volatile bool *stop_flag,
+                       volatile bool *rx_stop_flag);
 
 /**
  * Print port statistics from DPDK

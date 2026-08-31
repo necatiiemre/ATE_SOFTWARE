@@ -6,6 +6,17 @@
 #define stringify(x) #x
 
 // ==========================================
+// RX DRAIN ON SHUTDOWN
+// ==========================================
+// On Ctrl+C the TX workers stop immediately, but the RX workers keep running
+// for this many seconds so the packets that were still in flight (in switch
+// queues, NIC rings, the DUT's own buffers) are received and counted. Without
+// it the final table under-reports RX and shows those packets as lost.
+#ifndef RX_DRAIN_SECONDS
+#define RX_DRAIN_SECONDS 10
+#endif
+
+// ==========================================
 // TOKEN BUCKET TX MODE (must be defined early, used throughout)
 // ==========================================
 // 0 = Current smooth pacing mode (rate limiter based)

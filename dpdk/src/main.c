@@ -56,6 +56,12 @@ static bool check_and_remove_daemon_flag(int *argc, char const *argv[]) {
     return found;
 }
 
+// Stop flag for the RX workers only. force_quit (Common.h) cuts TX, the health
+// monitor, PTP and the PSU listener the moment Ctrl+C arrives; RX keeps running
+// off this flag for RX_DRAIN_SECONDS afterwards so the packets still in flight
+// are received and counted before the final table is rendered.
+static volatile bool force_quit_rx = false;
+
 // Expected 28V power status from MainSoftware (0xFF = check disabled)
 static uint8_t g_expected_power_status = 0xFF;
 static bool    g_power_status_check_enabled = false;
@@ -455,7 +461,7 @@ int main(int argc, char const *argv[])
     printf("\n=== Latency test complete, starting normal TX/RX workers ===\n\n");
 #endif
 
-    int start_ret = start_txrx_workers(&ports_config, &force_quit);
+    int start_ret = start_txrx_workers(&ports_config, &force_quit, &force_quit_rx);
     if (start_ret < 0)
     {
         printf("Failed to start TX/RX workers\n");
@@ -470,7 +476,7 @@ int main(int argc, char const *argv[])
     if (raw_ports_initialized)
     {
         printf("\n=== Starting Raw Socket Workers ===\n");
-        start_ret = start_raw_socket_workers(&force_quit);
+        start_ret = start_raw_socket_workers(&force_quit, &force_quit_rx);
         if (start_ret < 0)
         {
             printf("Warning: Failed to start raw socket workers\n");
@@ -652,21 +658,34 @@ int main(int argc, char const *argv[])
     }
     fflush(stdout);
 
-    // Main loop - print stats table every second
+    // Main loop - print stats table every second. It does not end the moment
+    // Ctrl+C arrives: force_quit stops the TX workers, and we then keep
+    // rendering for RX_DRAIN_SECONDS while the RX workers collect whatever is
+    // still in flight. Only after that window is the snapshot frozen and the
+    // RX workers released.
     uint32_t test_time = 0;
+    bool     draining = false;
+    uint32_t drain_until = 0;
 
-    while (!force_quit)
+    while (1)
     {
         sleep(1);
 
-        // A stop (Ctrl+C) was requested while we were sleeping: FREEZE the
-        // summary-log snapshot now so it keeps the DTN table + Health + PSU
-        // block from the last full second BEFORE the signal. We deliberately
-        // do NOT break here - the loop still renders this second exactly as it
-        // always did, so the normal per-second log (dpdk_app.log) is unchanged.
-        // Only the summary snapshot stops updating (store becomes a no-op).
-        if (force_quit) {
-            shutdown_snapshot_freeze();
+        // First second in which the stop request is visible: TX (DPDK,
+        // external and raw socket) is already unwinding on force_quit, RX is
+        // not - it runs off force_quit_rx, which stays false until the drain
+        // window closes below.
+        if (force_quit && !draining)
+        {
+            draining = true;
+            drain_until = test_time + RX_DRAIN_SECONDS;
+            printf("\n");
+            printf("═══════════════════════════════════════════════════════════════\n");
+            printf("   TX STOPPED - DRAINING RX FOR %u SECONDS\n",
+                   (unsigned)RX_DRAIN_SECONDS);
+            printf("   (in-flight packets are still being counted)\n");
+            printf("═══════════════════════════════════════════════════════════════\n");
+            printf("\n");
         }
 
         test_time++;
@@ -706,16 +725,30 @@ int main(int argc, char const *argv[])
                 prev_rx_bytes[port_id] = st.ibytes;
             }
         }
+
+        // Drain window is over. The table just rendered holds the settled
+        // counters, so it is the one the summary log should keep.
+        if (draining && test_time >= drain_until)
+            break;
     }
 
-    // Ctrl+C / stop requested: dump the DTN table + Health Monitor + PSU block
-    // captured in the last full second BEFORE the signal into a single file.
-    // Done here, before any teardown prints, so the snapshot reflects the
-    // pre-stop state (not values re-rendered during shutdown).
+    // Freeze the snapshot on that final table, then let the RX workers go.
+    // Order matters: releasing RX first could let a late packet land between
+    // the last render and the freeze, and the summary would disagree with the
+    // per-second log.
+    shutdown_snapshot_freeze();
+    force_quit_rx = true;
+
+    // Dump the DTN table + Health Monitor + PSU block into a single file. The
+    // DTN table is the one rendered at the end of the RX drain, so its RX and
+    // PRBS counters include the packets that were still in flight when Ctrl+C
+    // arrived. Done here, before any teardown prints, so the snapshot holds
+    // those settled values and not something re-rendered during shutdown.
     {
         char note[96];
         snprintf(note, sizeof(note),
-                 "stop requested at test second %u", test_time);
+                 "stop requested at test second %u (after %u s RX drain)",
+                 test_time, (unsigned)RX_DRAIN_SECONDS);
         if (shutdown_snapshot_dump(note) == 0) {
             printf("[SUMMARY] Last-second summary written to %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);

@@ -267,7 +267,9 @@ void stop_multi_queue_rx_workers(struct raw_socket_port *port);
 // TX/RX WORKER FUNCTIONS
 // ==========================================
 
-int start_raw_socket_workers(volatile bool *stop_flag);
+// stop_flag stops the TX workers, rx_stop_flag stops the RX workers - kept
+// apart so RX can drain in-flight packets after TX is cut at shutdown.
+int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_flag);
 void *raw_tx_worker(void *arg);
 void *raw_rx_worker(void *arg);
 void stop_raw_socket_workers(void);

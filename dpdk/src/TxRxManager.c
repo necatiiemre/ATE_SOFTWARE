@@ -2109,7 +2109,9 @@ int rx_worker(void *arg)
 // START TX/RX WORKERS
 // ==========================================
 
-int start_txrx_workers(struct ports_config *ports_config, volatile bool *stop_flag)
+int start_txrx_workers(struct ports_config *ports_config,
+                       volatile bool *stop_flag,
+                       volatile bool *rx_stop_flag)
 {
     printf("\n=== Starting TX/RX Workers with VL-ID Based Sequence Validation ===\n");
     printf("TX Cores per port: %d\n", NUM_TX_CORES);
@@ -2173,7 +2175,8 @@ int start_txrx_workers(struct ports_config *ports_config, volatile bool *stop_fl
             rx_params[rx_param_idx].lcore_id = lcore_id;
             rx_params[rx_param_idx].vlan_id = rx_vlan;
             rx_params[rx_param_idx].vl_id = rx_vl_id;
-            rx_params[rx_param_idx].stop_flag = stop_flag;
+            // RX runs off its own flag so it can outlive TX at shutdown.
+            rx_params[rx_param_idx].stop_flag = rx_stop_flag;
 
             printf("  RX Queue %u -> Lcore %2u -> VLAN %u <- Port %u (VL-ID Based Seq Validation)\n",
                    q, lcore_id, rx_vlan, paired_port_id);

@@ -32,7 +32,11 @@ struct raw_socket_port raw_ports[MAX_RAW_SOCKET_PORTS];
 struct raw_socket_port_config raw_port_configs[MAX_RAW_SOCKET_PORTS] = RAW_SOCKET_PORTS_CONFIG_INIT;
 int active_raw_port_count = NORMAL_RAW_SOCKET_PORT_COUNT;
 
+// Stops the raw socket TX workers.
 static volatile bool *g_stop_flag = NULL;
+// Stops the raw socket RX workers. Separate from g_stop_flag so RX can keep
+// draining in-flight packets after TX has been cut (see RX_DRAIN_SECONDS).
+static volatile bool *g_rx_stop_flag = NULL;
 
 // ATE mode config (4 port: 12↔14, 13↔15 full-duplex)
 static const struct raw_socket_port_config ate_raw_port_configs[MAX_RAW_SOCKET_PORTS] = ATE_RAW_SOCKET_PORTS_CONFIG_INIT;
@@ -1417,7 +1421,7 @@ void *raw_rx_worker(void *arg)
     uint32_t empty_polls = 0;
     const uint32_t BUSY_POLL_COUNT = 64;  // Spin this many times before blocking poll
 
-    while (!port->stop_flag && (g_stop_flag == NULL || !*g_stop_flag)) {
+    while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
         struct tpacket2_hdr *hdr = (struct tpacket2_hdr *)(
             (uint8_t *)port->rx_ring +
             (port->rx_ring_offset * RAW_SOCKET_RING_FRAME_SIZE));
@@ -1836,7 +1840,7 @@ void *multi_queue_rx_worker(void *arg)
     queue->vl_id_max = 0;
     queue->unique_vl_ids = 0;
 
-    while (!port->stop_flag && (g_stop_flag == NULL || !*g_stop_flag)) {
+    while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
         struct tpacket2_hdr *hdr = (struct tpacket2_hdr *)(
             (uint8_t *)queue->ring +
             (queue->ring_offset * RAW_SOCKET_RING_FRAME_SIZE));
@@ -2244,11 +2248,12 @@ void stop_multi_queue_rx_workers(struct raw_socket_port *port)
 // WORKER MANAGEMENT
 // ==========================================
 
-int start_raw_socket_workers(volatile bool *stop_flag)
+int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_flag)
 {
     printf("\n=== Starting Raw Socket Workers (Multi-Target) ===\n");
 
     g_stop_flag = stop_flag;
+    g_rx_stop_flag = rx_stop_flag;
 
     // Start RX workers
     for (int i = 0; i < active_raw_port_count; i++) {
