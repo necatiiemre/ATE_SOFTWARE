@@ -406,6 +406,21 @@ bool Dtn::configureSequence()
         return false;
     }
 
+    // Snapshot the switch counters now that RemoteConfigSender has run. This
+    // is the post-configuration baseline: counters were cleared right after
+    // the VLAN setup, so whatever shows up here is what the configuration
+    // traffic itself produced, before any test traffic exists. Only the
+    // Ingress Buffer / Egress Queue tables are kept.
+    ensureLogDirectories();
+    const std::string after_config_log =
+        g_ReportManager.getTestLogDir() + "/After_DTN_Config_Log.log";
+    if (!g_cumulus.saveCounterReport(after_config_log,
+                                     "AFTER DTN CONFIG - CUMULUS INTERFACE COUNTERS"))
+    {
+        ErrorPrinter::warn("CUMULUS",
+            "DTN: After-config counter log could not be written.");
+    }
+
     sleep(2);
     // Start SerialTimeForwarder after remote_config_sender is running
     // Reads time from MicroChip SyncServer (USB0), forwards to USB1, verifies on USB2

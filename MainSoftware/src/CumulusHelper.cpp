@@ -2,9 +2,11 @@
 #include "SSHDeployer.h"
 #include "SystemCommand.h"
 #include "ErrorPrinter.h"
+#include "ReportManager.h"
 #include "Utils.h"
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <cctype>
 #include <algorithm>
@@ -41,6 +43,72 @@ std::string extractMd5Hash(const std::string& s) {
     std::smatch m;
     if (std::regex_search(s, m, md5_re)) return m.str();
     return "";
+}
+
+// Drop ANSI escape sequences. NVUE colourises some output when it thinks it
+// is talking to a terminal; the codes would otherwise land in the log file.
+std::string stripAnsi(const std::string& s) {
+    static const std::regex ansi_re("\\x1B\\[[0-9;?]*[A-Za-z]");
+    return std::regex_replace(s, ansi_re, "");
+}
+
+// Split text into lines, dropping a trailing '\r' from CRLF input.
+std::vector<std::string> splitLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream stream(text);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+// True if the line is the '=====' rule that nv prints under a section title.
+bool isSectionRule(const std::string& line) {
+    std::string t = rtrim(line);
+    if (t.size() < 3) return false;
+    return t.find_first_not_of('=') == std::string::npos;
+}
+
+// Pull one named section out of "nv show interface <port> counters" output.
+// Sections look like:
+//
+//     Ingress Buffer Statistics
+//     ============================
+//         <table rows>
+//
+// so the section starts at the title line (whose successor is a '=' rule) and
+// ends just before the next such title. Returns "" when not found.
+std::string extractSection(const std::string& text, const std::string& title) {
+    const std::vector<std::string> lines = splitLines(text);
+
+    size_t start = lines.size();
+    for (size_t i = 0; i + 1 < lines.size(); ++i) {
+        if (rtrim(lines[i]) == title && isSectionRule(lines[i + 1])) {
+            start = i;
+            break;
+        }
+    }
+    if (start == lines.size()) return "";
+
+    // Walk to the next section title (a non-empty line followed by a rule).
+    size_t end = lines.size();
+    for (size_t i = start + 2; i + 1 < lines.size(); ++i) {
+        if (!rtrim(lines[i]).empty() && isSectionRule(lines[i + 1])) {
+            end = i;
+            break;
+        }
+    }
+
+    // Trim the blank lines that separate this section from the next one.
+    while (end > start && rtrim(lines[end - 1]).empty()) --end;
+
+    std::ostringstream out;
+    for (size_t i = start; i < end; ++i) {
+        out << lines[i] << "\n";
+    }
+    return out.str();
 }
 
 // Compute MD5 of a local file by shelling out to md5sum - the binary is
@@ -1959,10 +2027,10 @@ bool CumulusHelper::execute(const std::string &command, std::string *output, boo
 
 // ==================== Counters ====================
 
-bool CumulusHelper::resetCounters()
+std::vector<std::string> CumulusHelper::dtnCounterPorts()
 {
-    // Ports touched by the DTN test: the swp13..swp20 uplinks plus the
-    // swp25..swp32 breakout sub-ports that carry the per-VLAN loopbacks.
+    // The swp13..swp20 uplinks plus the swp25..swp32 breakout sub-ports that
+    // carry the per-VLAN loopbacks.
     std::vector<std::string> ports;
     ports.reserve(8 + 8 * 4);
     for (int p = 13; p <= 20; ++p) {
@@ -1973,6 +2041,12 @@ bool CumulusHelper::resetCounters()
             ports.push_back("swp" + std::to_string(p) + "s" + std::to_string(s));
         }
     }
+    return ports;
+}
+
+bool CumulusHelper::resetCounters()
+{
+    const std::vector<std::string> ports = dtnCounterPorts();
 
     std::vector<std::string> commands;
     commands.reserve(ports.size());
@@ -1994,6 +2068,99 @@ bool CumulusHelper::resetCounters()
 
     DEBUG_LOG(getLogPrefix() << " Interface counters cleared ("
               << ports.size() << " interfaces)");
+    return true;
+}
+
+bool CumulusHelper::saveCounterReport(const std::string &local_path,
+                                      const std::string &title)
+{
+    const std::vector<std::string> ports = dtnCounterPorts();
+
+    // One SSH session for all ports: each "nv show" is preceded by a marker
+    // line so the combined output can be split back up per port locally.
+    // 'nv show' never fails the session hard, so no 'set -e' here - a port
+    // that errors just yields an empty section and is reported as such.
+    static const std::string kMarker = "##### CUMULUS-PORT ";
+    std::ostringstream body;
+    body << "export PATH=/sbin:/usr/sbin:/bin:/usr/bin:$PATH";
+    for (const auto &port : ports) {
+        body << "; echo \"" << kMarker << port << " #####\"";
+        body << "; nv show interface " << port << " counters 2>&1";
+    }
+    std::string command = "sh -c '" + body.str() + "'";
+
+    DEBUG_LOG(getLogPrefix() << " Collecting counters from " << ports.size()
+              << " interfaces...");
+
+    std::string raw;
+    // 40 'nv show' calls take well over the default 120 s timeout.
+    if (!g_ssh_deployer_cumulus.execute(command, &raw, /*use_sudo=*/false,
+                                        /*silent=*/true, /*timeout_ms=*/600000)
+        || raw.empty())
+    {
+        ErrorPrinter::warn("CUMULUS",
+            "Could not read interface counters from the switch");
+        return false;
+    }
+    raw = stripAnsi(raw);
+
+    std::ostringstream report;
+    report << "========================================\n";
+    report << " " << title << "\n";
+    report << " Collected: " << ReportManager::getCurrentTimestamp() << "\n";
+    report << "========================================\n\n";
+
+    size_t ports_with_data = 0;
+    for (size_t i = 0; i < ports.size(); ++i) {
+        // The block for this port runs from its marker to the next one.
+        const std::string marker = kMarker + ports[i] + " #####";
+        size_t start = raw.find(marker);
+        if (start == std::string::npos) continue;
+        start += marker.size();
+
+        size_t end = (i + 1 < ports.size())
+                         ? raw.find(kMarker + ports[i + 1] + " #####", start)
+                         : std::string::npos;
+        const std::string block = raw.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+
+        const std::string ingress =
+            extractSection(block, "Ingress Buffer Statistics");
+        const std::string egress =
+            extractSection(block, "Egress Queue Statistics");
+
+        report << "========================================\n";
+        report << " Interface: " << ports[i] << "\n";
+        report << "========================================\n";
+        if (ingress.empty() && egress.empty()) {
+            report << "(no counter data returned for this interface)\n\n";
+            continue;
+        }
+        if (!ingress.empty()) report << ingress << "\n";
+        if (!egress.empty())  report << egress  << "\n";
+        report << "\n";
+        ++ports_with_data;
+    }
+
+    if (ports_with_data == 0) {
+        ErrorPrinter::warn("CUMULUS",
+            "Interface counter output contained no Ingress/Egress tables - "
+            "not writing " + local_path);
+        return false;
+    }
+
+    std::ofstream out(local_path);
+    if (!out.is_open()) {
+        ErrorPrinter::warn("CUMULUS",
+            "Could not open counter report for writing: " + local_path);
+        return false;
+    }
+    out << report.str();
+    out.close();
+
+    std::cout << getLogPrefix() << " Counter report (" << ports_with_data
+              << "/" << ports.size() << " interfaces) saved to: "
+              << local_path << std::endl;
     return true;
 }
 

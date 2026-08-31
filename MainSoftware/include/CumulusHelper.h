@@ -254,8 +254,14 @@ public:
     // ==================== Counters ====================
 
     /**
-     * @brief Clear the interface counters of every switch port used by the DTN
-     *        test (swp13..swp20 uplinks + swp25s0..swp32s3 breakout ports).
+     * @brief The switch ports the DTN test uses: the swp13..swp20 uplinks plus
+     *        the swp25s0..swp32s3 breakout sub-ports. Single source of truth
+     *        for resetCounters() and saveCounterReport().
+     */
+    static std::vector<std::string> dtnCounterPorts();
+
+    /**
+     * @brief Clear the interface counters of every port in dtnCounterPorts().
      *
      * Sent as a single SSH session, best-effort: a port that fails to clear
      * (e.g. not present on this switch) does not stop the remaining ones.
@@ -266,6 +272,23 @@ public:
      * @return true if the whole batch completed with status 0.
      */
     bool resetCounters();
+
+    /**
+     * @brief Run "nv show interface <port> counters" for every port in
+     *        dtnCounterPorts() and write a per-port report to a local file.
+     *
+     * Only the "Ingress Buffer Statistics" and "Egress Queue Statistics"
+     * tables are kept - the rest of the nv output (detailed/drop/error/size
+     * counters, PFC, QoS) is discarded. All ports are queried in one SSH
+     * session.
+     *
+     * @param local_path Destination file. Its directory must already exist.
+     * @param title      Heading written at the top of the file (e.g.
+     *                   "AFTER DTN CONFIG - CUMULUS INTERFACE COUNTERS").
+     * @return true if the file was written with at least one port's tables.
+     */
+    bool saveCounterReport(const std::string& local_path,
+                           const std::string& title);
 
 private:
     std::string getLogPrefix() const;
