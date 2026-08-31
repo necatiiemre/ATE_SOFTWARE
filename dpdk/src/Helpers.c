@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <rte_ethdev.h>
+#include <rte_cycles.h>  // rte_delay_ms
 #include <rte_atomic.h>
 
 #include "Config.h"
@@ -52,27 +53,42 @@ static uint64_t dtn_prev_rx_bytes[DTN_PORT_COUNT];
 void helper_reset_stats(const struct ports_config *ports_config,
                         uint64_t prev_tx_bytes[], uint64_t prev_rx_bytes[])
 {
-    // Reset HW statistics and zero out prev_* counters
-    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
-        uint16_t port_id = ports_config->ports[i].port_id;
-        rte_eth_stats_reset(port_id);
-        prev_tx_bytes[port_id] = 0;
-        prev_rx_bytes[port_id] = 0;
-    }
+    // Order matters here, and it is the whole point of this function.
+    //
+    // Two counters have to start from the same instant: what the server has
+    // SENT (the HW queue counters) and what came back VALIDATED (dtn_stats).
+    // They cannot literally be zeroed together, so whatever sits between them
+    // is an error: every packet transmitted in that window is counted as sent
+    // while its validation is wiped a moment later, and the totals report it
+    // as sent-but-never-returned.
+    //
+    // This used to zero the HW counters first and everything else after,
+    // including telling the workers to drop their locals - about 1.4 ms of
+    // work, which at ~2 M packets/s is some 3000 packets. That is exactly the
+    // fixed offset the end-of-test totals kept reporting: constant per run,
+    // indifferent to run length, in the direction of "sent more than came
+    // back".
+    //
+    // So: everything slow happens first, and the two headline counters are
+    // zeroed back to back at the end with nothing in between. The residual is
+    // then one flight time's worth of packets - the packets in the air when
+    // the two counters are zeroed - which is irreducible and about fifty times
+    // smaller.
 
-    // Reset RX validation statistics (PRBS). Counters only - the VL-ID
-    // sequence trackers must survive, see reset_rx_stats_counters().
+    // 1. Tell the RX workers to drop what they are holding, and let them
+    //    notice. They check once per burst, so this is orders of magnitude
+    //    more time than they need; doing it here rather than last means their
+    //    locals are already empty before either headline counter is touched.
+    txrx_reset_worker_locals();
+    rte_delay_ms(2);
+
+    // 2. Everything that is not one of the two headline counters. Slow, and
+    //    deliberately out of the way before the pair below.
     reset_rx_stats_counters();
-
-#if STATS_MODE_DTN
-    init_dtn_stats();
-#endif
-
-    // Reset raw socket and global sequence tracking
     reset_raw_socket_stats();
 
 #if STATS_MODE_DTN
-    // The DTN table's own rate baselines. rte_eth_stats_reset() above zeroes
+    // The DTN table's own rate baselines. rte_eth_stats_reset() below zeroes
     // the HW byte counters the TX rate is measured from, so leaving these at
     // their pre-reset values would make the next render compute a delta
     // against a counter that has gone backwards.
@@ -80,11 +96,24 @@ void helper_reset_stats(const struct ports_config *ports_config,
     memset(dtn_prev_rx_bytes, 0, sizeof(dtn_prev_rx_bytes));
 #endif
 
-    // Zeroing the atomics above is only half a reset: the RX workers keep
-    // their PRBS counters thread-local and fold them in every 131072 packets,
-    // so anything they counted before this point would reappear right after
-    // it. Tell them to drop what they are holding.
-    txrx_reset_worker_locals();
+    // 3. The two headline counters, adjacent and in this order. Validated
+    //    first: a packet sent just before the HW reset then validates after
+    //    this point and is counted on both sides, whereas the other order
+    //    counts it as sent with its validation already discarded.
+#if STATS_MODE_DTN
+    init_dtn_stats();
+#endif
+    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
+        rte_eth_stats_reset(ports_config->ports[i].port_id);
+    }
+
+    // 4. Rate baselines for the server table, now that the counters they
+    //    track are zero.
+    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
+        uint16_t port_id = ports_config->ports[i].port_id;
+        prev_tx_bytes[port_id] = 0;
+        prev_rx_bytes[port_id] = 0;
+    }
 }
 
 #if STATS_MODE_DTN
