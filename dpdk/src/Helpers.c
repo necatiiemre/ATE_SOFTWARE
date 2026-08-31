@@ -510,13 +510,21 @@ static void helper_render_final_totals(FILE *out,
         tot_rx_pkts  += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
         tot_rx_bytes += hw[e->rx_server_port].q_obytes[e->rx_server_queue];
     }
-    // Port 12/13 rows: same sources the per-second table uses.
+    // Port 12/13 rows: same sources the per-second table uses. Their PRBS
+    // quality counters live in dpdk_ext_rx_stats and the global sequence
+    // trackers, NOT in dtn_stats[32]/[33] - those two entries are never
+    // written, since rx_worker only ever indexes dtn_stats by a DPDK port's
+    // RX VLAN (0-31). Reading them here would add the raw ports' packets to
+    // the TX total while dropping their Good/Lost entirely.
     struct raw_socket_port *raws[2] = { p12, p13 };
     for (int r = 0; r < 2; r++) {
         struct raw_socket_port *rp = raws[r];
         pthread_spin_lock(&rp->dpdk_ext_rx_stats.lock);
         tot_tx_pkts  += rp->dpdk_ext_rx_stats.rx_packets;
         tot_tx_bytes += rp->dpdk_ext_rx_stats.rx_bytes;
+        tot_good     += rp->dpdk_ext_rx_stats.good_pkts;
+        tot_bad      += rp->dpdk_ext_rx_stats.bad_pkts;
+        tot_bit_err  += rp->dpdk_ext_rx_stats.bit_errors;
         pthread_spin_unlock(&rp->dpdk_ext_rx_stats.lock);
         for (uint16_t t = 0; t < rp->tx_target_count; t++) {
             pthread_spin_lock(&rp->tx_targets[t].stats.lock);
@@ -525,8 +533,11 @@ static void helper_render_final_totals(FILE *out,
             pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
         }
     }
+    tot_lost += get_global_sequence_lost();
+    tot_lost += get_global_sequence_lost_p13();
 
-    for (uint16_t dtn = 0; dtn < DTN_PORT_COUNT; dtn++) {
+    // DPDK rows only: dtn_stats[32]/[33] are never populated (see above).
+    for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         tot_good    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts);
         tot_bad     += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
         tot_lost    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].lost_pkts);
