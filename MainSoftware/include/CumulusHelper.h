@@ -240,10 +240,32 @@ public:
 
     /**
      * @brief Send many shell commands in a single SSH session via heredoc.
-     *        Uses 'set -e' so the first failure aborts the batch.
+     * @param commands Commands to run, in order.
+     * @param use_sudo Run the wrapping shell under sudo.
+     * @param stop_on_error With 'set -e' (default) the first failure aborts the
+     *        batch. Pass false for best-effort batches where a single failing
+     *        command must not skip the remaining ones (e.g. counter clears).
      * @return true if the overall session exited with status 0.
      */
-    bool executeBatch(const std::vector<std::string>& commands, bool use_sudo = false);
+    bool executeBatch(const std::vector<std::string>& commands,
+                      bool use_sudo = false,
+                      bool stop_on_error = true);
+
+    // ==================== Counters ====================
+
+    /**
+     * @brief Clear the interface counters of every switch port used by the DTN
+     *        test (swp13..swp20 uplinks + swp25s0..swp32s3 breakout ports).
+     *
+     * Sent as a single SSH session, best-effort: a port that fails to clear
+     * (e.g. not present on this switch) does not stop the remaining ones.
+     * Call this as close to the start of traffic as possible - anything the
+     * switch forwarded earlier (latency tests, warm-up) would otherwise be
+     * counted in the DTN test totals.
+     *
+     * @return true if the whole batch completed with status 0.
+     */
+    bool resetCounters();
 
 private:
     std::string getLogPrefix() const;

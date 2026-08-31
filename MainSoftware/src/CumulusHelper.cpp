@@ -1392,6 +1392,10 @@ bool CumulusHelper::configureSequence()
         ErrorPrinter::info("CUMULUS",
             "DTN VLAN state already matches expected (" +
             std::to_string(expected.size()) + " entries), skipping configuration");
+        // Counters must be cleared on this path too: a repeat run skips the
+        // VLAN work but still starts a fresh test, so the switch must not
+        // carry the previous run's totals.
+        resetCounters();
         return true;
     }
 
@@ -1468,6 +1472,9 @@ bool CumulusHelper::configureSequence()
     // std::cout << getLogPrefix() << " VLAN Configuration Completed Successfully!" << std::endl;
     // std::cout << "========================================\n"
     //           << std::endl;
+
+    // Start the DTN test from zeroed switch counters.
+    resetCounters();
 
     return true;
 }
@@ -1957,6 +1964,46 @@ bool CumulusHelper::execute(const std::string &command, std::string *output, boo
     return g_ssh_deployer_cumulus.execute(command, output, use_sudo);
 }
 
+// ==================== Counters ====================
+
+bool CumulusHelper::resetCounters()
+{
+    // Ports touched by the DTN test: the swp13..swp20 uplinks plus the
+    // swp25..swp32 breakout sub-ports that carry the per-VLAN loopbacks.
+    std::vector<std::string> ports;
+    ports.reserve(8 + 8 * 4);
+    for (int p = 13; p <= 20; ++p) {
+        ports.push_back("swp" + std::to_string(p));
+    }
+    for (int p = 25; p <= 32; ++p) {
+        for (int s = 0; s < 4; ++s) {
+            ports.push_back("swp" + std::to_string(p) + "s" + std::to_string(s));
+        }
+    }
+
+    std::vector<std::string> commands;
+    commands.reserve(ports.size());
+    for (const auto &port : ports) {
+        commands.push_back("nv action clear interface " + port + " counters");
+    }
+
+    DEBUG_LOG(getLogPrefix() << " Clearing counters on " << ports.size()
+              << " interfaces...");
+
+    // One SSH session for all of them (40 separate logins would cost ~1 min),
+    // best-effort so a single unavailable port doesn't skip the rest.
+    if (!executeBatch(commands, /*use_sudo=*/false, /*stop_on_error=*/false)) {
+        ErrorPrinter::warn("CUMULUS",
+            "Failed to clear interface counters - switch counters may include "
+            "traffic from before the test");
+        return false;
+    }
+
+    DEBUG_LOG(getLogPrefix() << " Interface counters cleared ("
+              << ports.size() << " interfaces)");
+    return true;
+}
+
 // ========================================================================
 // Idempotent state checks
 // ========================================================================
@@ -2099,7 +2146,8 @@ bool CumulusHelper::hasAllExpectedVlans(
 }
 
 bool CumulusHelper::executeBatch(const std::vector<std::string>& commands,
-                                 bool use_sudo)
+                                 bool use_sudo,
+                                 bool stop_on_error)
 {
     if (commands.empty()) return true;
 
@@ -2123,7 +2171,7 @@ bool CumulusHelper::executeBatch(const std::vector<std::string>& commands,
     // generated `bridge vlan add ...` strings never contain them.
     std::ostringstream body;
     body << "export PATH=/sbin:/usr/sbin:/bin:/usr/bin:$PATH";
-    body << "; set -e";
+    if (stop_on_error) body << "; set -e";
     for (const auto& cmd : commands) {
         body << "; " << cmd;
     }
