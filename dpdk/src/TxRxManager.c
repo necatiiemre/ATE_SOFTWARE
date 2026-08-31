@@ -2287,6 +2287,11 @@ void txrx_reset_worker_locals(void)
 {
     __atomic_fetch_add(&g_rx_stats_generation, 1, __ATOMIC_RELEASE);
     txrx_clear_foreign_ethertypes();
+    // The length histogram counts every undersized frame ever seen while
+    // dtn_stats[].short_pkts counts only those since the reset. Left
+    // unsynchronised the two disagree in the report - 3,188 against 2,848 on
+    // the run that exposed it, the difference being bring-up traffic.
+    txrx_clear_undersized();
 }
 
 uint32_t txrx_stats_generation(void)
@@ -2410,6 +2415,18 @@ void txrx_clear_foreign_ethertypes(void)
     pthread_mutex_lock(&g_foreign_et_lock);
     g_foreign_et_used = 0;
     pthread_mutex_unlock(&g_foreign_et_lock);
+}
+
+void txrx_clear_undersized(void)
+{
+    pthread_mutex_lock(&g_undersized_lock);
+    g_undersized_len_used = 0;
+    memset(g_undersized_len, 0, sizeof(g_undersized_len));
+    memset(g_undersized_len_count, 0, sizeof(g_undersized_len_count));
+    // Restart the per-frame log too, so the dozen that get printed are frames
+    // from the test window rather than from bring-up.
+    g_undersized_logged = 0;
+    pthread_mutex_unlock(&g_undersized_lock);
 }
 
 int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max)

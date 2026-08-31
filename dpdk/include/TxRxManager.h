@@ -318,6 +318,10 @@ void txrx_note_undersized(uint16_t port_id, uint16_t queue_id,
                           const uint8_t *pkt);
 int  txrx_get_undersized_lengths(uint32_t *lengths, uint64_t *counts, int max);
 
+// Empty the undersized-frame histogram and restart its per-frame log (part of
+// a stats reset, so it stays in step with dtn_stats[].short_pkts).
+void txrx_clear_undersized(void);
+
 // ---- On-demand RX counter flush ----------------------------------------
 // The RX workers keep their counts thread-local and hand them over on a
 // deadline, so a reader always trails them slightly. txrx_flush_now() asks
