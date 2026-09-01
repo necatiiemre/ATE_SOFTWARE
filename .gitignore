@@ -3,3 +3,4 @@ TimeReader/time_reader
 AccelerationTest/build/
 AccelerationTest/LOGS/
 __pycache__/
+FibreEmulator/build/
