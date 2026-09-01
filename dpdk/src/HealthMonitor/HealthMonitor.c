@@ -40,17 +40,17 @@ static struct health_monitor_state g_health_monitor;
 // Plain 64-bit loads and stores: a reader can see one port updated and the next
 // not yet, which for a reconciliation printed at the end of a run costs a
 // packet or two and is not worth a lock on the monitor's hot path.
-static struct {
+// One named type, not two anonymous ones: two separate anonymous struct
+// declarations are distinct types in C even when their members match, so the
+// baseline could not be assigned from the live copy.
+struct health_port_counters {
     uint64_t tx;
     uint64_t rx;
     bool     valid;
-} g_dev_ports[HEALTH_MAX_PORTS];
+};
 
-static struct {
-    uint64_t tx;
-    uint64_t rx;
-    bool     valid;
-} g_dev_ports_baseline[HEALTH_MAX_PORTS];
+static struct health_port_counters g_dev_ports[HEALTH_MAX_PORTS];
+static struct health_port_counters g_dev_ports_baseline[HEALTH_MAX_PORTS];
 
 static void health_store_port_snapshot(const struct health_fpga_data *fpga)
 {
