@@ -36,6 +36,31 @@ void port_vlans_load_config(bool ate_mode)
 // Global RX statistics per port
 struct rx_stats rx_stats_per_port[MAX_PORTS];
 
+// Independent witnesses. Each DPDK TX and RX worker keeps a plain count that
+// the flush machinery never touches - not folded in, not zeroed by a flush,
+// only dropped when the stats generation changes, exactly like the counters it
+// is checked against. At exit each worker adds its own count here.
+//
+// They exist to bisect one specific disagreement. The totals report about 213
+// more packets validated than sent, and the per-second tables show the gap
+// appearing in the single second the TX workers stop and never moving again
+// through the ten second drain. Either the sent counter loses packets on the
+// way out, or the validated counter gains them; the aggregate cannot say
+// which. These can:
+//
+//   own TX total != prbs_tx_pkts   -> sends are lost in the flush path
+//   own RX total != good + bad     -> validations are counted twice
+//   both equal                     -> both counters are faithful and the
+//                                     disagreement is in what is compared
+static rte_atomic64_t g_own_tx_total;
+static rte_atomic64_t g_own_rx_total;
+
+void txrx_get_own_worker_totals(uint64_t *tx_total, uint64_t *rx_total)
+{
+    *tx_total = (uint64_t)rte_atomic64_read(&g_own_tx_total);
+    *rx_total = (uint64_t)rte_atomic64_read(&g_own_rx_total);
+}
+
 // Holds every PRBS sender - the DPDK TX workers, the raw socket TX workers and
 // the external TX workers - without stopping them. Used once, to make the
 // start-of-test counter reset exact.
@@ -538,6 +563,8 @@ void init_dtn_stats(void)
     for (int i = 0; i < MAX_RAW_SOCKET_PORTS; i++) {
         rte_atomic64_init(&g_raw_origin_by_port[i]);
     }
+    rte_atomic64_init(&g_own_tx_total);
+    rte_atomic64_init(&g_own_rx_total);
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
 
@@ -1301,6 +1328,9 @@ int tx_worker(void *arg)
     // so a render never reads a column that is a flush period behind the one
     // beside it.
     uint64_t local_tx_pkts = 0, local_tx_bytes = 0;
+    // Never folded in, never zeroed by a flush - only by a generation change,
+    // like the counter it witnesses. See g_own_tx_total.
+    uint64_t own_tx_total = 0;
     const uint64_t TX_FLUSH_COUNT = 8192;
     const uint64_t tx_flush_period_tsc = rte_get_tsc_hz() / 4;
     uint64_t next_tx_flush_tsc = rte_rdtsc() + tx_flush_period_tsc;
@@ -1316,6 +1346,7 @@ int tx_worker(void *arg)
         uint32_t cur_tx_stats_gen = txrx_stats_generation();
         if (unlikely(cur_tx_stats_gen != my_tx_stats_gen)) {
             local_tx_pkts = local_tx_bytes = 0;
+            own_tx_total = 0;
             my_tx_stats_gen = cur_tx_stats_gen;
         }
 
@@ -1479,6 +1510,7 @@ int tx_worker(void *arg)
             // is the same set the RX side is expected to validate back.
             local_tx_pkts++;
             local_tx_bytes += sent_len;
+            own_tx_total++;
             if (unlikely(local_tx_pkts >= TX_FLUSH_COUNT ||
                          rte_rdtsc() >= next_tx_flush_tsc))
             {
@@ -1502,6 +1534,7 @@ int tx_worker(void *arg)
     // requests a flush before every render - but without it the last partial
     // batch would be lost on shutdown.
     TX_WORKER_FLUSH_LOCALS();
+    rte_atomic64_add(&g_own_tx_total, (int64_t)own_tx_total);
     txrx_flush_participant_exit();
 
 #if TX_TEST_MODE_ENABLED
@@ -1690,6 +1723,9 @@ int rx_worker(void *arg)
     uint64_t local_raw_good = 0, local_raw_bad = 0, local_raw_bits = 0;
     uint64_t local_raw_prbs_bytes = 0;
     uint64_t local_raw_by_port[MAX_RAW_SOCKET_PORTS] = {0};
+    // Counted only on the internal PRBS path, which is exactly what survives
+    // the raw-origin subtraction into dtn_stats good/bad. See g_own_rx_total.
+    uint64_t own_rx_total = 0;
     uint64_t local_external = 0;  // External packets (VL-ID outside expected range)
     uint64_t local_other = 0;     // Foreign (non-PRBS) frames seen on this queue
     // Bytes of packets that actually reached PRBS validation. The DTN table's
@@ -1745,6 +1781,7 @@ int rx_worker(void *arg)
             local_raw_prbs_bytes = 0;
             for (int _rp = 0; _rp < MAX_RAW_SOCKET_PORTS; _rp++)
                 local_raw_by_port[_rp] = 0;
+            own_rx_total = 0;
             my_stats_gen = cur_stats_gen;
         }
 
@@ -2254,6 +2291,7 @@ int rx_worker(void *arg)
                 if (likely(diff == 0))
                 {
                     local_good++;
+                    own_rx_total++;
                     if (unlikely(!first_good))
                     {
                         printf("✓ GOOD: Port %u Q%u VL-ID %u Seq %lu\n",
@@ -2264,6 +2302,7 @@ int rx_worker(void *arg)
                 else
                 {
                     local_bad++;
+                    own_rx_total++;
                     if (unlikely(!first_bad))
                     {
                         printf("✗ BAD: Port %u Q%u VL-ID %u Seq %lu\n",
@@ -2329,6 +2368,7 @@ int rx_worker(void *arg)
         RX_WORKER_FLUSH_LOCALS();
     }
 
+    rte_atomic64_add(&g_own_rx_total, (int64_t)own_rx_total);
     txrx_flush_participant_exit();
 
     // ==========================================

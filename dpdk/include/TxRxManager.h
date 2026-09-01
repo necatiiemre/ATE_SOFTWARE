@@ -341,6 +341,13 @@ bool     txrx_tx_paused(void);
  */
 void     txrx_get_raw_origin_by_port(uint64_t *out, int max);
 
+/**
+ * Totals each DPDK TX and RX worker kept for itself, untouched by the flush
+ * machinery. Checked against prbs_tx_pkts and good+bad to say which of the two
+ * is the one that disagrees, rather than only that they disagree.
+ */
+void     txrx_get_own_worker_totals(uint64_t *tx_total, uint64_t *rx_total);
+
 // Current reset generation. Workers compare it against their own copy once per
 // burst and drop their locals when it changes.
 uint32_t txrx_stats_generation(void);

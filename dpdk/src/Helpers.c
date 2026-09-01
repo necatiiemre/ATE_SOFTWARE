@@ -841,6 +841,19 @@ static void helper_render_final_totals(FILE *out,
         }
         printf("    of that, DPDK TX workers  sent/back    : %lu / %lu  (%+ld)\n",
                dpdk_sent, dpdk_back, (long)((int64_t)dpdk_back - (int64_t)dpdk_sent));
+        // The two counters above disagree by a couple of hundred packets, and
+        // the per-second tables put the whole of it in the single second the
+        // TX workers stop. These are the same traffic counted by the workers
+        // themselves, outside the flush path entirely: whichever line below is
+        // non-zero names the counter that is wrong.
+        {
+            uint64_t own_tx = 0, own_rx = 0;
+            txrx_get_own_worker_totals(&own_tx, &own_rx);
+            printf("      TX workers' own count vs sent         : %lu  (%+ld)\n",
+                   own_tx, (long)((int64_t)own_tx - (int64_t)dpdk_sent));
+            printf("      RX workers' own count vs back         : %lu  (%+ld)\n",
+                   own_rx, (long)((int64_t)own_rx - (int64_t)dpdk_back));
+        }
         for (int r = 0; r < 2; r++) {
             struct raw_socket_port *rp = &raw_ports[r];
             uint64_t sent = 0, errs = 0;
