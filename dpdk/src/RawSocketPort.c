@@ -2451,6 +2451,17 @@ int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_fl
 
 void stop_raw_socket_workers(void)
 {
+    // Idempotent: the shutdown path calls this before reading the final
+    // totals - the counters are not complete until these threads have run
+    // their exit flush - and the teardown block later calls it again. A
+    // second pthread_join on the same thread is undefined behaviour, so the
+    // second call has to do nothing rather than repeat the joins.
+    static bool already_stopped = false;
+    if (already_stopped) {
+        return;
+    }
+    already_stopped = true;
+
     printf("\n=== Stopping Raw Socket Workers ===\n");
 
     // Signal all ports to stop

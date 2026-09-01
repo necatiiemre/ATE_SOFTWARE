@@ -820,7 +820,7 @@ static void helper_render_final_totals(FILE *out,
                          (uint64_t)rte_atomic64_read(&dtn_stats[d].bad_pkts);
         }
         printf("    of that, DPDK TX workers  sent/back    : %lu / %lu  (%+ld)\n",
-               dpdk_sent, dpdk_back, (long)(dpdk_back - dpdk_sent));
+               dpdk_sent, dpdk_back, (long)((int64_t)dpdk_back - (int64_t)dpdk_sent));
         for (int r = 0; r < 2; r++) {
             struct raw_socket_port *rp = &raw_ports[r];
             uint64_t sent = 0, errs = 0;
@@ -833,7 +833,7 @@ static void helper_render_final_totals(FILE *out,
             printf("    of that, Port %-2u          sent/back    : %lu / %lu  (%+ld)"
                    ", send() errors %lu\n",
                    rp->port_id, sent, raw_back[r],
-                   (long)(raw_back[r] - sent), errs);
+                   (long)((int64_t)raw_back[r] - (int64_t)sent), errs);
         }
     }
     printf("  External TX leg (queue 4 -> Ports 12/13)\n");

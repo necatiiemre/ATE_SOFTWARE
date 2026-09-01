@@ -771,8 +771,25 @@ int main(int argc, char const *argv[])
         }
     }
 
-    // The RX workers exited and flushed inside the loop's final iteration, so
-    // every counter is complete here.
+    // txrx_wait_rx_workers() above waits on the DPDK RX lcores only. The raw
+    // socket ports run their TX and RX on pthreads, and their counters feed
+    // the same totals: tx_targets[].stats is the raw leg's send side and
+    // dpdk_ext_rx_stats is the external leg's return side. Those threads were
+    // signalled to stop but not joined until the teardown block far below, so
+    // the totals used to be read while they could still be holding unflushed
+    // counts - and a raw RX worker exits on force_quit_rx, set one statement
+    // before this point, which made it a race rather than a rare case.
+    //
+    // Join them here instead. The call is idempotent, so the teardown block
+    // keeps its call and simply finds the work already done.
+#if ENABLE_RAW_SOCKET_PORTS
+    if (raw_ports_initialized) {
+        stop_raw_socket_workers();
+    }
+#endif
+
+    // Every worker that feeds these counters - DPDK lcores and raw socket
+    // pthreads alike - has now exited and run its final flush.
     helper_print_final_totals(&ports_config, test_time);
     fflush(stdout);
 
@@ -836,7 +853,8 @@ int main(int argc, char const *argv[])
     // Stop raw socket workers first (only if initialized)
     if (raw_ports_initialized)
     {
-        printf("Stopping raw socket workers...\n");
+        // Already done before the totals were read; idempotent, so this is a
+        // no-op unless that path was somehow skipped.
         stop_raw_socket_workers();
 #if !STATS_MODE_DTN
         // In DTN mode raw socket table is not printed separately, DTN table is sufficient
