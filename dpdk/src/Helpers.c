@@ -170,20 +170,6 @@ static void helper_render_dtn_stats(FILE *out,
         }
     }
 
-    // Port 12 per-target stats: DTN 32 → DTN 0-7, 16-23 evenly distributed
-    // Each target is evenly distributed across 4 DTN ports (target bytes / 4)
-    struct raw_socket_port *port12 = &raw_ports[0];
-    uint64_t port12_target_tx_bytes[MAX_RAW_TARGETS] = {0};
-    uint64_t port12_target_tx_pkts[MAX_RAW_TARGETS] = {0};
-    uint16_t port12_target_dest[MAX_RAW_TARGETS] = {0};
-    for (uint16_t t = 0; t < port12->tx_target_count; t++) {
-        pthread_spin_lock(&port12->tx_targets[t].stats.lock);
-        port12_target_tx_bytes[t] = port12->tx_targets[t].stats.tx_bytes;
-        port12_target_tx_pkts[t] = port12->tx_targets[t].stats.tx_packets;
-        pthread_spin_unlock(&port12->tx_targets[t].stats.lock);
-        port12_target_dest[t] = port12->tx_targets[t].config.dest_port;
-    }
-
     // DTN Port 0-31 (DPDK ports)
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *entry = &dtn_port_map[dtn];
@@ -219,14 +205,14 @@ static void helper_render_dtn_stats(FILE *out,
         uint64_t dtn_rx_bytes =
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes);
 
-        // Port 12 contribution: DTN 32 → DTN 0-7, 16-23 (each target equally across 4 DTN ports)
-        for (uint16_t t = 0; t < port12->tx_target_count; t++) {
-            if (port12_target_dest[t] == entry->rx_server_port) {
-                dtn_rx_bytes += port12_target_tx_bytes[t] / 4;
-                dtn_rx_pkts += port12_target_tx_pkts[t] / 4;
-                break;
-            }
-        }
+        // The Port 12 contribution that used to be folded in here - a target's
+        // packet count divided by four, on the assumption that RSS spreads it
+        // evenly over the four DTN ports behind that server port - is gone.
+        // It was an estimate standing in for a real measurement, and it was
+        // patching the wrong side: those packets inflate the *arrival* column
+        // of whichever row validates them, so the fix is to leave them out of
+        // that column (dtn_stats[].raw_origin_pkts now holds them exactly),
+        // not to inflate the send column by a guess to match.
 
         // Mbps delta calculation.
         //
@@ -602,6 +588,11 @@ static void helper_render_final_totals(FILE *out,
     // more "validated" packets than the hardware ever delivered.
     uint64_t tot_dpdk_validated = 0;
     uint64_t tot_raw_validated = 0;
+    // Validated PRBS packets that reached a DPDK queue from a raw socket port
+    // rather than from that row's paired TX worker. Kept out of the DTN rows'
+    // TX columns so each row measures one stream, and counted here so the
+    // arrival breakdown below still adds up.
+    uint64_t tot_raw_origin = 0;
 
     struct raw_socket_port *p12 = &raw_ports[0];
     struct raw_socket_port *p13 = &raw_ports[1];
@@ -615,6 +606,7 @@ static void helper_render_final_totals(FILE *out,
         tot_tx_pkts       += dtn_validated;
         tot_dpdk_validated += dtn_validated;
         tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
+        tot_raw_origin += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_pkts);
         tot_hw_q_pkts += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
         // RX side: what the TX worker on this queue actually put on the wire,
         // from its own PRBS counters rather than the HW queue counter. Queues
@@ -709,7 +701,7 @@ static void helper_render_final_totals(FILE *out,
     raw_socket_get_excluded_counts(1, &hm13, &fo13);
 
     const uint64_t turned_away = tot_short + tot_other;
-    const uint64_t hw_accounted = tot_dpdk_validated + turned_away;
+    const uint64_t hw_accounted = tot_dpdk_validated + tot_raw_origin + turned_away;
     const uint64_t hw_unaccounted =
         (tot_hw_q_pkts > hw_accounted) ? (tot_hw_q_pkts - hw_accounted) : 0;
     const uint64_t hw_over =
@@ -718,6 +710,11 @@ static void helper_render_final_totals(FILE *out,
     printf("\n--- Where every arrival went ---\n");
     printf("  DPDK queues 0-3, HW packets received      : %lu\n", tot_hw_q_pkts);
     printf("    validated as PRBS (counted above)       : %lu\n", tot_dpdk_validated);
+    // Real, validated traffic - it simply entered from Port 12/13 instead of
+    // from the queue this row is paired with. Held out of the DTN rows so
+    // their two columns describe the same stream; the exact figure that used
+    // to be approximated as "target packets / 4".
+    printf("    validated, but sent from Port 12/13     : %lu\n", tot_raw_origin);
     printf("    undersized, never validated             : %lu\n", tot_short);
     // Name them by size. One dominant length points at a specific protocol;
     // a spread points at something variable. The per-frame detail for the

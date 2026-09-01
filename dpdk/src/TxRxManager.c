@@ -488,6 +488,8 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].prbs_rx_bytes);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_pkts);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_bytes);
+        rte_atomic64_init(&dtn_stats[i].raw_origin_pkts);
+        rte_atomic64_init(&dtn_stats[i].raw_origin_bytes);
     }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
@@ -1516,20 +1518,35 @@ static inline struct raw_socket_port* find_raw_socket_port_by_vl_id(uint16_t vl_
 // than a function because it works on a dozen locals that would otherwise all
 // have to be passed by pointer. The STATS_MODE_DTN split is done out here:
 // preprocessor directives cannot live inside a macro body.
+// A DTN row is meant to measure one stream: what its paired TX worker sent and
+// what came back from it. Packets that reach this queue from a raw socket port
+// (12/13) are a different pipeline, so they are subtracted out of good/bad/
+// bit_errors/prbs_rx_bytes below and kept in raw_origin_* instead. That way the
+// row's TX column and the paired row's RX column count the same set, and the
+// traffic is still reported rather than dropped. The subtractions cannot
+// underflow: every local_raw_* is incremented only where its counterpart is.
 #if STATS_MODE_DTN
 #define RX_WORKER_FLUSH_DTN()                                                  \
     do {                                                                       \
         if (my_dtn_port != DTN_VLAN_INVALID) {                                 \
             rte_atomic64_add(&dtn_stats[my_dtn_port].total_rx_pkts, local_rx);  \
-            rte_atomic64_add(&dtn_stats[my_dtn_port].good_pkts, local_good);    \
-            rte_atomic64_add(&dtn_stats[my_dtn_port].bad_pkts, local_bad);      \
-            rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors, local_bits);   \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].good_pkts,                \
+                             local_good - local_raw_good);                     \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].bad_pkts,                 \
+                             local_bad - local_raw_bad);                       \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors,               \
+                             local_bits - local_raw_bits);                     \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_pkts,          \
+                             local_raw_good + local_raw_bad);                  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_bytes,         \
+                             local_raw_prbs_bytes);                            \
             rte_atomic64_add(&dtn_stats[my_dtn_port].lost_pkts, local_lost);    \
             rte_atomic64_add(&dtn_stats[my_dtn_port].out_of_order_pkts, local_ooo); \
             rte_atomic64_add(&dtn_stats[my_dtn_port].duplicate_pkts, local_dup); \
             rte_atomic64_add(&dtn_stats[my_dtn_port].short_pkts, local_short);  \
             rte_atomic64_add(&dtn_stats[my_dtn_port].other_pkts, local_other);  \
-            rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes, local_prbs_bytes); \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].prbs_rx_bytes,            \
+                             local_prbs_bytes - local_raw_prbs_bytes);         \
         }                                                                      \
     } while (0)
 #else
@@ -1556,6 +1573,8 @@ static inline struct raw_socket_port* find_raw_socket_port_by_vl_id(uint16_t vl_
         local_other = 0;                                                       \
         local_prbs_bytes = 0;                                                  \
         local_raw_rx = local_raw_bytes = 0;                                    \
+        local_raw_good = local_raw_bad = local_raw_bits = 0;                   \
+        local_raw_prbs_bytes = 0;                                              \
     } while (0)
 
 int rx_worker(void *arg)
@@ -1599,6 +1618,10 @@ int rx_worker(void *arg)
 
     uint64_t local_rx = 0, local_good = 0, local_bad = 0, local_bits = 0;
     uint64_t local_lost = 0, local_ooo = 0, local_dup = 0, local_short = 0;
+    // The subset of the counters above contributed by packets that came from a
+    // raw socket port instead of this row's paired TX worker.
+    uint64_t local_raw_good = 0, local_raw_bad = 0, local_raw_bits = 0;
+    uint64_t local_raw_prbs_bytes = 0;
     uint64_t local_external = 0;  // External packets (VL-ID outside expected range)
     uint64_t local_other = 0;     // Foreign (non-PRBS) frames seen on this queue
     // Bytes of packets that actually reached PRBS validation. The DTN table's
@@ -1650,6 +1673,8 @@ int rx_worker(void *arg)
             local_other = 0;
             local_prbs_bytes = 0;
             local_raw_rx = local_raw_bytes = 0;
+            local_raw_good = local_raw_bad = local_raw_bits = 0;
+            local_raw_prbs_bytes = 0;
             my_stats_gen = cur_stats_gen;
         }
 
@@ -1782,6 +1807,11 @@ int rx_worker(void *arg)
                     if (raw_port != NULL && raw_port->prbs_cache_ext != NULL)
                     {
                         local_prbs_bytes += m->pkt_len;
+                        // Same packet, tracked a second time so the DTN row can
+                        // subtract it out. Counted here rather than derived later:
+                        // this is the only point that knows the frame came from a
+                        // raw port.
+                        local_raw_prbs_bytes += m->pkt_len;
 
                         // Get sequence number from payload
                         uint64_t raw_seq = *(uint64_t *)(pkt + raw_payload_off);
@@ -1800,14 +1830,17 @@ int rx_worker(void *arg)
                         if (memcmp(recv_prbs, expected_prbs, raw_prbs_len) == 0)
                         {
                             local_good++;
+                            local_raw_good++;
                         }
                         else
                         {
                             local_bad++;
+                            local_raw_bad++;
                             // Count bit errors
                             for (uint32_t b = 0; b < raw_prbs_len; b++)
                             {
                                 local_bits += __builtin_popcount(recv_prbs[b] ^ expected_prbs[b]);
+                                local_raw_bits += __builtin_popcount(recv_prbs[b] ^ expected_prbs[b]);
                             }
                         }
 #else
@@ -1821,14 +1854,17 @@ int rx_worker(void *arg)
                         if (memcmp(recv_prbs, expected_prbs, RAW_PKT_PRBS_BYTES) == 0)
                         {
                             local_good++;
+                            local_raw_good++;
                         }
                         else
                         {
                             local_bad++;
+                            local_raw_bad++;
                             // Count bit errors
                             for (uint32_t b = 0; b < RAW_PKT_PRBS_BYTES; b++)
                             {
                                 local_bits += __builtin_popcount(recv_prbs[b] ^ expected_prbs[b]);
+                                local_raw_bits += __builtin_popcount(recv_prbs[b] ^ expected_prbs[b]);
                             }
                         }
 #endif

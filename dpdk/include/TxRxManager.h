@@ -109,6 +109,15 @@ struct dtn_port_stats {
     // and a rte_eth_stats_reset() RX column did.
     rte_atomic64_t prbs_tx_pkts;
     rte_atomic64_t prbs_tx_bytes;
+    // PRBS packets that arrived on this DTN port's RX queue but originated at
+    // a raw socket port (12/13), not at this row's paired TX worker. They are
+    // real, validated traffic - they just belong to a different pipeline, so
+    // counting them in this row's TX column made the row compare a two-stream
+    // arrival count against a one-stream send count. Excluded from
+    // good/bad/bit_errors/prbs_rx_bytes above and kept here instead, exactly,
+    // so nothing is lost and nothing has to be estimated.
+    rte_atomic64_t raw_origin_pkts;
+    rte_atomic64_t raw_origin_bytes;
 };
 
 extern struct dtn_port_stats dtn_stats[DTN_PORT_COUNT];
