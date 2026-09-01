@@ -23,6 +23,7 @@
 #include "RawSocket.h"
 #include "SafeShutdown.h"
 #include "VlProfile.h"
+#include "VlWatch.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,9 +31,11 @@
 
 #define RX_BUFFER_SIZE 2048
 
-static dtn_vl_t    g_records[VL_PROFILE_MAX_RECORDS];
-static dtn_frame_t g_frames[DTN_MAX_CONFIG_FRAMES];
-static uint8_t     g_rx[RX_BUFFER_SIZE];
+static dtn_vl_t     g_records[VL_PROFILE_MAX_RECORDS];
+static dtn_frame_t  g_frames[DTN_MAX_CONFIG_FRAMES];
+static uint8_t      g_rx[RX_BUFFER_SIZE];
+static raw_socket_t g_links[APP_MAX_COPPER_LINKS];
+static vl_watch_t   g_watch;
 
 static void sleep_ms(unsigned ms)
 {
@@ -130,27 +133,35 @@ static void print_routing(const dtn_vl_t *records, size_t count)
 
 /* ------------------------------------------------------------------ */
 
-/** Wait until the unit's health monitor appears. */
-static bool wait_for_unit(raw_socket_t *monitor, unsigned timeout_s)
+/**
+ * @brief Wait until the unit starts talking, on whichever copper link.
+ *
+ * The power-up broadcast is not routed by the VL table, and the one place it
+ * has been observed is the 1G link - so listen to both rather than assume.
+ */
+static bool wait_for_unit(size_t link_count, unsigned timeout_s)
 {
     uint64_t deadline = hm_now_ms() + (uint64_t)timeout_s * 1000u;
 
-    log_line("waiting for the unit on %s (up to %u s)", monitor->name, timeout_s);
+    log_line("waiting for the unit on %s and %s (up to %u s)",
+             g_links[0].name, g_links[1].name, timeout_s);
     while (hm_now_ms() < deadline) {
         if (safe_shutdown_requested())
             return false;
 
-        int n = raw_socket_recv(monitor, g_rx, sizeof g_rx, 500);
+        size_t which = 0;
+        int n = raw_socket_recv_any(g_links, link_count, g_rx, sizeof g_rx, 500, &which);
         if (n <= 0)
             continue;
 
         hm_frame_t frame;
         if (hm_classify(g_rx, (size_t)n, &frame)) {
-            log_line("unit is up: health monitor seen (%zu byte packet)", frame.payload_len);
+            log_line("unit is up: %zu byte packet on %s, VL %u",
+                     frame.payload_len, g_links[which].name, frame.vl_id);
             return true;
         }
     }
-    log_line("no health monitor traffic within %u s", timeout_s);
+    log_line("no traffic from the unit within %u s", timeout_s);
     return false;
 }
 
@@ -171,7 +182,7 @@ static bool send_configuration(raw_socket_t *config_sock, int frame_count, unsig
 }
 
 /** Look for the device's answer to the trailing 0x52 status query. */
-static bool wait_for_status_reply(raw_socket_t *monitor, unsigned timeout_ms)
+static bool wait_for_status_reply(size_t link_count, unsigned timeout_ms)
 {
     uint64_t deadline = hm_now_ms() + timeout_ms;
 
@@ -179,14 +190,16 @@ static bool wait_for_status_reply(raw_socket_t *monitor, unsigned timeout_ms)
         if (safe_shutdown_requested())
             return false;
 
-        int n = raw_socket_recv(monitor, g_rx, sizeof g_rx, 200);
+        size_t which = 0;
+        int n = raw_socket_recv_any(g_links, link_count, g_rx, sizeof g_rx, 200, &which);
         if (n <= 0)
             continue;
 
         hm_frame_t frame;
         if (hm_classify(g_rx, (size_t)n, &frame) && frame.payload_len >= 111) {
-            log_line("status reply received (%zu bytes, source 0x%02x)",
-                     frame.payload_len, frame.status_enable);
+            log_line("status reply on %s: %zu bytes, VL %u, source 0x%02x",
+                     g_links[which].name, frame.payload_len, frame.vl_id,
+                     frame.status_enable);
             return true;
         }
     }
@@ -195,13 +208,15 @@ static bool wait_for_status_reply(raw_socket_t *monitor, unsigned timeout_ms)
 
 /* ------------------------------------------------------------------ */
 
-static void monitor_run(raw_socket_t *monitor, raw_socket_t *config_sock,
-                        int frame_count, const net_config_t *net)
+static void monitor_run(size_t link_count, raw_socket_t *config_sock,
+                        int frame_count, const timing_config_t *timing,
+                        const char *profile_name)
 {
+    const copper_link_t *copper = app_config_copper(NULL);
     hm_watch_t watch;
     uint64_t   started = hm_now_ms();
-    uint64_t   next_tick = started + 1000;
-    unsigned   power_cycles = 0;
+    uint64_t   next_draw = started;
+    unsigned   interruptions = 0;
 
     hm_watch_init(&watch);
     watch.alive = true;
@@ -209,51 +224,68 @@ static void monitor_run(raw_socket_t *monitor, raw_socket_t *config_sock,
     log_line("monitoring - press Ctrl+C to end the test");
 
     while (!safe_shutdown_requested()) {
-        int n = raw_socket_recv(monitor, g_rx, sizeof g_rx, 200);
+        size_t which = 0;
+        int n = raw_socket_recv_any(g_links, link_count, g_rx, sizeof g_rx, 100, &which);
         if (n > 0) {
             hm_frame_t frame;
-            if (hm_classify(g_rx, (size_t)n, &frame))
+            if (hm_classify(g_rx, (size_t)n, &frame)) {
                 hm_watch_saw_frame(&watch);
+                vl_watch_saw(&g_watch, copper[which].dtn_port, frame.vl_id, (size_t)n);
+            } else {
+                vl_watch_unclassified(&g_watch);
+            }
         }
 
-        if (hm_watch_update(&watch, net->heartbeat_timeout_ms)) {
+        if (hm_watch_update(&watch, timing->heartbeat_timeout_ms)) {
             if (!watch.alive) {
-                power_cycles++;
-                log_line("HEALTH MONITOR LOST - the unit went quiet (event %u)", power_cycles);
+                interruptions++;
+                log_line("UNIT WENT QUIET - no traffic for %u ms (event %u)",
+                         timing->heartbeat_timeout_ms, interruptions);
             } else {
-                /* The unit rebooted, so its VL table is gone. Put it back. */
+                /* It rebooted, so its VL table is gone. Put it back. */
                 log_line("unit is back - re-sending the configuration");
-                if (send_configuration(config_sock, frame_count, net->frame_gap_ms))
-                    log_line("configuration restored after event %u", power_cycles);
+                if (send_configuration(config_sock, frame_count, timing->frame_gap_ms))
+                    log_line("configuration restored after event %u", interruptions);
                 else
-                    log_line("configuration could NOT be restored after event %u", power_cycles);
+                    log_line("configuration could NOT be restored after event %u",
+                             interruptions);
             }
         }
 
         uint64_t now = hm_now_ms();
-        if (now >= next_tick) {
-            next_tick = now + 1000;
-            log_file_only("elapsed %llus  frames %llu  state %s",
-                          (unsigned long long)((now - started) / 1000),
-                          (unsigned long long)watch.frames,
-                          watch.alive ? "alive" : "lost");
+        if (now >= next_draw) {
+            next_draw = now + timing->display_interval_ms;
+            vl_watch_render(&g_watch, (now - started) / 1000, profile_name,
+                            watch.alive, interruptions);
         }
     }
 
     uint64_t elapsed = (hm_now_ms() - started) / 1000;
+    printf("\n");
     log_line("test stopped by the operator");
-    log_line("elapsed %llus, %llu health-monitor frames, %u power interruption(s)",
-             (unsigned long long)elapsed, (unsigned long long)watch.frames, power_cycles);
+    log_line("elapsed %llus, %llu frames from the unit, %u interruption(s)",
+             (unsigned long long)elapsed, (unsigned long long)watch.frames,
+             interruptions);
+    vl_watch_log_summary(&g_watch);
 }
 
 /* ------------------------------------------------------------------ */
 
 unit_result_t dtn_test_run(void)
 {
-    const net_config_t *net = app_config_net();
-    raw_socket_t monitor = {.fd = -1}, config_sock = {.fd = -1};
-    int monitor_handle = -1, config_handle = -1;
+    const timing_config_t *timing = app_config_timing();
+    const copper_link_t   *copper;
+    const copper_link_t   *config_link = app_config_config_link();
+    size_t link_count;
+    int handles[APP_MAX_COPPER_LINKS];
+    raw_socket_t *config_sock = NULL;
     unit_result_t result = UNIT_RESULT_ERROR;
+
+    copper = app_config_copper(&link_count);
+    for (size_t i = 0; i < link_count; i++) {
+        g_links[i].fd = -1;
+        handles[i] = -1;
+    }
 
     const vl_profile_t *profile = select_profile();
     if (!profile)
@@ -288,65 +320,68 @@ unit_result_t dtn_test_run(void)
     printf("  VL records  : %d  (VL %u..%u)\n", count,
            g_records[0].vl_id, g_records[count - 1].vl_id);
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
-    printf("  config out  : %s\n", net->config_interface);
-    printf("  monitor in  : %s\n", net->monitor_interface);
+    printf("  config out  : %s (DTN port %u)\n", config_link->iface, config_link->dtn_port);
+    printf("  listening   :");
+    for (size_t i = 0; i < link_count; i++)
+        printf(" %s (DTN port %u)%s", copper[i].iface, copper[i].dtn_port,
+               i + 1 < link_count ? "," : "\n");
     print_routing(g_records, (size_t)count);
 
     if (!prompt_yes_no("\nStart the test", false))
         return UNIT_RESULT_ABORTED;
 
-    bool carrier = false;
-    if (!raw_socket_link_up(net->config_interface, &carrier)) {
-        printf("%s is down. Bring it up first.\n", net->config_interface);
-        return UNIT_RESULT_ERROR;
+    for (size_t i = 0; i < link_count; i++) {
+        bool carrier = false;
+        if (!raw_socket_link_up(copper[i].iface, &carrier)) {
+            printf("%s is down. Bring it up first.\n", copper[i].iface);
+            return UNIT_RESULT_ERROR;
+        }
+        if (!carrier)
+            printf("Warning: %s has no carrier - is the cable connected?\n",
+                   copper[i].iface);
     }
-    if (!carrier)
-        printf("Warning: %s has no carrier - is the cable connected?\n",
-               net->config_interface);
 
     if (!log_open("DTN", profile->name))
         puts("Warning: could not open a log file; the run will not be recorded.");
     else
         printf("Logging to %s\n\n", log_path());
 
-    if (!raw_socket_open(&config_sock, net->config_interface, false))
-        goto done;
-    config_handle = safe_shutdown_register("config socket", SHUTDOWN_PRIO_SOCKET,
-                                           close_socket_action, &config_sock);
-
-    if (strcmp(net->monitor_interface, net->config_interface) == 0) {
-        /* One link carries both directions; a second socket on it would only
-         * duplicate what we already receive. */
-        if (!raw_socket_open(&monitor, net->monitor_interface, true))
+    for (size_t i = 0; i < link_count; i++) {
+        if (!raw_socket_open(&g_links[i], copper[i].iface, true))
             goto done;
-    } else if (!raw_socket_open(&monitor, net->monitor_interface, true)) {
+        handles[i] = safe_shutdown_register(copper[i].iface, SHUTDOWN_PRIO_SOCKET,
+                                            close_socket_action, &g_links[i]);
+        if (copper[i].dtn_port == config_link->dtn_port)
+            config_sock = &g_links[i];
+    }
+    if (!config_sock) {
+        log_line("no socket for the configuration link %s", config_link->iface);
         goto done;
     }
-    monitor_handle = safe_shutdown_register("monitor socket", SHUTDOWN_PRIO_SOCKET,
-                                            close_socket_action, &monitor);
 
+    vl_watch_init(&g_watch, g_records, (size_t)count);
     log_line("profile %s, %d VL records, %d frames", profile->name, count, frame_count);
 
-    if (!wait_for_unit(&monitor, net->device_ready_timeout_s)) {
+    if (!wait_for_unit(link_count, timing->device_ready_timeout_s)) {
         result = safe_shutdown_requested() ? UNIT_RESULT_ABORTED : UNIT_RESULT_ERROR;
         goto done;
     }
 
-    if (!send_configuration(&config_sock, frame_count, net->frame_gap_ms))
+    if (!send_configuration(config_sock, frame_count, timing->frame_gap_ms))
         goto done;
 
-    if (!wait_for_status_reply(&monitor, net->status_reply_timeout_ms))
+    if (!wait_for_status_reply(link_count, timing->status_reply_timeout_ms))
         log_line("no status reply within %u ms - continuing, but the configuration "
-                 "is unconfirmed", net->status_reply_timeout_ms);
+                 "is unconfirmed", timing->status_reply_timeout_ms);
 
-    monitor_run(&monitor, &config_sock, frame_count, net);
+    monitor_run(link_count, config_sock, frame_count, timing, profile->name);
     result = UNIT_RESULT_PASS;
 
 done:
-    safe_shutdown_unregister(monitor_handle);
-    safe_shutdown_unregister(config_handle);
-    raw_socket_close(&monitor);
-    raw_socket_close(&config_sock);
+    for (size_t i = 0; i < link_count; i++) {
+        safe_shutdown_unregister(handles[i]);
+        raw_socket_close(&g_links[i]);
+    }
     log_close();
     safe_shutdown_clear();
     return result;

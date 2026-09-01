@@ -42,4 +42,12 @@ bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len);
  */
 int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeout_ms);
 
+/**
+ * @brief Wait for a frame on any of several links.
+ * @param which set to the index of the link the frame came from
+ * @return bytes received, 0 on timeout, -1 on error (including an interrupt)
+ */
+int raw_socket_recv_any(raw_socket_t *socks, size_t count, uint8_t *buf, size_t cap,
+                        unsigned timeout_ms, size_t *which);
+
 #endif /* RAW_SOCKET_H */

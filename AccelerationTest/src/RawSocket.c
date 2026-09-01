@@ -118,3 +118,34 @@ int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeo
     ssize_t n = recv(sock->fd, buf, cap, 0);
     return n < 0 ? -1 : (int)n;
 }
+
+int raw_socket_recv_any(raw_socket_t *socks, size_t count, uint8_t *buf, size_t cap,
+                        unsigned timeout_ms, size_t *which)
+{
+    struct pollfd pfd[8];
+
+    if (count == 0 || count > sizeof pfd / sizeof pfd[0])
+        return -1;
+    for (size_t i = 0; i < count; i++) {
+        pfd[i].fd      = socks[i].fd;
+        pfd[i].events  = POLLIN;
+        pfd[i].revents = 0;
+    }
+
+    int ready = poll(pfd, (nfds_t)count, (int)timeout_ms);
+    if (ready == 0)
+        return 0;
+    if (ready < 0)
+        return -1;
+
+    for (size_t i = 0; i < count; i++)
+        if (pfd[i].revents & POLLIN) {
+            ssize_t n = recv(socks[i].fd, buf, cap, 0);
+            if (n < 0)
+                return -1;
+            if (which)
+                *which = i;
+            return (int)n;
+        }
+    return 0;
+}

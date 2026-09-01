@@ -15,7 +15,8 @@ src/units/DtnTest.c        DTN acceleration test
 src/units/VmcTest.c        placeholder
 src/units/CmcTest.c        placeholder
 src/VlProfile.c            the three DTN configuration rounds
-src/AppConfig.c            interface names and timings
+src/AppConfig.c            copper links, DTN port to interface map, timings
+src/VlWatch.c              what arrived on copper, by VL
 src/RawSocket.c            AF_PACKET access to a copper link
 src/HealthMonitor.c        recognising the DTN's health-monitor stream
 src/SafeShutdown.c         releases sockets on Ctrl-C or any error path
@@ -32,10 +33,34 @@ tools/                     analysis-side helpers (see below)
 1. The operator picks one of the three rounds.
 2. The profile is expanded into a VL table and validated.
 3. The VL table becomes configuration frames.
-4. The test waits for the unit's health-monitor stream to appear, which is how
-   it knows the DTN has booted.
-5. The frames go out of the copper link, followed by a `0x52` status query.
-6. It watches the health monitor until the operator presses Ctrl-C.
+4. The test waits for the unit to start talking on either copper link, which is
+   how it knows the DTN has booted. The power-up broadcast is not routed by the
+   VL table and the one place it has been observed is the 1G link, so both are
+   watched rather than assumed.
+5. The frames go out of the configuration link, followed by a `0x52` status query.
+6. It watches both copper links until the operator presses Ctrl-C.
+
+## The live table
+
+Until the health-monitor payloads are decoded, the run answers a simpler and
+more useful question: did the configuration take? Every VL the profile routes to
+copper is seeded into a table at zero packets, so one that never arrives shows up
+as a row rather than as an absence:
+
+```
+unit ALIVE   expected VLs seen 3/7   power interruptions 1
+
+  link       DTN  VL-ID   packets      bytes   last   sizes           status
+  ---------- ---  -----  --------  ---------  -----   --------------  ------
+  eno12409    33    100       284     322340   0.0s   1187,1083       ok
+  eno12409    33    101         0          0      -   -               MISSING
+  eno12399    32   4485        30      35610   0.0s   1187            ok
+  eno12409    33      0         6        564   0.0s   94              extra
+```
+
+`MISSING` means the profile routes that VL to that copper port but nothing has
+arrived — either it is not being generated or it is not being routed. `extra` is
+a VL nobody asked for. Packet contents are ignored.
 
 Power is operated separately; the test only observes a unit that is already
 live. What it does watch for is power *dropping* mid-run - on a vibration rig
