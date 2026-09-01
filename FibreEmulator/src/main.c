@@ -84,7 +84,7 @@ static void collect(uint16_t rx_mask, unsigned duration_ms)
     while (now_ms() < deadline && !g_stop) {
         bool idle = true;
 
-        for (uint16_t port = 0; port < 16; port++) {
+        for (uint8_t port = 0; port < FIBRE_SERVER_PORT_COUNT; port++) {
             if (!(rx_mask >> port & 1))
                 continue;
             int len = port_runner_receive(port, g_rx, sizeof g_rx);
@@ -167,13 +167,13 @@ int main(int argc, char **argv)
     printf("\n  scenario     : %s - %s\n", scenario->name, scenario->description);
     printf("  VLs          : %d  (%u packets each)\n", flow_count, packets_per_vl);
     printf("  server ports : transmit");
-    for (uint16_t p = 0; p < 16; p++)
+    for (uint8_t p = 0; p < FIBRE_SERVER_PORT_COUNT; p++)
         if (tx_mask >> p & 1)
-            printf(" %u", p);
-    printf(", receive");
-    for (uint16_t p = 0; p < 16; p++)
+            printf(" %u (%s)", p, fibre_server_pci(p));
+    printf("\n                 receive ");
+    for (uint8_t p = 0; p < FIBRE_SERVER_PORT_COUNT; p++)
         if (rx_mask >> p & 1)
-            printf(" %u", p);
+            printf(" %u (%s)", p, fibre_server_pci(p));
     putchar('\n');
 
     fflush(stdout);

@@ -16,6 +16,25 @@ static const uint8_t g_server_port_of_dtn[FIBRE_DTN_PORT_COUNT] = {
     7, 7, 7, 7,   /* DTN 28-31 */
 };
 
+/* Fibre NICs, in the order the rig's traffic generator numbers them. */
+static const char *const g_server_pci[FIBRE_SERVER_PORT_COUNT] = {
+    "0000:21:00.0",  /* server port 0 */
+    "0000:21:00.1",
+    "0000:41:00.0",
+    "0000:41:00.1",
+    "0000:64:00.0",
+    "0000:64:00.1",
+    "0000:81:00.0",
+    "0000:81:00.1",  /* server port 7 */
+};
+
+const char *fibre_server_pci(uint8_t server_port)
+{
+    if (server_port >= FIBRE_SERVER_PORT_COUNT)
+        return NULL;
+    return g_server_pci[server_port];
+}
+
 int fibre_server_port(uint8_t dtn_port)
 {
     if (dtn_port >= FIBRE_DTN_PORT_COUNT)

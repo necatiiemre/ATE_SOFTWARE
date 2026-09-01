@@ -33,6 +33,19 @@ static inline uint16_t fibre_rx_vlan(uint8_t dtn_port) { return (uint16_t)(225 +
 /** Server DPDK port carrying a DTN fibre port, or -1 if out of range. */
 int fibre_server_port(uint8_t dtn_port);
 
+/**
+ * @brief PCI address of a server fibre port, or NULL if out of range.
+ *
+ * DPDK numbers ports in probe order, so an allowlist that names only some of
+ * them renumbers the rest - and sending on the wrong port looks exactly like a
+ * link that does not forward. Ports are therefore resolved by PCI address, and
+ * the numbering DPDK happens to choose does not matter.
+ *
+ * The copper ports live on a different bus (01:00.x) and must stay bound to the
+ * kernel: the acceleration test reaches them through AF_PACKET.
+ */
+const char *fibre_server_pci(uint8_t server_port);
+
 /** DTN port a received VLAN belongs to, or -1 if it is not an RX VLAN. */
 int fibre_dtn_port_from_rx_vlan(uint16_t vlan);
 

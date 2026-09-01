@@ -1,5 +1,7 @@
 #include "PortRunner.h"
 
+#include "FibreMap.h"
+
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
@@ -16,6 +18,9 @@
 
 static struct rte_mempool *g_pool;
 static uint16_t            g_open_mask;
+
+/* Server port number -> DPDK port id, resolved from the PCI address. */
+static int g_dpdk_id[FIBRE_SERVER_PORT_COUNT];
 
 /* Frames pulled from a port in a burst but not yet handed to the caller. */
 static struct {
@@ -44,14 +49,18 @@ bool port_runner_init(int argc, char **argv, int *consumed)
     return true;
 }
 
-uint16_t port_runner_available(void)
+/* DPDK names PCI devices by their address, so the allowlist cannot renumber
+ * them out from under us. */
+static int resolve(uint8_t server_port)
 {
-    uint16_t mask = 0, port;
+    const char *pci = fibre_server_pci(server_port);
+    uint16_t id;
 
-    RTE_ETH_FOREACH_DEV(port)
-        if (port < MAX_PORTS)
-            mask |= (uint16_t)(1u << port);
-    return mask;
+    if (!pci)
+        return -1;
+    if (rte_eth_dev_get_port_by_name(pci, &id) != 0)
+        return -1;
+    return (int)id;
 }
 
 static bool open_one(uint16_t port)
@@ -106,32 +115,44 @@ static bool open_one(uint16_t port)
     return true;
 }
 
-bool port_runner_open(uint16_t port_mask)
+bool port_runner_open(uint16_t server_port_mask)
 {
-    uint16_t available = port_runner_available();
-    uint16_t missing = (uint16_t)(port_mask & ~available);
+    bool missing = false;
 
-    if (missing) {
-        fprintf(stderr, "[dpdk] the scenario needs port(s)");
-        for (uint16_t p = 0; p < MAX_PORTS; p++)
-            if (missing >> p & 1)
-                fprintf(stderr, " %u", p);
-        fprintf(stderr, " but DPDK did not find them\n");
-        return false;
-    }
+    for (uint8_t sp = 0; sp < FIBRE_SERVER_PORT_COUNT; sp++)
+        g_dpdk_id[sp] = -1;
 
-    for (uint16_t port = 0; port < MAX_PORTS; port++) {
-        if (!(port_mask >> port & 1))
+    for (uint8_t sp = 0; sp < FIBRE_SERVER_PORT_COUNT; sp++) {
+        if (!(server_port_mask >> sp & 1))
             continue;
-        if (!open_one(port))
+        g_dpdk_id[sp] = resolve(sp);
+        if (g_dpdk_id[sp] < 0) {
+            fprintf(stderr, "[dpdk] server port %u (%s) was not found - is it bound "
+                            "to a DPDK driver and allowed by EAL?\n",
+                    sp, fibre_server_pci(sp) ? fibre_server_pci(sp) : "?");
+            missing = true;
+        }
+    }
+    if (missing)
+        return false;
+
+    for (uint8_t sp = 0; sp < FIBRE_SERVER_PORT_COUNT; sp++) {
+        if (g_dpdk_id[sp] < 0)
+            continue;
+        printf("[dpdk] server port %u -> %s -> DPDK port %d\n",
+               sp, fibre_server_pci(sp), g_dpdk_id[sp]);
+        if (!open_one((uint16_t)g_dpdk_id[sp]))
             return false;
-        g_open_mask |= (uint16_t)(1u << port);
+        g_open_mask |= (uint16_t)(1u << g_dpdk_id[sp]);
     }
     return true;
 }
 
-bool port_runner_send(uint16_t port, const uint8_t *frame, size_t len)
+bool port_runner_send(uint8_t server_port, const uint8_t *frame, size_t len)
 {
+    if (server_port >= FIBRE_SERVER_PORT_COUNT || g_dpdk_id[server_port] < 0)
+        return false;
+    uint16_t port = (uint16_t)g_dpdk_id[server_port];
     struct rte_mbuf *buf = rte_pktmbuf_alloc(g_pool);
 
     if (!buf) {
@@ -158,8 +179,11 @@ bool port_runner_send(uint16_t port, const uint8_t *frame, size_t len)
     return false;
 }
 
-int port_runner_receive(uint16_t port, uint8_t *out, size_t cap)
+int port_runner_receive(uint8_t server_port, uint8_t *out, size_t cap)
 {
+    if (server_port >= FIBRE_SERVER_PORT_COUNT || g_dpdk_id[server_port] < 0)
+        return 0;
+    uint16_t port = (uint16_t)g_dpdk_id[server_port];
     if (port >= MAX_PORTS)
         return 0;
 

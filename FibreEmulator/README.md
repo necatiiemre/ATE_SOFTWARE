@@ -46,11 +46,35 @@ finding.
 ```
 $ make test                       # the logic, no DPDK needed
 $ make                            # needs DPDK
-$ sudo ./build/fibre_emulator -l 0-15 -n 4 -- --packets 10
+$ sudo ./build/fibre_emulator -l 0-3 -n 4 \
+      -a 0000:21:00.0 -a 0000:21:00.1 -a 0000:41:00.0 -a 0000:41:00.1 \
+      -a 0000:64:00.0 -a 0000:64:00.1 -a 0000:81:00.0 -a 0000:81:00.1 \
+      -- --packets 10
 ```
 
 Options after `--`: `--packets N` (default 5), `--skip-cumulus` when the switch
 is already set up.
+
+## Sharing the server with the acceleration test
+
+Both can run on the same machine, and on this rig they do. Two things keep them
+out of each other's way:
+
+* **The NICs are on different buses.** The fibre ports are `21/41/64/81:00.x`
+  and the copper ports the acceleration test uses are `01:00.x`. Give EAL an
+  explicit `-a` allowlist of the fibre addresses so it cannot claim a copper NIC;
+  the copper ones must stay bound to the kernel for AF_PACKET to reach them.
+* **Ports are resolved by PCI address, not by DPDK's numbering.** An allowlist
+  renumbers whatever it does not name, and sending on the wrong port looks
+  exactly like a link that does not forward. The startup banner prints the
+  mapping it resolved, worth a glance on the first run.
+
+Give EAL a small core list (`-l 0-3`); it does not need more and the other
+program wants a core to poll on. Do not run the rig's original `dpdk_app` at the
+same time — it claims the same fibre ports and the same copper raw sockets.
+
+Order matters: the acceleration test has to configure the DTN before anything
+sent from here has a VL table to be forwarded by.
 
 ```
     DTN link      VLAN in/out   VLs   sent   returned   status
