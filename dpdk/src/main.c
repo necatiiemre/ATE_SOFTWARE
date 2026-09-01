@@ -655,6 +655,37 @@ int main(int argc, char const *argv[])
     // Workers have been forwarding for a few seconds already (port bring-up,
     // raw sockets, health monitor, external TX, PTP, PSU listener); without
     // this reset that start-up traffic would be counted as test traffic.
+    //
+    // Resetting counters while traffic flows cannot be exact. They live in 32
+    // TX lcores, 32 RX lcores, three pthreads and the NIC; zeroing them takes
+    // time, and whatever is in the air during that window is counted on one
+    // side only. Measured, that was the whole of the ~213 packet residue the
+    // end-of-test totals carried - stable at 212/213/213 across 47, 73 and 98
+    // second runs, because it is a fixed window and not a rate.
+    //
+    // So empty the pipe first. Hold every PRBS sender, wait long enough that
+    // nothing can still be in flight (one flight time is tens of
+    // microseconds; this waits four orders of magnitude longer), then reset
+    // and release. The reset now happens against a stopped world.
+    //
+    // The quiet window is also the only moment at which this side and the
+    // switch can be given a common zero point. The switch keeps its own
+    // counters and they cannot be cleared in step with ours - the clear is an
+    // SSH round trip, seconds long, and at two million packets a second
+    // seconds of skew is millions of packets. Reading them while nothing is
+    // moving removes the need for that precision entirely: any snapshot taken
+    // between these two markers describes the same instant. The same holds at
+    // the other end, after the RX drain.
+    printf("\n[SYNC] Quiet window OPEN - all test traffic held, counters "
+           "being zeroed.\n"
+           "       Switch-side counters read between this line and the next "
+           "one\n"
+           "       share a zero point with ours.\n");
+    fflush(stdout);
+
+    txrx_set_tx_paused(true);
+    sleep(TEST_START_QUIET_SECONDS);
+
     helper_reset_stats(&ports_config, prev_tx_bytes, prev_rx_bytes);
 
 #if PTP_ENABLED
@@ -670,6 +701,11 @@ int main(int argc, char const *argv[])
         health_monitor_set_warmup_complete();
     }
 #endif
+
+    // Counters are zero and nothing was in flight while they were zeroed.
+    // Release the senders; from here the numbers are the test's.
+    txrx_set_tx_paused(false);
+    printf("[SYNC] Quiet window CLOSED - test traffic starts now.\n");
 
     // Log Test Start Time for PDF report
     {
@@ -829,6 +865,12 @@ int main(int argc, char const *argv[])
         stop_raw_socket_workers();
     }
 #endif
+
+    printf("\n[SYNC] Quiet window OPEN - test traffic stopped and the drain is\n"
+           "       complete, so nothing is in flight. Switch-side counters read\n"
+           "       from here describe the same instant as the totals below;\n"
+           "       subtract the reading taken at the start to get this test's\n"
+           "       traffic as the switch saw it.\n");
 
     // Every worker that feeds these counters - DPDK lcores and raw socket
     // pthreads alike - has now exited and run its final flush.

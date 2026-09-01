@@ -16,6 +16,16 @@
 #define RX_DRAIN_SECONDS 10
 #endif
 
+// Seconds of held traffic before the start-of-test counter reset. The pipe
+// empties in tens of microseconds, so this is not about waiting for it: it is
+// a window wide enough for a switch-side counter read (an SSH round trip) to
+// be taken while nothing is moving, giving both sides a common zero point.
+// Its own guard - sharing RX_DRAIN_SECONDS' would leave it undefined whenever
+// that one is set from the build.
+#ifndef TEST_START_QUIET_SECONDS
+#define TEST_START_QUIET_SECONDS 3
+#endif
+
 // ==========================================
 // TOKEN BUCKET TX MODE (must be defined early, used throughout)
 // ==========================================

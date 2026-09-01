@@ -1196,6 +1196,15 @@ void *raw_tx_worker(void *arg)
             my_stats_gen = cur_stats_gen;
         }
 
+        // Held for the start-of-test reset, same as the DPDK TX workers.
+        // batch_count is always zero here - the tail of every pass flushes the
+        // AF_PACKET ring - so nothing is left sitting in the ring while paused.
+        if (txrx_tx_paused()) {
+            struct timespec pts = {0, 100000};  // 100 us
+            nanosleep(&pts, NULL);
+            continue;
+        }
+
         bool any_sent = false;
 
         // Round-robin interleaved pacing (all modes):

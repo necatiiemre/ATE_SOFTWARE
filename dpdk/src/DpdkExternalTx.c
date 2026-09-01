@@ -358,6 +358,16 @@ int dpdk_ext_tx_worker(void *arg)
             txrx_ack_flush();
         }
 
+        // Held for the start-of-test reset. After the flush block so a paused
+        // worker still answers flush requests, and the pacing baseline is
+        // rebased so resuming does not fire off everything that came "due"
+        // while nothing was being sent.
+        if (txrx_tx_paused()) {
+            rte_delay_us_block(100);
+            next_send_time = rte_get_tsc_cycles() + delay_cycles;
+            continue;
+        }
+
         // ==========================================
         // SMOOTH PACING: Each packet is sent exactly on time
         // NO burst - traffic is evenly spread over 1 second

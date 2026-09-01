@@ -325,6 +325,15 @@ int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max);
 void     txrx_reset_worker_locals(void);
 
 /**
+ * Hold or release every PRBS sender (DPDK TX, raw socket TX, external TX)
+ * without stopping it. Used to empty the pipe before the start-of-test counter
+ * reset, so that reset happens with nothing in flight and the counters start
+ * from a true zero rather than from a moving target.
+ */
+void     txrx_set_tx_paused(bool paused);
+bool     txrx_tx_paused(void);
+
+/**
  * Validated PRBS arrivals broken down by the raw socket port that sent them.
  * Fills out[0..max) with one count per raw port. The DTN rows only say that
  * raw-origin traffic arrived, not which of Ports 12/13 sent it, so a shortfall

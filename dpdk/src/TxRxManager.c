@@ -36,6 +36,32 @@ void port_vlans_load_config(bool ate_mode)
 // Global RX statistics per port
 struct rx_stats rx_stats_per_port[MAX_PORTS];
 
+// Holds every PRBS sender - the DPDK TX workers, the raw socket TX workers and
+// the external TX workers - without stopping them. Used once, to make the
+// start-of-test counter reset exact.
+//
+// Resetting counters while traffic flows cannot be exact: they live in 32 TX
+// lcores, 32 RX lcores, three pthreads and the NIC, and zeroing them takes
+// time, so whatever is in the air during that window is counted on one side
+// only. That was the whole of the ~213 packet residue the totals carried.
+//
+// Pausing first and letting the pipe empty removes the window rather than
+// narrowing it: at the moment of the reset nothing is in flight and nothing is
+// held thread-local, so every counter starts from a true zero. Bring-up
+// traffic still flows beforehand, so the switch has already learnt the
+// forwarding it needs - which a start gate would not have given us.
+static volatile bool g_tx_paused = false;
+
+void txrx_set_tx_paused(bool paused)
+{
+    __atomic_store_n(&g_tx_paused, paused, __ATOMIC_RELEASE);
+}
+
+bool txrx_tx_paused(void)
+{
+    return __atomic_load_n(&g_tx_paused, __ATOMIC_ACQUIRE);
+}
+
 // Validated PRBS arrivals attributed to the raw socket port that sent them.
 // The DTN rows only say that raw-origin traffic arrived, not which of Ports
 // 12/13 it came from, so a shortfall on the raw leg cannot be localised from
@@ -1300,6 +1326,17 @@ int tx_worker(void *arg)
             next_tx_flush_tsc = rte_rdtsc() + tx_flush_period_tsc;
             my_tx_flush_req = cur_tx_flush_req;
             txrx_ack_flush();
+        }
+
+        // Held for the start-of-test reset. Checked after the flush block so a
+        // paused worker still answers flush requests instead of stalling
+        // whoever is waiting on them. The pacing baseline is rebased every
+        // pass, so resuming starts a fresh interval rather than a burst of
+        // packets that were "due" while nothing was being sent.
+        if (txrx_tx_paused()) {
+            rte_delay_us_block(100);
+            next_send_time = rte_get_tsc_cycles() + delay_cycles;
+            continue;
         }
 
 #if TX_TEST_MODE_ENABLED
