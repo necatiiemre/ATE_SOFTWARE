@@ -116,6 +116,23 @@ struct dtn_port_stats {
     // arrival count against a one-stream send count. Excluded from
     // good/bad/bit_errors/prbs_rx_bytes above and kept here instead, exactly,
     // so nothing is lost and nothing has to be estimated.
+    // Packets and bytes the external TX worker sent on queue 4 carrying this
+    // DTN port's VLAN. Server->DTN traffic like prbs_tx_pkts, and it is what
+    // the DTN table's RX column was missing: a port gives part of its send
+    // budget to queue 4, that share appeared in no row, and the row's RX came
+    // out below its TX by exactly it.
+    //
+    // Attributed exactly, not divided: each external TX target is tagged with
+    // the VLAN of the DTN port it is bound for (port 2's four targets carry
+    // VLAN 97-100, which are DTN 0-3's rx_vlan), so vlan_to_dtn_port names the
+    // row with no estimate involved.
+    //
+    // Kept out of prbs_tx_pkts so the totals' loopback leg stays what it says
+    // it is - the external leg is reconciled there separately, and folding
+    // these in would count them on both sides.
+    rte_atomic64_t ext_tx_pkts;
+    rte_atomic64_t ext_tx_bytes;
+
     rte_atomic64_t raw_origin_good;
     rte_atomic64_t raw_origin_bad;
     rte_atomic64_t raw_origin_bits;

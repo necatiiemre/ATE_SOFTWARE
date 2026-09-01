@@ -555,6 +555,8 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].prbs_rx_bytes);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_pkts);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_bytes);
+        rte_atomic64_init(&dtn_stats[i].ext_tx_pkts);
+        rte_atomic64_init(&dtn_stats[i].ext_tx_bytes);
         rte_atomic64_init(&dtn_stats[i].raw_origin_good);
         rte_atomic64_init(&dtn_stats[i].raw_origin_bad);
         rte_atomic64_init(&dtn_stats[i].raw_origin_bits);

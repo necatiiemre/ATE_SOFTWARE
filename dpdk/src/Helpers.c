@@ -135,7 +135,9 @@ void helper_reset_stats(const struct ports_config *ports_config,
 //   DTN TX (DTN→Server) = good + bad + raw_origin  (RX worker) - everything
 //       that came out of this DTN port and validated, whether the paired TX
 //       worker sent it or it entered the device at Port 12/13
-//   DTN RX (Server→DTN) = prbs_tx_pkts / prbs_tx_bytes          (TX worker)
+//   DTN RX (Server→DTN) = prbs_tx_pkts + ext_tx_pkts  (TX worker on queues
+//       0-3, external TX worker on queue 4) - everything the server sent
+//       toward this DTN port, by either path
 // The HW queue counters are still read, but only for the Mbps columns: a rate
 // needs a value that is exact at every instant, and the software counters are
 // folded in on a flush cadence that does not line up with this render.
@@ -223,10 +225,19 @@ static void helper_render_dtn_stats(FILE *out,
         // watermark check reported no gaps.
         uint16_t srv_tx_port = entry->rx_server_port;
         uint16_t srv_tx_queue = entry->rx_server_queue;
+        // Both send paths toward this DTN port: the paired TX worker on queues
+        // 0-3, and the external TX worker on queue 4 carrying this port's VLAN.
+        // The second was missing, and it showed: a port hands part of its send
+        // budget to queue 4, that share appeared in no row, and every affected
+        // row's RX came out below its TX by exactly it - 877 against 927 on
+        // the rows behind Port 12, 925 against 935 behind Port 13, and equal
+        // on the two ports that run no external TX at all.
         uint64_t dtn_rx_pkts =
-            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].ext_tx_pkts);
         uint64_t dtn_rx_bytes =
-            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes);
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].ext_tx_bytes);
 
         // Mbps delta calculation.
         //

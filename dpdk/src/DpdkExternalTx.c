@@ -204,6 +204,34 @@ int dpdk_ext_tx_init(struct rte_mempool *mbuf_pools[])
 // TX WORKER
 // ==========================================
 
+// Hands the per-target counts to the DTN rows they belong to. Three flush
+// sites - the on-demand request, the packet threshold and the exit - so they
+// cannot drift apart, the same shape as the TX and RX workers use.
+#if STATS_MODE_DTN
+#define EXT_TX_FLUSH_DTN()                                                     \
+    do {                                                                       \
+        for (int _t = 0; _t < DPDK_EXT_TX_QUEUES_PER_PORT; _t++) {             \
+            if (local_ext_pkts[_t] == 0) continue;                             \
+            if (target_dtn[_t] != DTN_VLAN_INVALID) {                          \
+                rte_atomic64_add(&dtn_stats[target_dtn[_t]].ext_tx_pkts,       \
+                                 (int64_t)local_ext_pkts[_t]);                 \
+                rte_atomic64_add(&dtn_stats[target_dtn[_t]].ext_tx_bytes,      \
+                                 (int64_t)local_ext_bytes[_t]);                \
+            }                                                                  \
+            local_ext_pkts[_t] = 0;                                            \
+            local_ext_bytes[_t] = 0;                                           \
+        }                                                                      \
+    } while (0)
+#else
+#define EXT_TX_FLUSH_DTN()                                                     \
+    do {                                                                       \
+        for (int _t = 0; _t < DPDK_EXT_TX_QUEUES_PER_PORT; _t++) {             \
+            local_ext_pkts[_t] = 0; local_ext_bytes[_t] = 0;                   \
+        }                                                                      \
+        (void)target_dtn;                                                      \
+    } while (0)
+#endif
+
 int dpdk_ext_tx_worker(void *arg)
 {
     struct dpdk_ext_tx_worker_params *params = (struct dpdk_ext_tx_worker_params *)arg;
@@ -336,6 +364,27 @@ int dpdk_ext_tx_worker(void *arg)
 
     uint64_t local_tx_pkts = 0;
     uint64_t local_tx_bytes = 0;
+
+    // Which DTN row does each target feed? Its VLAN says so directly - the
+    // targets carry the rx_vlan of the DTN port they are bound for - so this
+    // is a lookup, not a split. Resolved once here; init_dtn_port_map() runs
+    // long before any external TX worker starts.
+    uint8_t  target_dtn[DPDK_EXT_TX_QUEUES_PER_PORT];
+    uint64_t local_ext_pkts[DPDK_EXT_TX_QUEUES_PER_PORT] = {0};
+    uint64_t local_ext_bytes[DPDK_EXT_TX_QUEUES_PER_PORT] = {0};
+    for (int t = 0; t < DPDK_EXT_TX_QUEUES_PER_PORT; t++) {
+        target_dtn[t] = DTN_VLAN_INVALID;
+    }
+#if STATS_MODE_DTN
+    for (uint16_t t = 0; t < port_config->target_count &&
+                         t < DPDK_EXT_TX_QUEUES_PER_PORT; t++) {
+        const uint16_t v = port_config->targets[t].vlan_id;
+        if (v < DTN_VLAN_LOOKUP_SIZE) {
+            target_dtn[t] = vlan_to_dtn_port[v];
+        }
+    }
+#endif
+    uint32_t my_ext_stats_gen = txrx_stats_generation();
     const uint32_t STATS_FLUSH = 1024;
 
     uint32_t my_flush_req = txrx_flush_request_id();
@@ -354,8 +403,21 @@ int dpdk_ext_tx_worker(void *arg)
                 local_tx_pkts = 0;
                 local_tx_bytes = 0;
             }
+            EXT_TX_FLUSH_DTN();
             my_flush_req = cur_flush_req;
             txrx_ack_flush();
+        }
+
+        // A stats reset happened: what is still held locally belongs to the
+        // window before it.
+        uint32_t cur_ext_stats_gen = txrx_stats_generation();
+        if (cur_ext_stats_gen != my_ext_stats_gen) {
+            local_tx_pkts = local_tx_bytes = 0;
+            for (int t = 0; t < DPDK_EXT_TX_QUEUES_PER_PORT; t++) {
+                local_ext_pkts[t] = 0;
+                local_ext_bytes[t] = 0;
+            }
+            my_ext_stats_gen = cur_ext_stats_gen;
         }
 
         // Held for the start-of-test reset. After the flush block so a paused
@@ -519,6 +581,8 @@ int dpdk_ext_tx_worker(void *arg)
             commit_ext_tx_sequence(port_idx, curr_vl);
             local_tx_pkts++;
             local_tx_bytes += pkt_size;
+            local_ext_pkts[current_target]++;
+            local_ext_bytes[current_target] += pkt_size;
         } else {
             // TX queue full — drop packet, don't increment sequence (will be retried)
             rte_pktmbuf_free(pkts[0]);
@@ -530,6 +594,7 @@ int dpdk_ext_tx_worker(void *arg)
             rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_bytes, local_tx_bytes);
             local_tx_pkts = 0;
             local_tx_bytes = 0;
+            EXT_TX_FLUSH_DTN();
         }
     }
 
@@ -538,6 +603,7 @@ int dpdk_ext_tx_worker(void *arg)
         rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_pkts, local_tx_pkts);
         rte_atomic64_add(&dpdk_ext_tx_stats_per_port[port_idx].tx_bytes, local_tx_bytes);
     }
+    EXT_TX_FLUSH_DTN();
 
     txrx_flush_participant_exit();
 
