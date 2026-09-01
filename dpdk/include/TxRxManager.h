@@ -324,6 +324,14 @@ int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max);
 // carry pre-reset counts across the boundary.
 void     txrx_reset_worker_locals(void);
 
+/**
+ * Validated PRBS arrivals broken down by the raw socket port that sent them.
+ * Fills out[0..max) with one count per raw port. The DTN rows only say that
+ * raw-origin traffic arrived, not which of Ports 12/13 sent it, so a shortfall
+ * on the raw leg cannot be attributed to a port from them alone.
+ */
+void     txrx_get_raw_origin_by_port(uint64_t *out, int max);
+
 // Current reset generation. Workers compare it against their own copy once per
 // burst and drop their locals when it changes.
 uint32_t txrx_stats_generation(void);

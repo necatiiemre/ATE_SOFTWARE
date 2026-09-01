@@ -804,6 +804,38 @@ static void helper_render_final_totals(FILE *out,
     printf("    sent                                    : %lu\n", sent_loop);
     printf("    returned and validated on DPDK queues   : %lu\n", tot_dpdk_validated);
     printf("    difference                              : %lu\n", loop_diff);
+    // The loopback leg is two sub-legs and the aggregate cannot say which is
+    // short. The DPDK sub-leg compares each row's TX worker against what came
+    // back on its paired queue; the raw sub-leg compares each raw port's own
+    // transmissions against the arrivals attributed to it. tx_errors is the
+    // count of send() calls the kernel refused - it has always been collected
+    // and never shown, so a refused batch looked like a silent loss.
+    {
+        uint64_t raw_back[MAX_RAW_SOCKET_PORTS] = {0};
+        txrx_get_raw_origin_by_port(raw_back, MAX_RAW_SOCKET_PORTS);
+        uint64_t dpdk_sent = 0, dpdk_back = 0;
+        for (uint16_t d = 0; d < DTN_DPDK_PORT_COUNT; d++) {
+            dpdk_sent += (uint64_t)rte_atomic64_read(&dtn_stats[d].prbs_tx_pkts);
+            dpdk_back += (uint64_t)rte_atomic64_read(&dtn_stats[d].good_pkts) +
+                         (uint64_t)rte_atomic64_read(&dtn_stats[d].bad_pkts);
+        }
+        printf("    of that, DPDK TX workers  sent/back    : %lu / %lu  (%+ld)\n",
+               dpdk_sent, dpdk_back, (long)(dpdk_back - dpdk_sent));
+        for (int r = 0; r < 2; r++) {
+            struct raw_socket_port *rp = &raw_ports[r];
+            uint64_t sent = 0, errs = 0;
+            for (uint16_t t = 0; t < rp->tx_target_count; t++) {
+                pthread_spin_lock(&rp->tx_targets[t].stats.lock);
+                sent += rp->tx_targets[t].stats.tx_packets;
+                errs += rp->tx_targets[t].stats.tx_errors;
+                pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
+            }
+            printf("    of that, Port %-2u          sent/back    : %lu / %lu  (%+ld)"
+                   ", send() errors %lu\n",
+                   rp->port_id, sent, raw_back[r],
+                   (long)(raw_back[r] - sent), errs);
+        }
+    }
     printf("  External TX leg (queue 4 -> Ports 12/13)\n");
     printf("    sent                                    : %lu\n", sent_ext);
     printf("    returned and validated at Ports 12/13   : %lu\n", tot_raw_validated);

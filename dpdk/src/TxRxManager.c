@@ -493,6 +493,9 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].raw_origin_bits);
         rte_atomic64_init(&dtn_stats[i].raw_origin_bytes);
     }
+    for (int i = 0; i < MAX_RAW_SOCKET_PORTS; i++) {
+        rte_atomic64_init(&g_raw_origin_by_port[i]);
+    }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
 
@@ -1581,6 +1584,11 @@ static inline struct raw_socket_port* find_raw_socket_port_by_vl_id(uint16_t vl_
         local_raw_rx = local_raw_bytes = 0;                                    \
         local_raw_good = local_raw_bad = local_raw_bits = 0;                   \
         local_raw_prbs_bytes = 0;                                              \
+        for (int _rp = 0; _rp < MAX_RAW_SOCKET_PORTS; _rp++) {                 \
+            rte_atomic64_add(&g_raw_origin_by_port[_rp],                       \
+                             (int64_t)local_raw_by_port[_rp]);                 \
+            local_raw_by_port[_rp] = 0;                                        \
+        }                                                                      \
     } while (0)
 
 int rx_worker(void *arg)
@@ -1628,6 +1636,7 @@ int rx_worker(void *arg)
     // raw socket port instead of this row's paired TX worker.
     uint64_t local_raw_good = 0, local_raw_bad = 0, local_raw_bits = 0;
     uint64_t local_raw_prbs_bytes = 0;
+    uint64_t local_raw_by_port[MAX_RAW_SOCKET_PORTS] = {0};
     uint64_t local_external = 0;  // External packets (VL-ID outside expected range)
     uint64_t local_other = 0;     // Foreign (non-PRBS) frames seen on this queue
     // Bytes of packets that actually reached PRBS validation. The DTN table's
@@ -1681,6 +1690,8 @@ int rx_worker(void *arg)
             local_raw_rx = local_raw_bytes = 0;
             local_raw_good = local_raw_bad = local_raw_bits = 0;
             local_raw_prbs_bytes = 0;
+            for (int _rp = 0; _rp < MAX_RAW_SOCKET_PORTS; _rp++)
+                local_raw_by_port[_rp] = 0;
             my_stats_gen = cur_stats_gen;
         }
 
@@ -1818,6 +1829,7 @@ int rx_worker(void *arg)
                         // this is the only point that knows the frame came from a
                         // raw port.
                         local_raw_prbs_bytes += m->pkt_len;
+                        local_raw_by_port[raw_port - raw_ports]++;
 
                         // Get sequence number from payload
                         uint64_t raw_seq = *(uint64_t *)(pkt + raw_payload_off);
@@ -1977,6 +1989,7 @@ int rx_worker(void *arg)
                         // worker this DTN row is paired with. Tracked separately so
                         // the row can subtract it out - see RX_WORKER_FLUSH_DTN.
                         local_raw_prbs_bytes += m->pkt_len;
+                        local_raw_by_port[raw_port - raw_ports]++;
 
                         // Get sequence number from payload
                         uint64_t ext_seq = *(uint64_t *)(pkt + payload_off);
@@ -2371,6 +2384,19 @@ int rx_worker(void *arg)
 // packets, so zeroing dtn_stats alone let everything counted before the reset
 // reappear right after it. Each worker compares this against its own copy once
 // per burst and drops whatever it is still holding when it changes.
+// Validated PRBS arrivals attributed to the raw socket port that sent them.
+// The DTN rows only say that raw-origin traffic arrived, not which of Ports
+// 12/13 it came from, so a shortfall on the raw leg cannot be localised from
+// them. Two ports, two counters - enough to say which one is short.
+static rte_atomic64_t g_raw_origin_by_port[MAX_RAW_SOCKET_PORTS];
+
+void txrx_get_raw_origin_by_port(uint64_t *out, int max)
+{
+    for (int i = 0; i < max && i < MAX_RAW_SOCKET_PORTS; i++) {
+        out[i] = (uint64_t)rte_atomic64_read(&g_raw_origin_by_port[i]);
+    }
+}
+
 static volatile uint32_t g_rx_stats_generation = 0;
 
 // On-demand counter flush. The RX workers hold their counts thread-local and
