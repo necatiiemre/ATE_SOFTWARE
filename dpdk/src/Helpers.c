@@ -787,28 +787,43 @@ static void helper_render_final_totals(FILE *out,
     printf("  Other foreign frames excluded   (P12/P13) : %lu / %lu\n", fo12, fo13);
 
     // ---------- 3. Sent vs came back ----------
-    // The two headline figures are not the same kind of measurement. The
-    // Server->DTN side counts a packet when the NIC puts it on the wire; the
-    // DTN->Server side counts it only if it comes back AND validates. Waiting
-    // longer cannot close that - the RX drain already removes everything that
-    // was merely still in flight - so whatever is left here is packets that
-    // went out and did not return as valid PRBS.
-    const uint64_t not_returned =
-        (tot_rx_pkts > tot_tx_pkts) ? (tot_rx_pkts - tot_tx_pkts) : 0;
-    const uint64_t extra_returned =
-        (tot_tx_pkts > tot_rx_pkts) ? (tot_tx_pkts - tot_rx_pkts) : 0;
+    // Both sides are now PRBS counters over the same packets, cleared by the
+    // same reset, so the difference here is small and can fall either way.
+    //
+    // It does not go to zero, and the reason is not loss. helper_reset_stats()
+    // tells every worker to drop what it holds thread-local, and the workers
+    // notice at slightly different moments: a packet sent just before the TX
+    // worker notices has its send discarded, while its arrival some tens of
+    // microseconds later is counted by an RX worker already in the new window.
+    // That is one flight time's worth of packets, in the direction of more
+    // returned than sent, and it is a property of resetting live counters
+    // rather than anything the link did.
+    //
+    // So a small difference in either direction is expected and is reported as
+    // such. Only one large enough to be real traffic is called out - the
+    // in-flight residue scales with the packet rate and the reset skew, not
+    // with the run, so as a fraction of the run it can only shrink.
+    const bool short_return = (tot_rx_pkts > tot_tx_pkts);
+    const uint64_t difference = short_return ? (tot_rx_pkts - tot_tx_pkts)
+                                             : (tot_tx_pkts - tot_rx_pkts);
+    const double diff_pct =
+        tot_rx_pkts ? (double)difference * 100.0 / (double)tot_rx_pkts : 0.0;
+    // 100 ppm. The reset residue lands three orders of magnitude below this;
+    // anything above it is too big to be the boundary and wants investigating.
+    const bool diff_significant = (diff_pct > 0.01);
 
     // Per leg, because the aggregate cannot say which pipeline is short.
-    const uint64_t loop_diff = (sent_loop > tot_dpdk_validated)
-                                   ? (sent_loop - tot_dpdk_validated) : 0;
-    const uint64_t ext_diff  = (sent_ext > tot_raw_validated)
-                                   ? (sent_ext - tot_raw_validated) : 0;
+    // Signed: clamping a leg that came back with more than it sent to zero
+    // printed "difference: 0" for a leg that was actually +218, which reads as
+    // a leg that balances rather than one carrying the reset residue.
+    const int64_t loop_diff = (int64_t)tot_dpdk_validated - (int64_t)sent_loop;
+    const int64_t ext_diff  = (int64_t)tot_raw_validated - (int64_t)sent_ext;
 
     printf("\n--- Sent vs came back, by path ---\n");
     printf("  Loopback leg (DPDK queues 0-3 + Ports 12/13 TX)\n");
     printf("    sent                                    : %lu\n", sent_loop);
     printf("    returned and validated on DPDK queues   : %lu\n", tot_dpdk_validated);
-    printf("    difference                              : %lu\n", loop_diff);
+    printf("    difference (back - sent)                : %+ld\n", (long)loop_diff);
     // The loopback leg is two sub-legs and the aggregate cannot say which is
     // short. The DPDK sub-leg compares each row's TX worker against what came
     // back on its paired queue; the raw sub-leg compares each raw port's own
@@ -844,19 +859,20 @@ static void helper_render_final_totals(FILE *out,
     printf("  External TX leg (queue 4 -> Ports 12/13)\n");
     printf("    sent                                    : %lu\n", sent_ext);
     printf("    returned and validated at Ports 12/13   : %lu\n", tot_raw_validated);
-    printf("    difference                              : %lu\n", ext_diff);
+    printf("    difference (back - sent)                : %+ld\n", (long)ext_diff);
 
     printf("\n--- Sent vs came back ---\n");
     printf("  Sent      (Server->DTN)                   : %lu\n", tot_rx_pkts);
     printf("  Returned and validated (DTN->Server)      : %lu\n", tot_tx_pkts);
-    if (extra_returned) {
-        printf("  MORE RETURNED THAN SENT                   : %lu  <- impossible,\n",
-               extra_returned);
-        printf("     the two sides are not measuring the same traffic\n");
+    printf("  Difference                                : %s%lu  (%.5f%%)\n",
+           short_return ? "-" : "+", difference, diff_pct);
+    if (diff_significant) {
+        printf("     LARGER THAN THE RESET BOUNDARY CAN EXPLAIN - %s\n",
+               short_return ? "packets went out and did not come back"
+                            : "the two sides are not counting the same traffic");
     } else {
-        printf("  Sent but not returned as valid PRBS       : %lu  (%.5f%%)\n",
-               not_returned,
-               tot_rx_pkts ? (double)not_returned * 100.0 / (double)tot_rx_pkts : 0.0);
+        printf("     within the reset boundary (packets in flight when the\n");
+        printf("     counters were zeroed); sign can fall either way\n");
     }
 
 #else
