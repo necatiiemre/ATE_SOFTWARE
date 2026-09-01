@@ -36,6 +36,22 @@ void port_vlans_load_config(bool ate_mode)
 // Global RX statistics per port
 struct rx_stats rx_stats_per_port[MAX_PORTS];
 
+// Validated PRBS arrivals attributed to the raw socket port that sent them.
+// The DTN rows only say that raw-origin traffic arrived, not which of Ports
+// 12/13 it came from, so a shortfall on the raw leg cannot be localised from
+// them. Two ports, two counters - enough to say which one is short.
+//
+// Defined here rather than beside the flush API it is written from: both
+// init_dtn_stats() and rx_worker() appear earlier in this file.
+static rte_atomic64_t g_raw_origin_by_port[MAX_RAW_SOCKET_PORTS];
+
+void txrx_get_raw_origin_by_port(uint64_t *out, int max)
+{
+    for (int i = 0; i < max && i < MAX_RAW_SOCKET_PORTS; i++) {
+        out[i] = (uint64_t)rte_atomic64_read(&g_raw_origin_by_port[i]);
+    }
+}
+
 #if STATS_MODE_DTN
 // DTN per-port statistics
 struct dtn_port_stats dtn_stats[DTN_PORT_COUNT];
@@ -2384,19 +2400,6 @@ int rx_worker(void *arg)
 // packets, so zeroing dtn_stats alone let everything counted before the reset
 // reappear right after it. Each worker compares this against its own copy once
 // per burst and drops whatever it is still holding when it changes.
-// Validated PRBS arrivals attributed to the raw socket port that sent them.
-// The DTN rows only say that raw-origin traffic arrived, not which of Ports
-// 12/13 it came from, so a shortfall on the raw leg cannot be localised from
-// them. Two ports, two counters - enough to say which one is short.
-static rte_atomic64_t g_raw_origin_by_port[MAX_RAW_SOCKET_PORTS];
-
-void txrx_get_raw_origin_by_port(uint64_t *out, int max)
-{
-    for (int i = 0; i < max && i < MAX_RAW_SOCKET_PORTS; i++) {
-        out[i] = (uint64_t)rte_atomic64_read(&g_raw_origin_by_port[i]);
-    }
-}
-
 static volatile uint32_t g_rx_stats_generation = 0;
 
 // On-demand counter flush. The RX workers hold their counts thread-local and
