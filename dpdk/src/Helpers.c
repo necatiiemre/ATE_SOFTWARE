@@ -131,9 +131,10 @@ void helper_reset_stats(const struct ports_config *ports_config,
 // 34 rows: DTN Port 0-31 (DPDK) + DTN Port 32 (Port12) + DTN Port 33 (Port13)
 // Columns: TX Pkts/Bytes/Mbps | RX Pkts/Bytes/Mbps | Good/Bad/Lost/BitErr/BER
 //
-// Both packet/byte columns are pure PRBS software counters from
-// dtn_stats[dtn_port]:
-//   DTN TX (DTN→Server) = good_pkts + bad_pkts / prbs_rx_bytes  (RX worker)
+// Both packet/byte columns are PRBS software counters from dtn_stats[dtn_port]:
+//   DTN TX (DTN→Server) = good + bad + raw_origin  (RX worker) - everything
+//       that came out of this DTN port and validated, whether the paired TX
+//       worker sent it or it entered the device at Port 12/13
 //   DTN RX (Server→DTN) = prbs_tx_pkts / prbs_tx_bytes          (TX worker)
 // The HW queue counters are still read, but only for the Mbps columns: a rate
 // needs a value that is exact at every instant, and the software counters are
@@ -179,17 +180,34 @@ static void helper_render_dtn_stats(FILE *out,
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *entry = &dtn_port_map[dtn];
 
-        // DTN TX (DTN→Server) = what the server received on this DTN port's
-        // queue. Taken from the PRBS counters, NOT from the HW queue counter:
-        // the NIC also steers non-PRBS traffic onto queues 0-3 (roughly one
-        // small frame per port per second, counted as `short` below), and
-        // q_ipackets would report those as test traffic. good+bad is exactly
-        // the set of packets that reached PRBS validation.
+        // DTN TX (DTN→Server) = every PRBS packet that came out of this DTN
+        // port and was validated here. Taken from the PRBS counters, not from
+        // the HW queue counter: the NIC also steers non-PRBS traffic onto
+        // queues 0-3 (roughly one small frame per port per second, counted as
+        // `short` below), and q_ipackets would report those as test traffic.
+        //
+        // Both streams, because both really came out of this port. The
+        // loopback traffic the paired TX worker sent, and the traffic that
+        // entered the device at Port 12/13 and left through here - the DPDK
+        // and raw socket pipelines run at the same time and this column says
+        // what the port carried. The device's own counter for this port
+        // includes both as well, so the two are directly comparable.
+        //
+        // They are still counted apart (raw_origin_*), because a row's TX
+        // against its pair's RX only balances for the loopback stream alone.
+        // That comparison moved to the end-of-test totals, which subtract
+        // raw_origin_* to make it.
+        const uint64_t dtn_raw_good =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_good);
+        const uint64_t dtn_raw_bad =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bad);
         uint64_t dtn_tx_pkts =
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
-            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
+            dtn_raw_good + dtn_raw_bad;
         uint64_t dtn_tx_bytes =
-            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bytes);
 
         // DTN RX (Server→DTN) = what the server sent toward this DTN port.
         // Taken from the TX worker's own PRBS counters, NOT from the HW
@@ -242,11 +260,17 @@ static void helper_render_dtn_stats(FILE *out,
         dtn_prev_tx_bytes[dtn] = hw_tx_bytes;
         dtn_prev_rx_bytes[dtn] = hw_rx_bytes;
 
-        // PRBS statistics (from dtn_stats)
-        uint64_t good = rte_atomic64_read(&dtn_stats[dtn].good_pkts);
-        uint64_t bad = rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        // PRBS statistics. Same set as the TX column above - both streams -
+        // so Good + Bad still adds up to the packet count beside it and the
+        // BER covers everything this port actually carried.
+        uint64_t good = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+                        dtn_raw_good;
+        uint64_t bad  = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
+                        dtn_raw_bad;
         uint64_t lost = rte_atomic64_read(&dtn_stats[dtn].lost_pkts);
-        uint64_t bit_errors_raw = rte_atomic64_read(&dtn_stats[dtn].bit_errors);
+        uint64_t bit_errors_raw =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bit_errors) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bits);
 
         // Include lost packets in bit_errors (each lost packet = all bits erroneous)
 #if IMIX_ENABLED
@@ -886,6 +910,42 @@ static void helper_render_final_totals(FILE *out,
     } else if (difference) {
         printf("     small enough to be a counter read against a moving\n");
         printf("     target rather than traffic; sign can fall either way\n");
+    }
+
+    // ---------- 3b. Each loopback stream against its own pair ----------
+    // The DTN table's TX column carries both pipelines, because that is what
+    // the port carried. This comparison needs one: what a TX worker sent
+    // toward DTN N comes back out of DTN N+16, so RX(N) is checked against
+    // TX(N+16) with the Port 12/13 traffic taken out of it. Anything else in
+    // the row would make every pair differ by that port's share of the raw
+    // traffic and say nothing about the link.
+    {
+        uint64_t worst = 0;
+        uint16_t worst_pair = 0;
+        int64_t  worst_diff = 0;
+        printf("\n--- Each stream against its own pair (Port 12/13 traffic excluded) ---\n");
+        for (uint16_t n = 0; n < DTN_DPDK_PORT_COUNT / 2; n++) {
+            const uint16_t m = n + DTN_DPDK_PORT_COUNT / 2;
+            // Sent toward DTN n, returned out of DTN m - and the reverse.
+            const uint64_t sent_n = (uint64_t)rte_atomic64_read(&dtn_stats[n].prbs_tx_pkts);
+            const uint64_t back_m = (uint64_t)rte_atomic64_read(&dtn_stats[m].good_pkts) +
+                                    (uint64_t)rte_atomic64_read(&dtn_stats[m].bad_pkts);
+            const uint64_t sent_m = (uint64_t)rte_atomic64_read(&dtn_stats[m].prbs_tx_pkts);
+            const uint64_t back_n = (uint64_t)rte_atomic64_read(&dtn_stats[n].good_pkts) +
+                                    (uint64_t)rte_atomic64_read(&dtn_stats[n].bad_pkts);
+            const int64_t d1 = (int64_t)back_m - (int64_t)sent_n;
+            const int64_t d2 = (int64_t)back_n - (int64_t)sent_m;
+            const uint64_t a1 = (uint64_t)(d1 < 0 ? -d1 : d1);
+            const uint64_t a2 = (uint64_t)(d2 < 0 ? -d2 : d2);
+            if (a1 > worst) { worst = a1; worst_pair = n; worst_diff = d1; }
+            if (a2 > worst) { worst = a2; worst_pair = m; worst_diff = d2; }
+        }
+        if (worst == 0) {
+            printf("  all %d pairs balance exactly\n", DTN_DPDK_PORT_COUNT);
+        } else {
+            printf("  worst pair: DTN %u, off by %+ld packets\n",
+                   worst_pair, (long)worst_diff);
+        }
     }
 
     // ---------- 4. The device's own view ----------
