@@ -788,6 +788,21 @@ int main(int argc, char const *argv[])
             printf("    the health monitor keeps querying the DTN)\n");
             printf("═══════════════════════════════════════════════════════════════\n");
             printf("\n");
+
+            // Wait for the TX workers to actually be gone before anything is
+            // rendered. sleep() returns early on the signal that set
+            // force_quit, so without this the first drain table is taken
+            // microseconds after Ctrl+C, while forty senders are still on
+            // their way out - their last packets sent but not yet handed over,
+            // and the arrivals of those packets already counted on the RX
+            // side. The table then shows more validated than sent, which is
+            // what the per-second tables did: plus or minus one packet all run,
+            // then plus six to eight in this one second, and frozen there for
+            // the rest of the drain.
+            //
+            // They leave on force_quit, which is already set, so this returns
+            // as soon as they are done rather than adding a wait of its own.
+            txrx_wait_tx_workers();
         }
 
         test_time++;

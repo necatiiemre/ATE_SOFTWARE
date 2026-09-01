@@ -853,6 +853,9 @@ static void helper_render_final_totals(FILE *out,
                    own_tx, (long)((int64_t)own_tx - (int64_t)dpdk_sent));
             printf("      RX workers' own count vs back         : %lu  (%+ld)\n",
                    own_rx, (long)((int64_t)own_rx - (int64_t)dpdk_back));
+            const uint32_t fto = txrx_flush_timeouts();
+            printf("      flush requests that timed out        : %u%s\n", fto,
+                   fto ? "   <- a table was rendered mid-handover" : "");
         }
         for (int r = 0; r < 2; r++) {
             struct raw_socket_port *rp = &raw_ports[r];

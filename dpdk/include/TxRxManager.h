@@ -348,6 +348,21 @@ void     txrx_get_raw_origin_by_port(uint64_t *out, int max);
  */
 void     txrx_get_own_worker_totals(uint64_t *tx_total, uint64_t *rx_total);
 
+/**
+ * Block until every DPDK TX worker has left. They flush on the way out, so
+ * this is what makes the sent counters final; the drain's first render is
+ * otherwise taken while they are still leaving, because sleep() returns early
+ * on the signal that stopped them.
+ */
+void     txrx_wait_tx_workers(void);
+
+/**
+ * How many flush requests ended on their deadline instead of on every live
+ * participant answering. Non-zero means some table was rendered from counters
+ * that were only partly handed over.
+ */
+uint32_t txrx_flush_timeouts(void);
+
 // Current reset generation. Workers compare it against their own copy once per
 // burst and drop their locals when it changes.
 uint32_t txrx_stats_generation(void);

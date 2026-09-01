@@ -2492,6 +2492,10 @@ static volatile uint32_t g_rx_stats_generation = 0;
 static volatile uint32_t g_rx_flush_request = 0;
 static volatile uint32_t g_rx_flush_acks = 0;
 static volatile uint32_t g_rx_workers_live = 0;
+// Times a flush request ended on its deadline rather than on every live
+// participant answering. Should be zero; anything else means a table was
+// rendered from counters that were only partly handed over.
+static volatile uint32_t g_flush_timeouts = 0;
 
 void txrx_flush_participant_enter(void)
 {
@@ -2526,13 +2530,38 @@ void txrx_flush_now(unsigned timeout_ms)
     const uint64_t deadline =
         rte_rdtsc() + (rte_get_tsc_hz() / 1000) * (uint64_t)timeout_ms;
     while (__atomic_load_n(&g_rx_flush_acks, __ATOMIC_ACQUIRE) < expected) {
+        // A worker that leaves has already handed its counters over - the exit
+        // flush is the last thing it does - so it has satisfied this request
+        // as surely as an acknowledgement would have. Without accounting for
+        // that, the count it was going to answer with can never arrive and the
+        // wait can only end by timing out.
+        //
+        // That is not a rare case, it is exactly what the stop looks like:
+        // roughly forty senders leave in the same instant Ctrl+C is seen, and
+        // sleep(1) returns early on the signal, so this runs while they are
+        // still on their way out. The render that follows then reads counters
+        // that are only partly folded in. During the run nobody leaves, the
+        // expected count holds, and there is no timeout at all - which is why
+        // the tables agree to a packet or two until the second traffic stops.
+        uint32_t live = __atomic_load_n(&g_rx_workers_live, __ATOMIC_ACQUIRE);
+        if (live < expected) {
+            expected = live;
+            continue;
+        }
         if (rte_rdtsc() >= deadline) {
-            // A worker is wedged or exited mid-request. Reading slightly stale
-            // numbers beats stalling the stats loop.
+            // Genuinely wedged rather than leaving. Reading slightly stale
+            // numbers beats stalling the stats loop, but say so: a silent
+            // timeout here is a table that quietly under-reports.
+            __atomic_fetch_add(&g_flush_timeouts, 1, __ATOMIC_RELEASE);
             break;
         }
         rte_pause();
     }
+}
+
+uint32_t txrx_flush_timeouts(void)
+{
+    return __atomic_load_n(&g_flush_timeouts, __ATOMIC_ACQUIRE);
 }
 
 void txrx_reset_worker_locals(void)
@@ -2700,11 +2729,20 @@ int txrx_get_foreign_ethertypes(uint16_t *types, uint64_t *counts, int max)
 // only exit once ptp_stop() is called, which happens later in teardown.
 static unsigned g_rx_worker_lcores[MAX_PORTS * NUM_RX_CORES];
 static int      g_rx_worker_lcore_count = 0;
+static unsigned g_tx_worker_lcores[MAX_PORTS * NUM_TX_CORES];
+static int      g_tx_worker_lcore_count = 0;
 
 void txrx_wait_rx_workers(void)
 {
     for (int i = 0; i < g_rx_worker_lcore_count; i++) {
         rte_eal_wait_lcore(g_rx_worker_lcores[i]);
+    }
+}
+
+void txrx_wait_tx_workers(void)
+{
+    for (int i = 0; i < g_tx_worker_lcore_count; i++) {
+        rte_eal_wait_lcore(g_tx_worker_lcores[i]);
     }
 }
 
@@ -2883,6 +2921,10 @@ int start_txrx_workers(struct ports_config *ports_config,
             {
                 printf("Error launching TX worker on lcore %u: %d\n", lcore_id, ret);
                 return ret;
+            }
+            if (g_tx_worker_lcore_count <
+                (int)(sizeof(g_tx_worker_lcores) / sizeof(g_tx_worker_lcores[0]))) {
+                g_tx_worker_lcores[g_tx_worker_lcore_count++] = lcore_id;
             }
             else
             {
