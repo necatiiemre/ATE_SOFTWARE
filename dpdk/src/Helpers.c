@@ -228,25 +228,25 @@ static void helper_render_dtn_stats(FILE *out,
         uint64_t dtn_rx_bytes =
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes);
 
-        // The Port 12 contribution that used to be folded in here - a target's
-        // packet count divided by four, on the assumption that RSS spreads it
-        // evenly over the four DTN ports behind that server port - is gone.
-        // It was an estimate standing in for a real measurement, and it was
-        // patching the wrong side: those packets inflate the *arrival* column
-        // of whichever row validates them, so the fix is to leave them out of
-        // that column (dtn_stats[].raw_origin_* now holds them exactly),
-        // not to inflate the send column by a guess to match.
-
         // Mbps delta calculation.
         //
-        // The rate is measured from the HW byte counter, not from the PRBS
-        // byte total shown in the column beside it. The PRBS counters live in
-        // the RX workers and are folded in on a flush cadence that does not
-        // line up with this one-second render, so a delta taken from them
-        // swings by whatever fraction of a flush period happened to land
-        // inside the interval. The HW counter is exact at every instant, which
-        // is what a rate needs. The packet and byte columns keep their PRBS
-        // values - only the rate reads the wire.
+        // The rate is taken from the HW byte counter rather than from the byte
+        // total beside it. The software counters are folded in on a flush
+        // cadence, and although the main loop asks for a flush before every
+        // render, the HW counter is exact at every instant with nothing to
+        // arrange - which is what a rate wants.
+        //
+        // The two now describe the same traffic. q_ibytes counts every byte
+        // the NIC delivered to this queue; the TX byte column counts every
+        // PRBS-validated byte on it, both pipelines included. What separates
+        // them is the handful of undersized frames counted as `short` below -
+        // of the order of a hundred kilobytes against several gigabytes.
+        //
+        // That was not always so. While the byte column carried only the
+        // loopback stream, the rate beside it carried both, and a row could
+        // show 910 Mbps against a byte total worth 878 - the same packets
+        // measured twice, differently. The columns agreeing is now something
+        // to check rather than something to explain away.
         uint64_t hw_tx_bytes =
             port_hw_stats[entry->tx_server_port].q_ibytes[entry->tx_server_queue];
         uint64_t hw_rx_bytes =
