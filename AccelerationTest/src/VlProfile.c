@@ -13,10 +13,36 @@ static const vl_link_t C2_REV[] = {{22,6},{23,7},{24,8},{25,9},{26,10},{27,11}};
 static const vl_link_t C3_FWD[] = {{10,26},{11,27},{12,28},{13,29},{14,30},{15,31}};
 static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,15}};
 
-/* Health-monitor VLs carry flag nibble 0xD rather than the 0x9 every other
- * record uses. That matches VL 4488 in the main ATE software - the VL that
- * carries health-monitor data, per HEALTH_MONITOR_RESPONSE_VL_IDX. */
-#define HM_FLAGS (DTN_VL_FLAG_ENABLE | DTN_VL_FLAG_PRIORITY | DTN_VL_FLAG_RESERVED)
+#define FLAGS_NORMAL (DTN_VL_FLAG_ENABLE | DTN_VL_FLAG_RESERVED)
+/* The health-monitor taps carry flag nibble 0xD rather than the 0x9 every other
+ * record uses, matching VL 4488 in the main ATE software. */
+#define HM_FLAGS     (FLAGS_NORMAL | DTN_VL_FLAG_PRIORITY)
+
+/* The DTN's own management path, byte-for-byte from the reference
+ * configuration: the internal management port 34 wired to both copper
+ * end-system ports, plus the copper ports to each other. Without these the
+ * DTN's own health monitor and the reply to a 0x52 status query have nowhere
+ * to go once our VL table replaces the device's. */
+#define MGMT(id, src, dst, fl) \
+    {.vl_id = (id), .src_port = (src), .dest_mask = 1ull << (dst), .lmax = 1518, \
+     .lmin = 64, .jitter_ms = 0, .bag_word = DTN_BAG_WORD_1MS, .flags = (fl)}
+
+static const dtn_vl_t g_management[] = {
+    MGMT(4484, 32, 34, FLAGS_NORMAL),  /* copper 1G   -> management port     */
+    MGMT(4485, 34, 32, FLAGS_NORMAL),  /* management  -> copper 1G           */
+    MGMT(4486, 33, 34, FLAGS_NORMAL),  /* copper 100M -> management port     */
+    MGMT(4487, 34, 33, FLAGS_NORMAL),  /* management  -> copper 100M         */
+    MGMT(4488, 34, 33, HM_FLAGS),      /* status replies land on this VL     */
+    MGMT(4489, 32, 33, FLAGS_NORMAL),
+    MGMT(4490, 33, 32, FLAGS_NORMAL),
+};
+
+const dtn_vl_t *vl_profile_management(size_t *count)
+{
+    if (count)
+        *count = sizeof g_management / sizeof g_management[0];
+    return g_management;
+}
 
 #define ROUND(nm, desc, fwd, rev, hm0, hm1)                              \
     {                                                                    \
@@ -31,6 +57,7 @@ static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,1
             {.vl_id = 100, .src_port = hm0, .dst_port = 33, .flags = HM_FLAGS}, \
             {.vl_id = 101, .src_port = hm1, .dst_port = 33, .flags = HM_FLAGS}, \
         },                                                               \
+        .management = true,                                              \
     }
 
 static const vl_profile_t g_profiles[] = {
@@ -83,25 +110,36 @@ int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
         n++;
     }
 
+    if (profile->management) {
+        size_t mgmt_count;
+        const dtn_vl_t *mgmt = vl_profile_management(&mgmt_count);
+
+        if (n + mgmt_count > cap)
+            return -1;
+        memcpy(out + n, mgmt, mgmt_count * sizeof *mgmt);
+        n += mgmt_count;
+    }
+
     qsort(out, n, sizeof out[0], compare_vl_id);
     return (int)n;
 }
 
-/* Copper end-system ports. A VL aimed at one of these carries health-monitor
- * or management data rather than fibre traffic. */
+/* Ports 0-31 carry fibre traffic; 32 and 33 are the copper end-system ports and
+ * 34 is the DTN's internal management port. */
+#define FIBRE_PORT_MASK  0x00000000FFFFFFFFull
 #define COPPER_PORT_MASK ((1ull << 32) | (1ull << 33))
 
 bool vl_profile_validate(const dtn_vl_t *records, size_t count,
                          char *reason, size_t reason_cap)
 {
-    uint64_t link_ports = 0, hm_ports = 0;
+    uint64_t fibre_ports = 0, hm_tap_ports = 0;
 
     for (size_t i = 0; i < count; i++) {
         const dtn_vl_t *r = &records[i];
 
         if (r->vl_id < 3) {
             snprintf(reason, reason_cap,
-                     "VL %u is in the reserved management range 0-2", r->vl_id);
+                     "VL %u is in the reserved range 0-2", r->vl_id);
             return false;
         }
         if (r->dest_mask == 0) {
@@ -114,13 +152,18 @@ bool vl_profile_validate(const dtn_vl_t *records, size_t count,
                 return false;
             }
 
+        /* VLs that start on a copper or management port are the DTN's own
+         * management path and share no ports with the fibre links. */
+        if (!(1ull << r->src_port & FIBRE_PORT_MASK))
+            continue;
+
         if (r->dest_mask & COPPER_PORT_MASK)
-            hm_ports |= 1ull << r->src_port;
+            hm_tap_ports |= 1ull << r->src_port;   /* a fibre-side HM tap */
         else
-            link_ports |= (1ull << r->src_port) | r->dest_mask;
+            fibre_ports |= (1ull << r->src_port) | (r->dest_mask & FIBRE_PORT_MASK);
     }
 
-    uint64_t clash = link_ports & hm_ports;
+    uint64_t clash = fibre_ports & hm_tap_ports;
     if (clash) {
         for (int p = 0; p < DTN_PORT_COUNT; p++)
             if (clash >> p & 1) {

@@ -61,34 +61,71 @@ static const vl_profile_t *select_profile(void)
     return choice == 0 ? NULL : &profiles[choice - 1];
 }
 
-/* Collapse the record list into "port A -> port B, VL x..y" runs. */
-static void print_routing(const dtn_vl_t *records, size_t count)
+/* Show the routing in three groups: the fibre links under test, the taps that
+ * bring the fibre-side unit's health monitor out to copper, and the DTN's own
+ * management path. Consecutive VLs with the same endpoints collapse into a run. */
+static int first_destination(const dtn_vl_t *record)
 {
-    size_t i = 0;
+    for (int p = 0; p < DTN_PORT_COUNT; p++)
+        if (record->dest_mask >> p & 1)
+            return p;
+    return -1;
+}
 
-    puts("\n  routing");
-    while (i < count) {
+static bool is_management(const dtn_vl_t *record)
+{
+    return record->src_port >= 32 || first_destination(record) == 34;
+}
+
+static bool is_hm_tap(const dtn_vl_t *record)
+{
+    int dst = first_destination(record);
+    return !is_management(record) && (dst == 32 || dst == 33);
+}
+
+static void print_group(const char *title, const dtn_vl_t *records, size_t count,
+                        bool (*belongs)(const dtn_vl_t *), bool collapse)
+{
+    bool titled = false;
+
+    for (size_t i = 0; i < count;) {
+        if (!belongs(&records[i])) {
+            i++;
+            continue;
+        }
         size_t j = i + 1;
-        while (j < count &&
-               records[j].src_port  == records[i].src_port &&
-               records[j].dest_mask == records[i].dest_mask &&
-               records[j].vl_id     == records[j - 1].vl_id + 1)
-            j++;
+        if (collapse)
+            while (j < count && belongs(&records[j]) &&
+                   records[j].src_port  == records[i].src_port &&
+                   records[j].dest_mask == records[i].dest_mask &&
+                   records[j].vl_id     == records[j - 1].vl_id + 1)
+                j++;
 
-        int dst = -1;
-        for (int p = 0; p < DTN_PORT_COUNT; p++)
-            if (records[i].dest_mask >> p & 1) {
-                dst = p;
-                break;
-            }
-
-        printf("    %-3s port %2u -> %2d   VL %u", (dst == 32 || dst == 33) ? "HM" : "",
-               records[i].src_port, dst, records[i].vl_id);
+        if (!titled) {
+            printf("\n  %s\n", title);
+            titled = true;
+        }
+        printf("    port %2u -> %2d   VL %u", records[i].src_port,
+               first_destination(&records[i]), records[i].vl_id);
         if (j - i > 1)
             printf("-%u  (%zu VLs)", records[j - 1].vl_id, j - i);
         putchar('\n');
         i = j;
     }
+}
+
+static bool is_fibre_link(const dtn_vl_t *record)
+{
+    return !is_management(record) && !is_hm_tap(record);
+}
+
+static void print_routing(const dtn_vl_t *records, size_t count)
+{
+    print_group("fibre links under test", records, count, is_fibre_link, true);
+    print_group("health-monitor taps (fibre-side unit -> copper)",
+                records, count, is_hm_tap, true);
+    print_group("DTN management path (its own health monitor and status replies)",
+                records, count, is_management, false);
 }
 
 /* ------------------------------------------------------------------ */

@@ -4,8 +4,19 @@
  *
  * The unit on the other side of the fibre has 12 ports and the DTN has 32, so
  * the fibre links are covered in three rounds. Each round pairs six low ports
- * with six high ports in both directions and adds two health-monitor VLs out to
- * the 100M copper port.
+ * with six high ports in both directions.
+ *
+ * Two health-monitor streams reach the workstation, and they are different
+ * things:
+ *
+ *   - the fibre-side unit's own health monitor, which arrives on a DTN fibre
+ *     port and is routed to copper by the VLs in vl_hm_t;
+ *   - the DTN's own health monitor, which comes from its internal management
+ *     port 34 and is routed by the management VLs below.
+ *
+ * Port 34 is not a physical port: it does not appear in the DTN's port table,
+ * but it is the source of the PTP Sync broadcast and of the answer to a 0x52
+ * status query, and the health data reports it as the last of 35 ports.
  */
 
 #ifndef VL_PROFILE_H
@@ -32,7 +43,11 @@ typedef struct {
     const vl_link_t *links;
 } vl_link_group_t;
 
-/** A health-monitor VL: one DTN port streaming out to a copper port. */
+/**
+ * @brief A tap that routes the fibre-side unit's health monitor out to copper.
+ *
+ * This is not the DTN's own health monitor - see the management VLs.
+ */
 typedef struct {
     uint16_t vl_id;
     uint8_t  src_port;
@@ -47,7 +62,24 @@ typedef struct {
     vl_link_group_t  groups[VL_PROFILE_MAX_GROUPS];
     uint8_t          hm_count;
     vl_hm_t          hm[VL_PROFILE_MAX_HM];
+    bool             management;    /**< include the DTN's own management VLs */
 } vl_profile_t;
+
+/**
+ * @brief The DTN's own management VLs, VL 4484-4490.
+ *
+ * Copied from the reference configuration, which is the only evidence we have
+ * of what this path needs. They connect the internal management port 34 to both
+ * copper end-system ports in both directions. VL 4488 is the one the main ATE
+ * software filters status replies on (HEALTH_MONITOR_RESPONSE_VL_IDX), and it
+ * is also the only record in the whole reference table with a different
+ * parameter word.
+ *
+ * The 28 V power-up broadcast reaches copper without any configuration at all,
+ * but a query and its reply plausibly do not - the reference would not define
+ * these seven VLs otherwise.
+ */
+const dtn_vl_t *vl_profile_management(size_t *count);
 
 /** The built-in profiles, in menu order. */
 const vl_profile_t *vl_profile_all(size_t *count);

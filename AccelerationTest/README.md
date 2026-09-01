@@ -118,12 +118,24 @@ Round 3 moves the health monitor because ports 15 and 31 carry fibre traffic in
 that round. The three rounds together cover fibre ports 0-31. Every round is
 122 VL records in 4 frames.
 
-## Health-monitor VLs
+## Two health monitors
 
-`profiles/config1.json` gives the two HM VLs flag nibble `0xD` rather than the
-`0x9` every other record uses. That matches VL 4488 in the main software — the
-VL that carries health-monitor data, per `HEALTH_MONITOR_RESPONSE_VL_IDX`. It is
-one constant per profile if that turns out to be wrong.
+They are different things and both reach the workstation over copper:
+
+* **The fibre-side unit's health monitor.** It arrives on a DTN fibre port and
+  each profile routes it to copper port 33 — VL 100 and 101 in the rounds above.
+  These carry flag nibble `0xD` rather than the `0x9` every other record uses,
+  matching VL 4488 in the main ATE software.
+* **The DTN's own health monitor.** It comes from the DTN's internal management
+  port 34. Port 34 is not physical: it is absent from the device's port table,
+  yet it is the source of the PTP Sync broadcast and of the reply to a `0x52`
+  status query, and the health data reports it as the last of 35 ports.
+
+Every profile therefore also carries VL 4484-4490, copied byte for byte from the
+reference configuration, wiring port 34 to both copper ports in both directions.
+The 28 V power-up broadcast reaches copper with no configuration at all, but a
+query and its reply plausibly do not — the reference would not define those seven
+VLs otherwise. `tests/test_profiles.c` checks the copy stays faithful.
 
 ## Not yet pinned down
 

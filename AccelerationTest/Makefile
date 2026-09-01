@@ -21,11 +21,17 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 $(BUILD):
 	mkdir -p $(BUILD) $(BUILD)/units
 
-# Rebuilds the 47 reference frames and compares them byte for byte.
-test: $(BUILD)/test_reference
+# Rebuilds the 47 reference frames byte for byte, then checks the profiles
+# against the same reference.
+test: $(BUILD)/test_reference $(BUILD)/test_profiles
 	./$(BUILD)/test_reference
+	@echo
+	./$(BUILD)/test_profiles
 
 $(BUILD)/test_reference: tests/test_reference.c $(LIB_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
