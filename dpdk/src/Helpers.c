@@ -975,11 +975,24 @@ static void helper_render_final_totals(FILE *out,
             printf("\n--- The device's own counters (difference since the quiet window) ---\n");
             printf("  DTN |          we sent |        device Rx |   diff"
                    " |    we validated |        device Tx |   diff\n");
+            printf("  (it counts every frame while these count only PRBS -"
+                   " PTP and the health monitor are excluded from ours by\n"
+                   "   design - so a small steady excess on its side is"
+                   " expected and is not loss. Its reading is also the last\n"
+                   "   the monitor stored, arriving on its own 1 Hz cycle"
+                   " rather than being asked for here.)\n");
             any = true;
         }
         uint64_t our_sent, our_back;
         if (dtn < DTN_DPDK_PORT_COUNT) {
-            our_sent = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
+            // Both send paths, as the DTN table's RX column does. The device
+            // counts what arrives at its port and does not care which queue it
+            // left from; leaving queue 4 out here made every row fed by an
+            // external TX port read short by that port's share - 176,429 on
+            // the sixteen behind Port 12 and 35,320 on the eight behind Port
+            // 13, against 51 on the rows that have no external TX at all.
+            our_sent = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].ext_tx_pkts);
             our_back = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
                        (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
                        (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_good) +
