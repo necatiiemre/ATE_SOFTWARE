@@ -96,10 +96,13 @@ void helper_reset_stats(const struct ports_config *ports_config,
     memset(dtn_prev_rx_bytes, 0, sizeof(dtn_prev_rx_bytes));
 #endif
 
-    // 3. The two headline counters, adjacent and in this order. Validated
-    //    first: a packet sent just before the HW reset then validates after
-    //    this point and is counted on both sides, whereas the other order
-    //    counts it as sent with its validation already discarded.
+    // 3. The headline counters. Both directions of the DTN table now live in
+    //    dtn_stats - sent in prbs_tx_pkts, validated in good/bad - so a single
+    //    init_dtn_stats() zeroes the pair atomically with respect to each
+    //    other and the ordering problem this step was written for is gone for
+    //    the packet columns. rte_eth_stats_reset() still follows because the
+    //    Mbps columns read the HW byte counters, and it is kept adjacent so
+    //    the rates restart from the same instant as the counts.
 #if STATS_MODE_DTN
     init_dtn_stats();
 #endif
@@ -123,9 +126,13 @@ void helper_reset_stats(const struct ports_config *ports_config,
 // 34 rows: DTN Port 0-31 (DPDK) + DTN Port 32 (Port12) + DTN Port 33 (Port13)
 // Columns: TX Pkts/Bytes/Mbps | RX Pkts/Bytes/Mbps | Good/Bad/Lost/BitErr/BER
 //
-// DTN TX (DTN→Server) = Server RX = HW q_ipackets[queue]
-// DTN RX (Server→DTN) = Server TX = HW q_opackets[queue]
-// PRBS = dtn_stats[dtn_port] (from RX worker)
+// Both packet/byte columns are pure PRBS software counters from
+// dtn_stats[dtn_port]:
+//   DTN TX (DTN→Server) = good_pkts + bad_pkts / prbs_rx_bytes  (RX worker)
+//   DTN RX (Server→DTN) = prbs_tx_pkts / prbs_tx_bytes          (TX worker)
+// The HW queue counters are still read, but only for the Mbps columns: a rate
+// needs a value that is exact at every instant, and the software counters are
+// folded in on a flush cadence that does not line up with this render.
 
 // Renders the DTN statistics table to `out`. All printf calls below are
 // redirected to `out` by the macro so the exact same text can be both printed
@@ -193,11 +200,24 @@ static void helper_render_dtn_stats(FILE *out,
         uint64_t dtn_tx_bytes =
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
 
-        // DTN RX (Server→DTN) = Server TX = HW q_opackets[queue] on rx_server_port
+        // DTN RX (Server→DTN) = what the server sent toward this DTN port.
+        // Taken from the TX worker's own PRBS counters, NOT from the HW
+        // q_opackets counter for that queue.
+        //
+        // Both columns of this row are now the same kind of measurement:
+        // software counters over exactly the packets that carry a PRBS
+        // payload, cleared by the same init_dtn_stats() call. The HW counter
+        // it replaces was neither - it counted every frame the stack put on
+        // the queue, and it was zeroed by rte_eth_stats_reset() at a different
+        // instant from the TX column's reset. That mismatch, not packet loss,
+        // is what made a row show more sent than came back while the
+        // watermark check reported no gaps.
         uint16_t srv_tx_port = entry->rx_server_port;
         uint16_t srv_tx_queue = entry->rx_server_queue;
-        uint64_t dtn_rx_pkts = port_hw_stats[srv_tx_port].q_opackets[srv_tx_queue];
-        uint64_t dtn_rx_bytes = port_hw_stats[srv_tx_port].q_obytes[srv_tx_queue];
+        uint64_t dtn_rx_pkts =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
+        uint64_t dtn_rx_bytes =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes);
 
         // Port 12 contribution: DTN 32 → DTN 0-7, 16-23 (each target equally across 4 DTN ports)
         for (uint16_t t = 0; t < port12->tx_target_count; t++) {
@@ -220,14 +240,16 @@ static void helper_render_dtn_stats(FILE *out,
         // values - only the rate reads the wire.
         uint64_t hw_tx_bytes =
             port_hw_stats[entry->tx_server_port].q_ibytes[entry->tx_server_queue];
+        uint64_t hw_rx_bytes =
+            port_hw_stats[srv_tx_port].q_obytes[srv_tx_queue];
         uint64_t tx_delta = hw_tx_bytes - dtn_prev_tx_bytes[dtn];
-        uint64_t rx_delta = dtn_rx_bytes - dtn_prev_rx_bytes[dtn];
+        uint64_t rx_delta = hw_rx_bytes - dtn_prev_rx_bytes[dtn];
         double tx_mbps = to_mbps(tx_delta);
         double rx_mbps = to_mbps(rx_delta);
 
         // Update prev values
         dtn_prev_tx_bytes[dtn] = hw_tx_bytes;
-        dtn_prev_rx_bytes[dtn] = dtn_rx_bytes;
+        dtn_prev_rx_bytes[dtn] = hw_rx_bytes;
 
         // PRBS statistics (from dtn_stats)
         uint64_t good = rte_atomic64_read(&dtn_stats[dtn].good_pkts);
@@ -594,11 +616,17 @@ static void helper_render_final_totals(FILE *out,
         tot_dpdk_validated += dtn_validated;
         tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
         tot_hw_q_pkts += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
-        // RX side: the server's own transmissions on queues 0-3, which carry
-        // nothing but PRBS (external TX uses queue 4, PTP queue 5).
-        tot_rx_pkts  += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
-        tot_rx_bytes += hw[e->rx_server_port].q_obytes[e->rx_server_queue];
-        sent_loop    += hw[e->rx_server_port].q_opackets[e->rx_server_queue];
+        // RX side: what the TX worker on this queue actually put on the wire,
+        // from its own PRBS counters rather than the HW queue counter. Queues
+        // 0-3 were already meant to carry nothing but PRBS, but "meant to" was
+        // the assumption this reconciliation exists to test - and the HW
+        // counter is zeroed by rte_eth_stats_reset() at a different instant
+        // from the validated side it is compared against. Reading both sides
+        // from counters cleared by the same init_dtn_stats() call removes both
+        // sources of skew at once.
+        tot_rx_pkts  += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
+        tot_rx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes);
+        sent_loop    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
     }
     // Port 12/13 rows: same sources the per-second table uses. Their PRBS
     // quality counters live in dpdk_ext_rx_stats and the global sequence

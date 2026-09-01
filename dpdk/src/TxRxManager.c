@@ -486,6 +486,8 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].total_rx_pkts);
         rte_atomic64_init(&dtn_stats[i].other_pkts);
         rte_atomic64_init(&dtn_stats[i].prbs_rx_bytes);
+        rte_atomic64_init(&dtn_stats[i].prbs_tx_pkts);
+        rte_atomic64_init(&dtn_stats[i].prbs_tx_bytes);
     }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
@@ -1095,6 +1097,30 @@ static void init_tx_test_counters(void)
            TX_WAIT_FOR_RX_FLUSH_MS);
 }
 
+// ==========================================
+// TX WORKER COUNTER FLUSH
+// ==========================================
+// The Server->DTN column of the DTN table is fed from here. Same shape as
+// RX_WORKER_FLUSH_LOCALS: defined once so the periodic, on-demand and final
+// flush sites cannot drift apart. Outside STATS_MODE_DTN there is no per-DTN
+// table to feed, so it compiles away - the locals are still maintained, which
+// keeps the send path identical in both modes.
+#if STATS_MODE_DTN
+#define TX_WORKER_FLUSH_LOCALS()                                               \
+    do {                                                                       \
+        if (my_tx_dtn_port != DTN_VLAN_INVALID) {                              \
+            rte_atomic64_add(&dtn_stats[my_tx_dtn_port].prbs_tx_pkts,          \
+                             (int64_t)local_tx_pkts);                          \
+            rte_atomic64_add(&dtn_stats[my_tx_dtn_port].prbs_tx_bytes,         \
+                             (int64_t)local_tx_bytes);                         \
+        }                                                                      \
+        local_tx_pkts = local_tx_bytes = 0;                                    \
+    } while (0)
+#else
+#define TX_WORKER_FLUSH_LOCALS()                                               \
+    do { (void)my_tx_dtn_port; local_tx_pkts = local_tx_bytes = 0; } while (0)
+#endif
+
 int tx_worker(void *arg)
 {
     struct tx_worker_params *params = (struct tx_worker_params *)arg;
@@ -1204,8 +1230,55 @@ int tx_worker(void *arg)
     // Local packet counter for this worker
     uint64_t local_pkt_counter = 0;
 
+    // ==========================================
+    // PURE PRBS TX ACCOUNTING
+    // ==========================================
+    // Which DTN port's Server->DTN direction does this worker drive? The DTN
+    // table reads that column off (rx_server_port, rx_server_queue), and this
+    // worker runs on exactly that pair, so the reverse lookup is unambiguous.
+    // Done once here rather than per packet.
+    uint8_t my_tx_dtn_port = DTN_VLAN_INVALID;
+#if STATS_MODE_DTN
+    for (int d = 0; d < DTN_DPDK_PORT_COUNT; d++) {
+        if (dtn_port_map[d].rx_server_port == params->port_id &&
+            dtn_port_map[d].rx_server_queue == params->queue_id) {
+            my_tx_dtn_port = (uint8_t)d;
+            break;
+        }
+    }
+#endif
+    // Held thread-local and folded in on the same cadence as the RX workers
+    // (a count threshold, a deadline, and the main loop's on-demand request)
+    // so a render never reads a column that is a flush period behind the one
+    // beside it.
+    uint64_t local_tx_pkts = 0, local_tx_bytes = 0;
+    const uint64_t TX_FLUSH_COUNT = 8192;
+    const uint64_t tx_flush_period_tsc = rte_get_tsc_hz() / 4;
+    uint64_t next_tx_flush_tsc = rte_rdtsc() + tx_flush_period_tsc;
+    uint32_t my_tx_stats_gen = txrx_stats_generation();
+    uint32_t my_tx_flush_req = txrx_flush_request_id();
+
+    txrx_flush_participant_enter();
+
     while (!(*params->stop_flag))
     {
+        // A stats reset happened: what is still held locally was sent before
+        // it and must not be folded into the new window.
+        uint32_t cur_tx_stats_gen = txrx_stats_generation();
+        if (unlikely(cur_tx_stats_gen != my_tx_stats_gen)) {
+            local_tx_pkts = local_tx_bytes = 0;
+            my_tx_stats_gen = cur_tx_stats_gen;
+        }
+
+        // The main loop wants the counters current before it renders.
+        uint32_t cur_tx_flush_req = txrx_flush_request_id();
+        if (unlikely(cur_tx_flush_req != my_tx_flush_req)) {
+            TX_WORKER_FLUSH_LOCALS();
+            next_tx_flush_tsc = rte_rdtsc() + tx_flush_period_tsc;
+            my_tx_flush_req = cur_tx_flush_req;
+            txrx_ack_flush();
+        }
+
 #if TX_TEST_MODE_ENABLED
         // Check if port reached max packet limit
         uint64_t current_port_count = rte_atomic64_read(&tx_packet_count_per_port[params->port_id]);
@@ -1323,6 +1396,10 @@ int tx_worker(void *arg)
         fill_payload_with_prbs31(pkt, params->port_id, seq, l2_len);
 #endif
 
+        // Length must be read before the burst: on success the mbuf belongs
+        // to the driver and touching it afterwards is a use-after-free.
+        const uint64_t sent_len = rte_pktmbuf_pkt_len(pkt);
+
         // Send single packet
         uint16_t nb_tx = rte_eth_tx_burst(params->port_id, params->queue_id, &pkt, 1);
 
@@ -1337,6 +1414,17 @@ int tx_worker(void *arg)
         {
             // Increment sequence only after packet is successfully sent
             commit_tx_sequence(params->port_id, curr_vl);
+
+            // Pure PRBS TX: counted only for packets the NIC accepted, which
+            // is the same set the RX side is expected to validate back.
+            local_tx_pkts++;
+            local_tx_bytes += sent_len;
+            if (unlikely(local_tx_pkts >= TX_FLUSH_COUNT ||
+                         rte_rdtsc() >= next_tx_flush_tsc))
+            {
+                TX_WORKER_FLUSH_LOCALS();
+                next_tx_flush_tsc = rte_rdtsc() + tx_flush_period_tsc;
+            }
         }
         else
         {
@@ -1349,6 +1437,12 @@ int tx_worker(void *arg)
         if (current_vl_offset >= vl_range_size)
             current_vl_offset = 0;
     }
+
+    // Final fold-in. Not the mechanism the tables rely on - the main loop
+    // requests a flush before every render - but without it the last partial
+    // batch would be lost on shutdown.
+    TX_WORKER_FLUSH_LOCALS();
+    txrx_flush_participant_exit();
 
 #if TX_TEST_MODE_ENABLED
     printf("TX Worker stopped: Port %u, Queue %u (sent %lu packets locally, port total: %lu)\n",

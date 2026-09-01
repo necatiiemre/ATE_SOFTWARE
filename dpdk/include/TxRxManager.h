@@ -96,6 +96,19 @@ struct dtn_port_stats {
     // HW queue byte counter, which also counts whatever else the NIC steered
     // onto the queue.
     rte_atomic64_t prbs_rx_bytes;
+    // Packets and bytes this DTN port's TX worker actually handed to the NIC,
+    // i.e. rte_eth_tx_burst() accepted them. Pure PRBS by construction: PTP
+    // transmits on queue 5 and the external-TX leg on queue 4, neither of
+    // which runs through tx_worker. The DTN table's RX (Server->DTN) column
+    // reads these instead of the HW q_opackets/q_obytes counter for that
+    // queue, which also counts anything else the stack put on the wire there.
+    //
+    // The point is not only purity but symmetry: both columns of a row are now
+    // software counters cleared by the same init_dtn_stats() call, so the two
+    // no longer have a reset skew between them the way a software TX column
+    // and a rte_eth_stats_reset() RX column did.
+    rte_atomic64_t prbs_tx_pkts;
+    rte_atomic64_t prbs_tx_bytes;
 };
 
 extern struct dtn_port_stats dtn_stats[DTN_PORT_COUNT];
