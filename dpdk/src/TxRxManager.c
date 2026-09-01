@@ -488,7 +488,9 @@ void init_dtn_stats(void)
         rte_atomic64_init(&dtn_stats[i].prbs_rx_bytes);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_pkts);
         rte_atomic64_init(&dtn_stats[i].prbs_tx_bytes);
-        rte_atomic64_init(&dtn_stats[i].raw_origin_pkts);
+        rte_atomic64_init(&dtn_stats[i].raw_origin_good);
+        rte_atomic64_init(&dtn_stats[i].raw_origin_bad);
+        rte_atomic64_init(&dtn_stats[i].raw_origin_bits);
         rte_atomic64_init(&dtn_stats[i].raw_origin_bytes);
     }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
@@ -1536,8 +1538,12 @@ static inline struct raw_socket_port* find_raw_socket_port_by_vl_id(uint16_t vl_
                              local_bad - local_raw_bad);                       \
             rte_atomic64_add(&dtn_stats[my_dtn_port].bit_errors,               \
                              local_bits - local_raw_bits);                     \
-            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_pkts,          \
-                             local_raw_good + local_raw_bad);                  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_good,          \
+                             local_raw_good);                                  \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_bad,           \
+                             local_raw_bad);                                   \
+            rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_bits,          \
+                             local_raw_bits);                                  \
             rte_atomic64_add(&dtn_stats[my_dtn_port].raw_origin_bytes,         \
                              local_raw_prbs_bytes);                            \
             rte_atomic64_add(&dtn_stats[my_dtn_port].lost_pkts, local_lost);    \
@@ -1967,6 +1973,10 @@ int rx_worker(void *arg)
                     if (raw_port != NULL && raw_port->prbs_cache_ext != NULL)
                     {
                         local_prbs_bytes += m->pkt_len;
+                        // This frame came from a raw socket port, not from the TX
+                        // worker this DTN row is paired with. Tracked separately so
+                        // the row can subtract it out - see RX_WORKER_FLUSH_DTN.
+                        local_raw_prbs_bytes += m->pkt_len;
 
                         // Get sequence number from payload
                         uint64_t ext_seq = *(uint64_t *)(pkt + payload_off);
@@ -1985,14 +1995,17 @@ int rx_worker(void *arg)
                         if (memcmp(recv_prbs, expected_prbs, ext_prbs_len) == 0)
                         {
                             local_good++;
+                            local_raw_good++;
                         }
                         else
                         {
                             local_bad++;
+                            local_raw_bad++;
                             // Count bit errors
                             for (uint32_t i = 0; i < ext_prbs_len; i++)
                             {
                                 local_bits += __builtin_popcount(recv_prbs[i] ^ expected_prbs[i]);
+                                local_raw_bits += __builtin_popcount(recv_prbs[i] ^ expected_prbs[i]);
                             }
                         }
 #else
@@ -2010,14 +2023,17 @@ int rx_worker(void *arg)
                         if (memcmp(recv_prbs, expected_prbs, cmp_len) == 0)
                         {
                             local_good++;
+                            local_raw_good++;
                         }
                         else
                         {
                             local_bad++;
+                            local_raw_bad++;
                             // Count bit errors
                             for (uint32_t i = 0; i < cmp_len; i++)
                             {
                                 local_bits += __builtin_popcount(recv_prbs[i] ^ expected_prbs[i]);
+                                local_raw_bits += __builtin_popcount(recv_prbs[i] ^ expected_prbs[i]);
                             }
                         }
 #endif

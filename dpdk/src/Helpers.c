@@ -211,7 +211,7 @@ static void helper_render_dtn_stats(FILE *out,
         // It was an estimate standing in for a real measurement, and it was
         // patching the wrong side: those packets inflate the *arrival* column
         // of whichever row validates them, so the fix is to leave them out of
-        // that column (dtn_stats[].raw_origin_pkts now holds them exactly),
+        // that column (dtn_stats[].raw_origin_* now holds them exactly),
         // not to inflate the send column by a guess to match.
 
         // Mbps delta calculation.
@@ -599,14 +599,24 @@ static void helper_render_final_totals(FILE *out,
 
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
         const struct dtn_port_map_entry *e = &dtn_port_map[dtn];
-        // TX side: PRBS-validated packets only, matching the DTN table.
+        // TX side: every PRBS packet validated on this row's queue. The DTN
+        // table splits these - the row's own stream in good/bad, traffic that
+        // entered from Port 12/13 in raw_origin_* - so that a row compares
+        // like with like. The totals put them back together: sent_loop below
+        // counts the raw ports' transmissions too, so leaving their arrivals
+        // out here would invent a 1.3 M packet shortfall.
+        const uint64_t dtn_raw_origin =
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_good) +
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bad);
         const uint64_t dtn_validated =
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
-            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+            (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
+            dtn_raw_origin;
         tot_tx_pkts       += dtn_validated;
         tot_dpdk_validated += dtn_validated;
-        tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes);
-        tot_raw_origin += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_pkts);
+        tot_tx_bytes += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_rx_bytes) +
+                        (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bytes);
+        tot_raw_origin += dtn_raw_origin;
         tot_hw_q_pkts += hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
         // RX side: what the TX worker on this queue actually put on the wire,
         // from its own PRBS counters rather than the HW queue counter. Queues
@@ -671,10 +681,13 @@ static void helper_render_final_totals(FILE *out,
 
     // DPDK rows only: dtn_stats[32]/[33] are never populated (see above).
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
-        tot_good    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts);
-        tot_bad     += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts);
+        tot_good    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_good);
+        tot_bad     += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bad);
         tot_lost    += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].lost_pkts);
-        tot_bit_err += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bit_errors);
+        tot_bit_err += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bit_errors) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bits);
         tot_short   += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].short_pkts);
         tot_other   += (uint64_t)rte_atomic64_read(&dtn_stats[dtn].other_pkts);
     }
@@ -701,7 +714,7 @@ static void helper_render_final_totals(FILE *out,
     raw_socket_get_excluded_counts(1, &hm13, &fo13);
 
     const uint64_t turned_away = tot_short + tot_other;
-    const uint64_t hw_accounted = tot_dpdk_validated + tot_raw_origin + turned_away;
+    const uint64_t hw_accounted = tot_dpdk_validated + turned_away;
     const uint64_t hw_unaccounted =
         (tot_hw_q_pkts > hw_accounted) ? (tot_hw_q_pkts - hw_accounted) : 0;
     const uint64_t hw_over =
@@ -710,11 +723,12 @@ static void helper_render_final_totals(FILE *out,
     printf("\n--- Where every arrival went ---\n");
     printf("  DPDK queues 0-3, HW packets received      : %lu\n", tot_hw_q_pkts);
     printf("    validated as PRBS (counted above)       : %lu\n", tot_dpdk_validated);
-    // Real, validated traffic - it simply entered from Port 12/13 instead of
-    // from the queue this row is paired with. Held out of the DTN rows so
-    // their two columns describe the same stream; the exact figure that used
-    // to be approximated as "target packets / 4".
-    printf("    validated, but sent from Port 12/13     : %lu\n", tot_raw_origin);
+    // Real, validated traffic that simply entered from Port 12/13 instead of
+    // from the queue its arrival row is paired with. Included in the figure
+    // above and held out of the DTN table's per-row columns, so each row
+    // compares one stream against itself. This is the exact count that used
+    // to be approximated as "target packets / 4" and added to the wrong side.
+    printf("      of which entered from Port 12/13      : %lu\n", tot_raw_origin);
     printf("    undersized, never validated             : %lu\n", tot_short);
     // Name them by size. One dominant length points at a specific protocol;
     // a spread points at something variable. The per-frame detail for the

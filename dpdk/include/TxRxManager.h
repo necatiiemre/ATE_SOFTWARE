@@ -116,7 +116,9 @@ struct dtn_port_stats {
     // arrival count against a one-stream send count. Excluded from
     // good/bad/bit_errors/prbs_rx_bytes above and kept here instead, exactly,
     // so nothing is lost and nothing has to be estimated.
-    rte_atomic64_t raw_origin_pkts;
+    rte_atomic64_t raw_origin_good;
+    rte_atomic64_t raw_origin_bad;
+    rte_atomic64_t raw_origin_bits;
     rte_atomic64_t raw_origin_bytes;
 };
 
