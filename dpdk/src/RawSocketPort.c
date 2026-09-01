@@ -1172,8 +1172,30 @@ void *raw_tx_worker(void *arg)
     uint64_t local_tx_bytes[MAX_RAW_TARGETS] = {0};
     uint64_t local_tx_errors[MAX_RAW_TARGETS] = {0};
     uint64_t total_local_pkts = 0;
+    uint32_t my_stats_gen = txrx_stats_generation();
 
     while (!port->stop_flag && (g_stop_flag == NULL || !*g_stop_flag)) {
+    // A stats reset drops what every worker is holding thread-local, so the
+    // shared counters and the locals start the new window together. The DPDK
+    // workers have honoured this since the reset was introduced; these did
+    // not, and the consequence was measurable: reset_raw_socket_stats() zeroed
+    // tx_targets[].stats while up to STATS_FLUSH_INTERVAL packets sent BEFORE
+    // the reset were still held locally, so they were folded into the new
+    // window as sent - while their arrivals, validated before the reset, had
+    // been wiped by init_dtn_stats(). One-off, bounded by 1024 per port, and
+    // independent of run length: 727 on Port 12 and 586 on Port 13 over a
+    // 98-second run, unchanged from a 47-second one.
+        uint32_t cur_stats_gen = txrx_stats_generation();
+        if (cur_stats_gen != my_stats_gen) {
+            for (int t = 0; t < MAX_RAW_TARGETS; t++) {
+                local_tx_packets[t] = 0;
+                local_tx_bytes[t] = 0;
+                local_tx_errors[t] = 0;
+            }
+            total_local_pkts = 0;
+            my_stats_gen = cur_stats_gen;
+        }
+
         bool any_sent = false;
 
         // Round-robin interleaved pacing (all modes):
@@ -1447,9 +1469,20 @@ void *raw_rx_worker(void *arg)
     const uint32_t BUSY_POLL_COUNT = 64;  // Spin this many times before blocking poll
 
     uint32_t my_flush_req = txrx_flush_request_id();
+    uint32_t my_stats_gen = txrx_stats_generation();
     txrx_flush_participant_enter();
 
     while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
+        // Same reset rule as the TX worker above: what is held locally was
+        // counted in the previous window and must not follow it into this one.
+        uint32_t cur_stats_gen = txrx_stats_generation();
+        if (cur_stats_gen != my_stats_gen) {
+            local_dpdk_rx_pkts = local_dpdk_rx_bytes = 0;
+            local_dpdk_good = local_dpdk_bad = 0;
+            local_dpdk_bit_errors = local_dpdk_lost = 0;
+            my_stats_gen = cur_stats_gen;
+        }
+
         // Checked before the ring is examined so a quiet port answers too -
         // the idle flush below only runs once the busy-poll budget is spent.
         uint32_t cur_flush_req = txrx_flush_request_id();
@@ -1929,9 +1962,18 @@ void *multi_queue_rx_worker(void *arg)
     queue->unique_vl_ids = 0;
 
     uint32_t my_flush_req = txrx_flush_request_id();
+    uint32_t my_stats_gen = txrx_stats_generation();
     txrx_flush_participant_enter();
 
     while (!port->stop_flag && (g_rx_stop_flag == NULL || !*g_rx_stop_flag)) {
+        // Same reset rule as the TX worker above.
+        uint32_t cur_stats_gen = txrx_stats_generation();
+        if (cur_stats_gen != my_stats_gen) {
+            local_rx_pkts = local_rx_bytes = 0;
+            local_good = local_bad = local_bit_errors = 0;
+            my_stats_gen = cur_stats_gen;
+        }
+
         // Before the ring is examined, so a quiet queue answers as well.
         uint32_t cur_flush_req = txrx_flush_request_id();
         if (cur_flush_req != my_flush_req) {

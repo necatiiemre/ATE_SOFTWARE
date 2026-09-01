@@ -85,7 +85,6 @@ void helper_reset_stats(const struct ports_config *ports_config,
     // 2. Everything that is not one of the two headline counters. Slow, and
     //    deliberately out of the way before the pair below.
     reset_rx_stats_counters();
-    reset_raw_socket_stats();
 
 #if STATS_MODE_DTN
     // The DTN table's own rate baselines. rte_eth_stats_reset() below zeroes
@@ -103,6 +102,12 @@ void helper_reset_stats(const struct ports_config *ports_config,
     //    the packet columns. rte_eth_stats_reset() still follows because the
     //    Mbps columns read the HW byte counters, and it is kept adjacent so
     //    the rates restart from the same instant as the counts.
+    // Adjacent on purpose. reset_raw_socket_stats() zeroes the raw ports' send
+    // counters and init_dtn_stats() zeroes the arrivals attributed to them, and
+    // anything sent between the two is counted on one side only. It used to sit
+    // with the slow resets above, leaving a window that showed up as raw
+    // packets sent and never returned.
+    reset_raw_socket_stats();
 #if STATS_MODE_DTN
     init_dtn_stats();
 #endif
