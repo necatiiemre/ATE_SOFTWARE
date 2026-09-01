@@ -365,10 +365,17 @@ int dpdk_ext_tx_worker(void *arg)
     uint64_t local_tx_pkts = 0;
     uint64_t local_tx_bytes = 0;
 
-    // Which DTN row does each target feed? Its VLAN says so directly - the
-    // targets carry the rx_vlan of the DTN port they are bound for - so this
-    // is a lookup, not a split. Resolved once here; init_dtn_port_map() runs
-    // long before any external TX worker starts.
+    // Which DTN row does each target feed? Its VLAN says so: the targets carry
+    // the rx_vlan of the DTN port they are bound for - port 2's four targets
+    // carry VLAN 97-100, which are DTN 0-3's rx_vlan. So this is a lookup, not
+    // a split.
+    //
+    // Matched against dtn_port_map rather than through vlan_to_dtn_port. That
+    // table only holds tx_vlan: init_dtn_port_map() fills the rx_vlan branch
+    // with a comment and no assignment, so every rx_vlan reads back as
+    // DTN_VLAN_INVALID. Scanning the map is a loop over 32 entries, once, at
+    // worker start, and it cannot be quietly broken by what another lookup
+    // happens to contain. rx_vlan is unique per row, so the match is unique.
     uint8_t  target_dtn[DPDK_EXT_TX_QUEUES_PER_PORT];
     uint64_t local_ext_pkts[DPDK_EXT_TX_QUEUES_PER_PORT] = {0};
     uint64_t local_ext_bytes[DPDK_EXT_TX_QUEUES_PER_PORT] = {0};
@@ -379,9 +386,15 @@ int dpdk_ext_tx_worker(void *arg)
     for (uint16_t t = 0; t < port_config->target_count &&
                          t < DPDK_EXT_TX_QUEUES_PER_PORT; t++) {
         const uint16_t v = port_config->targets[t].vlan_id;
-        if (v < DTN_VLAN_LOOKUP_SIZE) {
-            target_dtn[t] = vlan_to_dtn_port[v];
+        for (int d = 0; d < DTN_DPDK_PORT_COUNT; d++) {
+            if (dtn_port_map[d].rx_vlan == v) {
+                target_dtn[t] = (uint8_t)d;
+                break;
+            }
         }
+        printf("  ExtTX Port %u target %u: VLAN %u -> DTN %d\n",
+               params->port_id, t, v,
+               target_dtn[t] == DTN_VLAN_INVALID ? -1 : (int)target_dtn[t]);
     }
 #endif
     uint32_t my_ext_stats_gen = txrx_stats_generation();
@@ -469,6 +482,10 @@ int dpdk_ext_tx_worker(void *arg)
 
         // Get current target (round-robin between all targets)
         struct dpdk_ext_tx_target *target = &port_config->targets[current_target];
+        // current_target advances a few lines below, well before the send, so
+        // the index has to be kept or the packet is credited to the next
+        // target's DTN row.
+        const uint16_t this_target = current_target;
 
         // Current VL-ID (round-robin within target's range)
         uint16_t curr_vl = target->vl_id_start + vl_offsets[current_target];
@@ -581,8 +598,8 @@ int dpdk_ext_tx_worker(void *arg)
             commit_ext_tx_sequence(port_idx, curr_vl);
             local_tx_pkts++;
             local_tx_bytes += pkt_size;
-            local_ext_pkts[current_target]++;
-            local_ext_bytes[current_target] += pkt_size;
+            local_ext_pkts[this_target]++;
+            local_ext_bytes[this_target] += pkt_size;
         } else {
             // TX queue full — drop packet, don't increment sequence (will be retried)
             rte_pktmbuf_free(pkts[0]);
