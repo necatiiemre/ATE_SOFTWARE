@@ -2,3 +2,4 @@ ChecksumTool/checksum_tool
 TimeReader/time_reader
 AccelerationTest/build/
 AccelerationTest/LOGS/
+__pycache__/
