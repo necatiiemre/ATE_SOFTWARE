@@ -279,6 +279,13 @@ void raw_socket_get_excluded_counts(int raw_index, uint64_t *hm_frames,
                                     uint64_t *foreign_frames);
 void *raw_tx_worker(void *arg);
 void *raw_rx_worker(void *arg);
+/**
+ * Join the raw socket TX threads only, leaving the RX workers running for the
+ * drain. They flush their counters as they leave, so this is what makes the
+ * raw ports' sent totals final before anything is rendered.
+ */
+void wait_raw_tx_workers(void);
+
 void stop_raw_socket_workers(void);
 
 // ==========================================

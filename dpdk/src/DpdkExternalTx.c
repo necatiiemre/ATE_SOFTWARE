@@ -553,6 +553,20 @@ int dpdk_ext_tx_worker(void *arg)
 // Normal TX uses queues 0-3, External TX uses queue 4 (extra queue).
 // This separation eliminates timing interference and provides stable TX rate.
 
+// Lcores the external TX workers run on, so they can be waited for. They flush
+// their counters on the way out, and the first drain table is otherwise
+// rendered while they are still leaving - their last sends missing from it
+// while the arrivals of those same packets are already counted on the far side.
+static unsigned g_ext_tx_lcores[DPDK_EXT_TX_PORT_COUNT * DPDK_EXT_TX_QUEUES_PER_PORT];
+static int      g_ext_tx_lcore_count = 0;
+
+void dpdk_ext_tx_wait_workers(void)
+{
+    for (int i = 0; i < g_ext_tx_lcore_count; i++) {
+        rte_eal_wait_lcore(g_ext_tx_lcores[i]);
+    }
+}
+
 int dpdk_ext_tx_start_workers(struct ports_config *ports_config, volatile bool *stop_flag)
 {
     printf("\n=== Starting DPDK External TX Workers ===\n");
@@ -610,6 +624,10 @@ int dpdk_ext_tx_start_workers(struct ports_config *ports_config, volatile bool *
         {
             printf("  ERROR: Failed to launch ext TX worker on lcore %u: %d\n", ext_lcore, ret);
             return ret;
+        }
+        if (g_ext_tx_lcore_count <
+            (int)(sizeof(g_ext_tx_lcores) / sizeof(g_ext_tx_lcores[0]))) {
+            g_ext_tx_lcores[g_ext_tx_lcore_count++] = ext_lcore;
         }
 
         worker_idx++;

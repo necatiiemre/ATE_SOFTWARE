@@ -48,6 +48,15 @@ static volatile bool *g_stop_flag = NULL;
 // draining in-flight packets after TX has been cut (see RX_DRAIN_SECONDS).
 static volatile bool *g_rx_stop_flag = NULL;
 
+// TX thread lifecycle. tx_running is set by the thread itself and cleared just
+// before it returns, so it cannot be used to decide whether a join is still
+// owed: a thread that has set it false is still joinable. These say what was
+// actually created and what has actually been joined, so the TX-only wait
+// below and the full stop later can both run without a second pthread_join on
+// the same thread, which is undefined behaviour.
+static bool g_raw_tx_created[MAX_RAW_SOCKET_PORTS];
+static bool g_raw_tx_joined[MAX_RAW_SOCKET_PORTS];
+
 // ATE mode config (4 port: 12↔14, 13↔15 full-duplex)
 static const struct raw_socket_port_config ate_raw_port_configs[MAX_RAW_SOCKET_PORTS] = ATE_RAW_SOCKET_PORTS_CONFIG_INIT;
 
@@ -2486,6 +2495,8 @@ int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_fl
             fprintf(stderr, "[Port %u] Failed to create TX thread\n", raw_ports[i].port_id);
             return -1;
         }
+        g_raw_tx_created[i] = true;
+        g_raw_tx_joined[i] = false;
 
         // Pin TX thread to dedicated CPU core
         if (raw_ports[i].tx_cpu_core > 0) {
@@ -2498,6 +2509,23 @@ int start_raw_socket_workers(volatile bool *stop_flag, volatile bool *rx_stop_fl
 
     printf("=== All Raw Socket Workers Started ===\n");
     return 0;
+}
+
+void wait_raw_tx_workers(void)
+{
+    // TX only: the RX workers have to keep running through the drain, so this
+    // cannot go through stop_raw_socket_workers(). The TX threads leave on
+    // force_quit, which is already set by the time this is called, and each
+    // flushes its counters on the way out - which is the point. Without it the
+    // first drain table is rendered while they are still leaving, and their
+    // last sends are missing from it while the arrivals of those same packets
+    // are already counted.
+    for (int i = 0; i < active_raw_port_count; i++) {
+        if (g_raw_tx_created[i] && !g_raw_tx_joined[i]) {
+            pthread_join(raw_ports[i].tx_thread, NULL);
+            g_raw_tx_joined[i] = true;
+        }
+    }
 }
 
 void stop_raw_socket_workers(void)
@@ -2522,9 +2550,12 @@ void stop_raw_socket_workers(void)
 
     // Wait for all workers to finish
     for (int i = 0; i < active_raw_port_count; i++) {
-        // Stop TX thread
-        if (raw_ports[i].tx_running) {
+        // Stop TX thread. Usually already joined by wait_raw_tx_workers()
+        // before the totals were read; the flag makes the repeat a no-op
+        // rather than a second join on the same thread.
+        if (g_raw_tx_created[i] && !g_raw_tx_joined[i]) {
             pthread_join(raw_ports[i].tx_thread, NULL);
+            g_raw_tx_joined[i] = true;
         }
 
         // Stop RX - multi-queue or legacy

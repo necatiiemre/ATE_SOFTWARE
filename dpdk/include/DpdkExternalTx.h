@@ -85,6 +85,12 @@ int dpdk_ext_tx_init(struct rte_mempool *mbuf_pools[]);
 int dpdk_ext_tx_start_workers(struct ports_config *ports_config, volatile bool *stop_flag);
 
 /**
+ * Block until every external TX worker has left. They flush on the way out, so
+ * this is what makes the external leg's sent total final before it is read.
+ */
+void dpdk_ext_tx_wait_workers(void);
+
+/**
  * External TX worker function (runs on lcore)
  * @param arg Pointer to dpdk_ext_tx_worker_params
  * @return 0 on success

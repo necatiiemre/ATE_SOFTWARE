@@ -790,19 +790,16 @@ static void helper_render_final_totals(FILE *out,
     // Both sides are now PRBS counters over the same packets, cleared by the
     // same reset, so the difference here is small and can fall either way.
     //
-    // It does not go to zero, and the reason is not loss. helper_reset_stats()
-    // tells every worker to drop what it holds thread-local, and the workers
-    // notice at slightly different moments: a packet sent just before the TX
-    // worker notices has its send discarded, while its arrival some tens of
-    // microseconds later is counted by an RX worker already in the new window.
-    // That is one flight time's worth of packets, in the direction of more
-    // returned than sent, and it is a property of resetting live counters
-    // rather than anything the link did.
+    // A residue here was for a long time blamed on the counter reset. That was
+    // wrong, and the per-second tables disproved it: the pairs held to a packet
+    // or two for the whole run and only broke in the single second traffic
+    // stopped. The cause was the shutdown - the first drain table was rendered
+    // while the senders were still leaving, their last sends not yet handed
+    // over while the arrivals of those same packets were already counted - and
+    // the senders are now waited for before anything is read.
     //
-    // So a small difference in either direction is expected and is reported as
-    // such. Only one large enough to be real traffic is called out - the
-    // in-flight residue scales with the packet rate and the reset skew, not
-    // with the run, so as a fraction of the run it can only shrink.
+    // So a difference here is no longer explained away. It is reported with its
+    // sign, and anything large enough to be real traffic is called out.
     const bool short_return = (tot_rx_pkts > tot_tx_pkts);
     const uint64_t difference = short_return ? (tot_rx_pkts - tot_tx_pkts)
                                              : (tot_tx_pkts - tot_rx_pkts);
@@ -886,9 +883,9 @@ static void helper_render_final_totals(FILE *out,
         printf("     LARGER THAN THE RESET BOUNDARY CAN EXPLAIN - %s\n",
                short_return ? "packets went out and did not come back"
                             : "the two sides are not counting the same traffic");
-    } else {
-        printf("     within the reset boundary (packets in flight when the\n");
-        printf("     counters were zeroed); sign can fall either way\n");
+    } else if (difference) {
+        printf("     small enough to be a counter read against a moving\n");
+        printf("     target rather than traffic; sign can fall either way\n");
     }
 
 #else

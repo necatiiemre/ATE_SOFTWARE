@@ -811,7 +811,23 @@ int main(int argc, char const *argv[])
             //
             // They leave on force_quit, which is already set, so this returns
             // as soon as they are done rather than adding a wait of its own.
+            //
+            // All three kinds of sender, not just the DPDK lcores: waiting for
+            // those alone took their leg from +213 to exactly zero over 122.8
+            // million packets and left +4 on Port 12, +1 on Port 13 and +45 on
+            // the external leg - the same race, in the senders that were still
+            // not being waited for.
             txrx_wait_tx_workers();
+#if DPDK_EXT_TX_ENABLED
+            dpdk_ext_tx_wait_workers();
+#endif
+#if ENABLE_RAW_SOCKET_PORTS
+            if (raw_ports_initialized) {
+                // TX threads only - the raw RX workers have to keep running
+                // for the whole drain.
+                wait_raw_tx_workers();
+            }
+#endif
         }
 
         test_time++;
