@@ -150,6 +150,10 @@ static void helper_render_dtn_stats(FILE *out,
                                     const struct ports_config *ports_config,
                                     unsigned test_time)
 {
+    // Kept in the signature so the two callers and the snapshot path stay
+    // identical; the table itself no longer reads anything from it.
+    (void)ports_config;
+
     // Clear the screen
     if (!g_daemon_mode) {
         printf("\033[2J\033[H");
@@ -169,19 +173,12 @@ static void helper_render_dtn_stats(FILE *out,
     printf("│      │       Packets       │        Bytes        │          Mbps           │       Packets       │        Bytes        │          Mbps           │        Good         │         Bad         │        Lost         │      Bit Error      │     BER     │\n");
     printf("├──────┼─────────────────────┼─────────────────────┼─────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────┤\n");
 
-    // Fetch HW stats once (per port)
-    struct rte_eth_stats port_hw_stats[MAX_PORTS];
-    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
-        uint16_t port_id = ports_config->ports[i].port_id;
-        if (rte_eth_stats_get(port_id, &port_hw_stats[port_id]) != 0) {
-            memset(&port_hw_stats[port_id], 0, sizeof(struct rte_eth_stats));
-        }
-    }
+    // No HW queue counters are read here any more. Every column - packets,
+    // bytes and both rates - comes from the software counters, which is what
+    // lets a rate be checked against the total printed beside it.
 
     // DTN Port 0-31 (DPDK ports)
     for (uint16_t dtn = 0; dtn < DTN_DPDK_PORT_COUNT; dtn++) {
-        const struct dtn_port_map_entry *entry = &dtn_port_map[dtn];
-
         // DTN TX (DTN→Server) = every PRBS packet that came out of this DTN
         // port and was validated here. Taken from the PRBS counters, not from
         // the HW queue counter: the NIC also steers non-PRBS traffic onto
@@ -223,8 +220,6 @@ static void helper_render_dtn_stats(FILE *out,
         // instant from the TX column's reset. That mismatch, not packet loss,
         // is what made a row show more sent than came back while the
         // watermark check reported no gaps.
-        uint16_t srv_tx_port = entry->rx_server_port;
-        uint16_t srv_tx_queue = entry->rx_server_queue;
         // Both send paths toward this DTN port: the paired TX worker on queues
         // 0-3, and the external TX worker on queue 4 carrying this port's VLAN.
         // The second was missing, and it showed: a port hands part of its send
@@ -239,37 +234,35 @@ static void helper_render_dtn_stats(FILE *out,
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_bytes) +
             (uint64_t)rte_atomic64_read(&dtn_stats[dtn].ext_tx_bytes);
 
-        // Mbps delta calculation.
+        // Mbps delta calculation - from the byte totals printed beside them.
         //
-        // The rate is taken from the HW byte counter rather than from the byte
-        // total beside it. The software counters are folded in on a flush
-        // cadence, and although the main loop asks for a flush before every
-        // render, the HW counter is exact at every instant with nothing to
-        // arrange - which is what a rate wants.
+        // These read the HW queue counters until recently, and that could not
+        // survive the send column covering both queues. q_obytes is per queue:
+        // queues 0-3 carry the loopback stream and queue 4 the external TX,
+        // so no single queue counter measures what the RX column now reports,
+        // and there is no honest way to take queue 4's share of it for one row
+        // - it is shared by the four rows behind that port, and dividing it by
+        // four is the estimate this file has already had to remove once.
         //
-        // The two now describe the same traffic. q_ibytes counts every byte
-        // the NIC delivered to this queue; the TX byte column counts every
-        // PRBS-validated byte on it, both pipelines included. What separates
-        // them is the handful of undersized frames counted as `short` below -
-        // of the order of a hundred kilobytes against several gigabytes.
+        // The reason the rate was read from hardware in the first place was
+        // that the software counters are folded in on a flush cadence. That no
+        // longer holds: the main loop requests a flush before every render and
+        // waits for it, and every worker that feeds these counters answers -
+        // the DPDK TX and RX workers, the raw socket TX and RX workers and the
+        // external TX workers. So the counters are current when they are read.
         //
-        // That was not always so. While the byte column carried only the
-        // loopback stream, the rate beside it carried both, and a row could
-        // show 910 Mbps against a byte total worth 878 - the same packets
-        // measured twice, differently. The columns agreeing is now something
-        // to check rather than something to explain away.
-        uint64_t hw_tx_bytes =
-            port_hw_stats[entry->tx_server_port].q_ibytes[entry->tx_server_queue];
-        uint64_t hw_rx_bytes =
-            port_hw_stats[srv_tx_port].q_obytes[srv_tx_queue];
-        uint64_t tx_delta = hw_tx_bytes - dtn_prev_tx_bytes[dtn];
-        uint64_t rx_delta = hw_rx_bytes - dtn_prev_rx_bytes[dtn];
+        // Taking the rate from the column beside it also makes this class of
+        // mistake impossible rather than merely fixed: the rate is the delta
+        // of the number printed next to it, so the two cannot describe
+        // different traffic again.
+        uint64_t tx_delta = dtn_tx_bytes - dtn_prev_tx_bytes[dtn];
+        uint64_t rx_delta = dtn_rx_bytes - dtn_prev_rx_bytes[dtn];
         double tx_mbps = to_mbps(tx_delta);
         double rx_mbps = to_mbps(rx_delta);
 
         // Update prev values
-        dtn_prev_tx_bytes[dtn] = hw_tx_bytes;
-        dtn_prev_rx_bytes[dtn] = hw_rx_bytes;
+        dtn_prev_tx_bytes[dtn] = dtn_tx_bytes;
+        dtn_prev_rx_bytes[dtn] = dtn_rx_bytes;
 
         // PRBS statistics. Same set as the TX column above - both streams -
         // so Good + Bad still adds up to the packet count beside it and the
