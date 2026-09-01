@@ -690,9 +690,51 @@ int main(int argc, char const *argv[])
     bool     draining = false;
     uint32_t drain_until = 0;
 
+    // Diagnostic, off unless DTN_DEBUG_EXTRA_LOCAL_DROPS is set to a count.
+    //
+    // The end-of-test totals carry a residue of about 213 packets in the
+    // direction of more returned than sent - stable at 212/213/213 across 47,
+    // 73 and 98 second runs, so not a rate and not a random flush collision.
+    // The explanation on offer is the counter reset: when
+    // txrx_reset_worker_locals() bumps the generation, workers notice at
+    // slightly different moments, so a packet sent just before its TX worker
+    // notices has its send discarded while its arrival, a flight time later,
+    // is counted by an RX worker already in the new window.
+    //
+    // If that is right, the residue is per generation bump and nothing else,
+    // and repeating the bump must add another one each time. This does exactly
+    // that and nothing else - it does not zero any counter, so everything
+    // except the packets inside the window cancels: a send dropped from a TX
+    // local has its arrival dropped from an RX local too.
+    //
+    // Set it to N and the final difference should come out near 213 * (1 + N).
+    // If it does not move, the reset is not the cause and the explanation
+    // above is wrong.
+    unsigned extra_local_drops = 0;
+    {
+        const char *env = getenv("DTN_DEBUG_EXTRA_LOCAL_DROPS");
+        if (env != NULL) {
+            long v = strtol(env, NULL, 10);
+            if (v > 0 && v < 1000) {
+                extra_local_drops = (unsigned)v;
+                printf("[DIAG] DTN_DEBUG_EXTRA_LOCAL_DROPS=%u - dropping worker\n"
+                       "       locals once per second for the first %u seconds.\n"
+                       "       Expect the final difference near %u x the usual\n"
+                       "       residue if the reset boundary is its source.\n",
+                       extra_local_drops, extra_local_drops,
+                       extra_local_drops + 1);
+            }
+        }
+    }
+
     while (1)
     {
         sleep(1);
+
+        if (extra_local_drops > 0) {
+            txrx_reset_worker_locals();
+            extra_local_drops--;
+        }
 
         // First second in which the stop request is visible: TX (DPDK,
         // external and raw socket) is already unwinding on force_quit, RX is
