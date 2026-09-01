@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "Config.h"  // RX_DRAIN_SECONDS, TEST_START_QUIET_SECONDS
 #include "Helpers.h" // helper_reset_stats, helper_print_stats, signal_handler / force_quit
 #include "PortManager.h"
 #include "EalInit.h"
@@ -24,6 +25,13 @@
 #include "PsuTelemetry.h"          // wire format (shared with MainSoftware)
 #include "PsuTelemetryReceiver.h"  // receiver API for MainSoftware UDP pushes
 #include "ShutdownSnapshot.h"      // dump last-second stats on Ctrl+C
+
+// Config.h is the authority for this; the fallback only covers a build tree
+// whose Config.h predates it, which is otherwise a confusing "undeclared
+// identifier" on a plain integer constant. Keep the two values in step.
+#ifndef TEST_START_QUIET_SECONDS
+#define TEST_START_QUIET_SECONDS 3
+#endif
 
 // Enable/disable raw socket ports
 #ifndef ENABLE_RAW_SOCKET_PORTS
@@ -685,6 +693,7 @@ int main(int argc, char const *argv[])
 
     txrx_set_tx_paused(true);
     sleep(TEST_START_QUIET_SECONDS);
+
 
     helper_reset_stats(&ports_config, prev_tx_bytes, prev_rx_bytes);
 
