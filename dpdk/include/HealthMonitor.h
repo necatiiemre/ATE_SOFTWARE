@@ -100,6 +100,22 @@ int init_health_monitor(void);
 int start_health_monitor(volatile bool *stop_flag, volatile bool *abort_flag);
 
 /**
+ * @brief Record the device's per-port frame counters as the test's zero point.
+ *
+ * The device never clears its own counters, so comparing them against ours as
+ * absolutes only measures how long it had been running before we started.
+ * Call this in the quiet window, when no traffic is moving, and the difference
+ * from here is what the device carried during the test.
+ */
+void health_monitor_mark_port_baseline(void);
+
+/**
+ * @brief Device-side frames on one of its ports since the baseline.
+ * @return false if that port was never seen, or its counter went backwards.
+ */
+bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx);
+
+/**
  * @brief Stop health monitor thread
  */
 void stop_health_monitor(void);

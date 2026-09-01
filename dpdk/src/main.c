@@ -694,6 +694,18 @@ int main(int argc, char const *argv[])
     txrx_set_tx_paused(true);
     sleep(TEST_START_QUIET_SECONDS);
 
+#if HEALTH_MONITOR_ENABLED
+    // Take the device's own per-port counters as this test's zero point, here
+    // rather than anywhere else: nothing is moving, so it does not matter that
+    // the monitor samples on its own 1 Hz cycle. The device never clears these
+    // itself, so without a baseline they can only be compared as absolutes -
+    // which measures how long it had been running before we started, not the
+    // test. Differencing from here makes its numbers comparable with ours.
+    if (health_active && is_health_monitor_running()) {
+        health_monitor_mark_port_baseline();
+    }
+#endif
+
 
     helper_reset_stats(&ports_config, prev_tx_bytes, prev_rx_bytes);
 

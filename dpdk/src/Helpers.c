@@ -888,6 +888,71 @@ static void helper_render_final_totals(FILE *out,
         printf("     target rather than traffic; sign can fall either way\n");
     }
 
+    // ---------- 4. The device's own view ----------
+#if HEALTH_MONITOR_ENABLED
+    // The DTN keeps per-port frame counters of its own, and nothing here clears
+    // them - so read as absolutes they are always ahead of ours by whatever it
+    // carried before our counters were zeroed, which says nothing about the
+    // test. A difference between two of its own readings does not have that
+    // problem: the baseline was taken in the quiet window with no traffic
+    // moving, so the monitor's own 1 Hz sampling cannot skew it.
+    //
+    // Its Rx on port N is what we sent toward DTN N; its Tx on port N is what
+    // we validated coming back from it. Both are compared against exactly the
+    // columns of the DTN table.
+    {
+    bool any = false;
+    uint64_t sum_our_sent = 0, sum_dev_rx = 0;
+    uint64_t sum_our_back = 0, sum_dev_tx = 0;
+    for (uint16_t dtn = 0; dtn < DTN_PORT_COUNT; dtn++) {
+        uint64_t dtx = 0, drx = 0;
+        if (!health_monitor_get_port_delta((int)dtn, &dtx, &drx)) continue;
+        if (!any) {
+            printf("\n--- The device's own counters (difference since the quiet window) ---\n");
+            printf("  DTN |          we sent |        device Rx |   diff"
+                   " |    we validated |        device Tx |   diff\n");
+            any = true;
+        }
+        uint64_t our_sent, our_back;
+        if (dtn < DTN_DPDK_PORT_COUNT) {
+            our_sent = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].prbs_tx_pkts);
+            our_back = (uint64_t)rte_atomic64_read(&dtn_stats[dtn].good_pkts) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].bad_pkts) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_good) +
+                       (uint64_t)rte_atomic64_read(&dtn_stats[dtn].raw_origin_bad);
+        } else {
+            // Rows 32/33 are the raw ports: what they sent, and what came
+            // back to them from the external-TX leg.
+            struct raw_socket_port *rp = &raw_ports[dtn - DTN_RAW_PORT_12];
+            our_sent = 0;
+            for (uint16_t t = 0; t < rp->tx_target_count; t++) {
+                pthread_spin_lock(&rp->tx_targets[t].stats.lock);
+                our_sent += rp->tx_targets[t].stats.tx_packets;
+                pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
+            }
+            pthread_spin_lock(&rp->dpdk_ext_rx_stats.lock);
+            our_back = rp->dpdk_ext_rx_stats.rx_packets;
+            pthread_spin_unlock(&rp->dpdk_ext_rx_stats.lock);
+        }
+        sum_our_sent += our_sent; sum_dev_rx += drx;
+        sum_our_back += our_back; sum_dev_tx += dtx;
+        printf("  %3u | %16lu | %16lu | %+6ld | %15lu | %16lu | %+6ld\n",
+               dtn, our_sent, drx, (long)((int64_t)drx - (int64_t)our_sent),
+               our_back, dtx, (long)((int64_t)dtx - (int64_t)our_back));
+    }
+    if (any) {
+        printf("  --- | %16lu | %16lu | %+6ld | %15lu | %16lu | %+6ld\n",
+               sum_our_sent, sum_dev_rx,
+               (long)((int64_t)sum_dev_rx - (int64_t)sum_our_sent),
+               sum_our_back, sum_dev_tx,
+               (long)((int64_t)sum_dev_tx - (int64_t)sum_our_back));
+    } else {
+        printf("\n--- The device's own counters ---\n");
+        printf("  no baseline (health monitor had no reading before the test)\n");
+    }
+    }
+#endif
+
 #else
     (void)ports_config;
 #endif /* STATS_MODE_DTN */

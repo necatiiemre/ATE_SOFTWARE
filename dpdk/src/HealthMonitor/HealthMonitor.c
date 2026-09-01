@@ -21,6 +21,70 @@
 // ==========================================
 
 static struct health_monitor_state g_health_monitor;
+
+// ==========================================
+// DEVICE-SIDE PORT COUNTER SNAPSHOT
+// ==========================================
+// The device keeps its own per-port frame counters and nothing in this
+// application clears them, so they carry everything since it came up -
+// including all the traffic sent before our own counters were zeroed. Compared
+// as absolutes they are therefore always ahead of ours, by a per-port amount
+// that says nothing about the test.
+//
+// A difference between two of its own readings does not have that problem. The
+// latest reading is kept here, a baseline is taken in the quiet window before
+// the test starts, and the difference is what the device says it carried during
+// the test - directly comparable with our own totals.
+//
+// Written once per cycle by the monitor thread and read by the stats thread.
+// Plain 64-bit loads and stores: a reader can see one port updated and the next
+// not yet, which for a reconciliation printed at the end of a run costs a
+// packet or two and is not worth a lock on the monitor's hot path.
+static struct {
+    uint64_t tx;
+    uint64_t rx;
+    bool     valid;
+} g_dev_ports[HEALTH_MAX_PORTS];
+
+static struct {
+    uint64_t tx;
+    uint64_t rx;
+    bool     valid;
+} g_dev_ports_baseline[HEALTH_MAX_PORTS];
+
+static void health_store_port_snapshot(const struct health_fpga_data *fpga)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        const struct health_port_info *p = &fpga->ports[i];
+        if (!p->valid || p->port_number >= HEALTH_MAX_PORTS) {
+            continue;
+        }
+        g_dev_ports[p->port_number].tx = p->tx_count;
+        g_dev_ports[p->port_number].rx = p->rx_count;
+        g_dev_ports[p->port_number].valid = true;
+    }
+}
+
+void health_monitor_mark_port_baseline(void)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        g_dev_ports_baseline[i] = g_dev_ports[i];
+    }
+}
+
+bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx)
+{
+    if (port < 0 || port >= HEALTH_MAX_PORTS) return false;
+    if (!g_dev_ports[port].valid || !g_dev_ports_baseline[port].valid) return false;
+    uint64_t now_tx = g_dev_ports[port].tx, now_rx = g_dev_ports[port].rx;
+    uint64_t base_tx = g_dev_ports_baseline[port].tx, base_rx = g_dev_ports_baseline[port].rx;
+    // A counter that went backwards means the device restarted or wrapped;
+    // reporting a huge unsigned number would be worse than reporting nothing.
+    if (now_tx < base_tx || now_rx < base_rx) return false;
+    *tx = now_tx - base_tx;
+    *rx = now_rx - base_rx;
+    return true;
+}
 // What the monitor watches to know when to stop. Points at the RX drain flag,
 // not the app-wide force_quit, so the monitor keeps querying the DTN through
 // the post-Ctrl+C drain window instead of going dark exactly when the final
@@ -758,6 +822,11 @@ static void *health_monitor_thread_func(void *arg)
 
         // 3. Receive and parse responses
         receive_health_responses(HEALTH_MONITOR_RESPONSE_TIMEOUT_MS, &cycle);
+
+        // Keep the per-port counters so the end-of-test reconciliation can
+        // difference them against the baseline taken before the test started.
+        health_store_port_snapshot(&cycle.assistant);
+        health_store_port_snapshot(&cycle.manager);
 
         uint64_t cycle_end = get_time_ms();
         uint64_t cycle_time = cycle_end - cycle_start;
