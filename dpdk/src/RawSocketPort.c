@@ -1320,6 +1320,7 @@ void *raw_tx_worker(void *arg)
 
                 // Local stats accumulation (no lock)
                 local_tx_packets[t]++;
+                txrx_vl_count_tx(vl_id);
                 local_tx_bytes[t] += pkt_size;
                 total_local_pkts++;
 
@@ -1625,6 +1626,7 @@ void *raw_rx_worker(void *arg)
             // Update local stats (no spinlock per packet!)
             local_dpdk_rx_pkts++;
             local_dpdk_rx_bytes += pkt_len;
+            txrx_vl_count_rx(vl_id);
 
             // Sequence tracking for lost packet detection (port-specific)
             if (port->port_id == 12) {
@@ -2134,6 +2136,7 @@ void *multi_queue_rx_worker(void *arg)
             // VL-ID tracking
             if (vl_id < local_vl_min) local_vl_min = vl_id;
             if (vl_id > local_vl_max) local_vl_max = vl_id;
+            txrx_vl_count_rx(vl_id);
 
             // Global sequence tracking (shared across all queues, port-specific)
             struct global_vl_seq_state *vs = NULL;

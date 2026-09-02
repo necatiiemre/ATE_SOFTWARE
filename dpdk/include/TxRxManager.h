@@ -366,6 +366,18 @@ void     txrx_get_raw_origin_by_port(uint64_t *out, int max);
 void     txrx_get_own_worker_totals(uint64_t *tx_total, uint64_t *rx_total);
 
 /**
+ * Per VL-ID packet counts: one increment per packet sent carrying that VL-ID,
+ * one per packet that came back and validated. Cleared by init_dtn_stats(),
+ * which runs in the quiet window, so they cover exactly the test.
+ *
+ * Every stream in the test owns a VL-ID range, so a VL-ID that stops matching
+ * names the stream, queue and port it belongs to on its own.
+ */
+void     txrx_vl_count_tx(uint16_t vl_id);
+void     txrx_vl_count_rx(uint16_t vl_id);
+void     txrx_get_vl_counts(uint16_t vl_id, uint64_t *tx, uint64_t *rx);
+
+/**
  * Block until every DPDK TX worker has left. They flush on the way out, so
  * this is what makes the sent counters final; the drain's first render is
  * otherwise taken while they are still leaving, because sleep() returns early

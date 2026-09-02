@@ -36,6 +36,48 @@ void port_vlans_load_config(bool ate_mode)
 // Global RX statistics per port
 struct rx_stats rx_stats_per_port[MAX_PORTS];
 
+// ==========================================
+// PER VL-ID PACKET COUNTS
+// ==========================================
+// One pair of counts for every VL-ID: how many packets went out carrying it
+// and how many came back and were validated. Every stream in the test has its
+// own VL-ID range - loopback PRBS holds 3-4098, the external TX legs
+// 4099-4130 and 4291-4418, the raw ports 4131-4290 - so this is the finest
+// grain the test has, and a single VL-ID that stops matching names the stream,
+// the queue and the port it belongs to without any further search.
+//
+// Counted here rather than derived from the sequence numbers, which look like
+// they would do: there are three separate sequence stores (tx_vl_sequences,
+// ext_tx_sequences and the raw ports' own), and all three double as the PRBS
+// payload offset, so they cannot be zeroed at the start of a test without
+// breaking validation. These are cleared by init_dtn_stats() instead, which
+// runs inside the quiet window with nothing in flight, so no baseline is
+// needed and no traffic straddles the reset.
+//
+// One writer per index on the TX side, sometimes several on the RX side (raw
+// traffic arrives untagged and RSS can spread one VL-ID over queues), so both
+// are atomic. Roughly two million increments a second spread across thirty-two
+// cores.
+static rte_atomic64_t g_vl_tx[MAX_VL_ID + 1];
+static rte_atomic64_t g_vl_rx[MAX_VL_ID + 1];
+
+void txrx_vl_count_tx(uint16_t vl_id)
+{
+    if (vl_id <= MAX_VL_ID) rte_atomic64_add(&g_vl_tx[vl_id], 1);
+}
+
+void txrx_vl_count_rx(uint16_t vl_id)
+{
+    if (vl_id <= MAX_VL_ID) rte_atomic64_add(&g_vl_rx[vl_id], 1);
+}
+
+void txrx_get_vl_counts(uint16_t vl_id, uint64_t *tx, uint64_t *rx)
+{
+    if (vl_id > MAX_VL_ID) { *tx = 0; *rx = 0; return; }
+    *tx = (uint64_t)rte_atomic64_read(&g_vl_tx[vl_id]);
+    *rx = (uint64_t)rte_atomic64_read(&g_vl_rx[vl_id]);
+}
+
 // Independent witnesses. Each DPDK TX and RX worker keeps a plain count that
 // the flush machinery never touches - not folded in, not zeroed by a flush,
 // only dropped when the stats generation changes, exactly like the counters it
@@ -567,6 +609,10 @@ void init_dtn_stats(void)
     }
     rte_atomic64_init(&g_own_tx_total);
     rte_atomic64_init(&g_own_rx_total);
+    for (int v = 0; v <= MAX_VL_ID; v++) {
+        rte_atomic64_init(&g_vl_tx[v]);
+        rte_atomic64_init(&g_vl_rx[v]);
+    }
     printf("DTN port statistics initialized for %d ports\n", DTN_PORT_COUNT);
 }
 
@@ -1513,6 +1559,7 @@ int tx_worker(void *arg)
             local_tx_pkts++;
             local_tx_bytes += sent_len;
             own_tx_total++;
+            txrx_vl_count_tx(curr_vl);
             if (unlikely(local_tx_pkts >= TX_FLUSH_COUNT ||
                          rte_rdtsc() >= next_tx_flush_tsc))
             {
@@ -2036,6 +2083,7 @@ int rx_worker(void *arg)
 
                             // Increment packet count
                             __atomic_fetch_add(&raw_seq_tracker->pkt_count, 1, __ATOMIC_RELAXED);
+                            txrx_vl_count_rx(raw_vl_id);
                         }
                     }
                     continue;  // Done with raw socket packet
@@ -2198,6 +2246,7 @@ int rx_worker(void *arg)
 
                             // Increment packet count
                             __atomic_fetch_add(&ext_seq_tracker->pkt_count, 1, __ATOMIC_RELAXED);
+                            txrx_vl_count_rx(vl_id);
                         }
                     }
                     // If raw_port not found, just count as external (no PRBS check)
@@ -2264,6 +2313,7 @@ int rx_worker(void *arg)
 
                     // Increment packet count
                     __atomic_fetch_add(&seq_tracker->pkt_count, 1, __ATOMIC_RELAXED);
+                    txrx_vl_count_rx(vl_id);
                 }
 
                 // ==========================================

@@ -27,6 +27,14 @@ static void signal_handler(int signum)
 
 // Resets HW statistics and local counters. Called once just before the test
 // loop starts so the first printed second is the first second of the test.
+// Where the per VL-ID counter table is written at the end of a test. Beside
+// the summary log rather than in it: about 4,400 VL-IDs carry traffic, which
+// is too many to print but exactly what you want when one of them stops
+// matching.
+#ifndef VL_COUNTER_LOG_PATH
+#define VL_COUNTER_LOG_PATH "/tmp/DTN_IRSW_EQ_VL_ID_Counters.log"
+#endif
+
 void helper_reset_stats(const struct ports_config *ports_config,
                         uint64_t prev_tx_bytes[], uint64_t prev_rx_bytes[]);
 

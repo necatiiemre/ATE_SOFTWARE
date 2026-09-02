@@ -952,6 +952,63 @@ static void helper_render_final_totals(FILE *out,
         }
     }
 
+    // ---------- 3c. Per VL-ID counts ----------
+    // Every stream owns a VL-ID range, so this is the finest grain the test
+    // has: a single VL-ID that stops matching names the stream, the queue and
+    // the port without any further search.
+    //
+    // The full table is written to a file rather than printed - there are
+    // about 4,400 VL-IDs in use and the console has to stay readable. What is
+    // printed is the count that balanced and every one that did not, which is
+    // the part worth looking at.
+    {
+        const char *vl_path = VL_COUNTER_LOG_PATH;
+        FILE *vf = fopen(vl_path, "w");
+        uint64_t seen = 0, matched = 0, mismatched = 0;
+        uint64_t tot_tx = 0, tot_rx = 0;
+
+        if (vf) {
+            fprintf(vf, "# Per VL-ID packet counts for this test\n");
+            fprintf(vf, "# VL-ID  TX (sent)  RX (validated)  difference\n");
+        }
+        printf("\n--- Per VL-ID counts ---\n");
+        for (uint32_t vl = 0; vl <= MAX_VL_ID; vl++) {
+            uint64_t vtx = 0, vrx = 0;
+            txrx_get_vl_counts((uint16_t)vl, &vtx, &vrx);
+            if (vtx == 0 && vrx == 0) continue;
+            seen++;
+            tot_tx += vtx;
+            tot_rx += vrx;
+            if (vf) {
+                fprintf(vf, "%6u %10lu %15lu %+11ld\n",
+                        vl, vtx, vrx, (long)((int64_t)vrx - (int64_t)vtx));
+            }
+            if (vtx == vrx) {
+                matched++;
+                continue;
+            }
+            mismatched++;
+            // Cap the console: the file has all of them, and a run where
+            // hundreds disagree is answered by the first few just as well.
+            if (mismatched <= 20) {
+                printf("  VL-ID %5u : TX %lu  RX %lu  (%+ld)\n",
+                       vl, vtx, vrx, (long)((int64_t)vrx - (int64_t)vtx));
+            } else if (mismatched == 21) {
+                printf("  ... more, see %s\n", vl_path);
+            }
+        }
+        printf("  %lu VL-IDs carried traffic, %lu balanced exactly, %lu did not\n",
+               seen, matched, mismatched);
+        printf("  totals: TX %lu  RX %lu  (%+ld)\n",
+               tot_tx, tot_rx, (long)((int64_t)tot_rx - (int64_t)tot_tx));
+        if (vf) {
+            fclose(vf);
+            printf("  full table: %s\n", vl_path);
+        } else {
+            printf("  (could not write %s)\n", vl_path);
+        }
+    }
+
     // ---------- 4. The device's own view ----------
 #if HEALTH_MONITOR_ENABLED
     // The DTN keeps per-port frame counters of its own, and nothing here clears

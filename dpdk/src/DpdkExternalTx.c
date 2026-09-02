@@ -600,6 +600,7 @@ int dpdk_ext_tx_worker(void *arg)
             local_tx_bytes += pkt_size;
             local_ext_pkts[this_target]++;
             local_ext_bytes[this_target] += pkt_size;
+            txrx_vl_count_tx(curr_vl);
         } else {
             // TX queue full — drop packet, don't increment sequence (will be retried)
             rte_pktmbuf_free(pkts[0]);
