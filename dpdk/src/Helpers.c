@@ -987,10 +987,7 @@ static void helper_render_final_totals(FILE *out,
     totals_row(out, " %-30s %16s %16s %11s",
                "Path", "Sent", "Returned", "Diff");
     totals_rule(out, "\u251c", "\u2524", NULL);
-    totals_row(out, " %s",
-               "Loopback leg - DPDK queues 0-3 and the raw ports' own TX,");
-    totals_row(out, " %s",
-               "               all of it validated on the DPDK queues");
+    totals_row(out, " %s", "Loopback leg");
     // The loopback leg is two sub-legs and the aggregate cannot say which is
     // short. The DPDK sub-leg compares each row's TX worker against what came
     // back on its paired queue; the raw sub-leg compares each raw port's own
@@ -1035,8 +1032,7 @@ static void helper_render_final_totals(FILE *out,
                    num_u(sent_loop), num_u(tot_dpdk_validated), num_s(loop_diff));
 
         totals_row(out, " %s", "");
-        totals_row(out, " %s",
-                   "External TX leg - queue 4 out, validated back at Ports 12/13");
+        totals_row(out, " %s", "External TX leg");
         totals_row(out, "   %-28s %16s %16s %11s", "leg total",
                    num_u(sent_ext), num_u(tot_raw_validated), num_s(ext_diff));
 
@@ -1078,19 +1074,13 @@ static void helper_render_final_totals(FILE *out,
         snprintf(diff_str, sizeof(diff_str), "%s%s   %.5f%%",
                  short_return ? "-" : "+", num_u(difference), diff_pct);
         totals_row(out, " %-45s %30s ", "Difference", diff_str);
+        // A difference too large to be a counter read against a moving target
+        // is the one thing here that has to say something; a small one speaks
+        // for itself and needs no paragraph.
         if (diff_significant) {
-            totals_row(out, " %s", "");
-            totals_row(out, " %s", "LARGER THAN THE RESET BOUNDARY CAN EXPLAIN:");
-            totals_row(out, "   %s",
-                       short_return ? "packets went out and did not come back"
-                                    : "the two sides are not counting the same"
-                                      " traffic");
-        } else if (difference) {
-            totals_row(out, " %s", "");
-            totals_row(out, " %s",
-                       "small enough to be a counter read against a moving target");
-            totals_row(out, " %s",
-                       "rather than traffic; the sign can fall either way");
+            totals_row(out, " %-45s %30s ", "",
+                       short_return ? "packets did not come back"
+                                    : "the two sides differ");
         }
     }
     totals_rule(out, "\u2514", "\u2518", NULL);
@@ -1337,29 +1327,16 @@ static void helper_render_final_totals(FILE *out,
             printf("\n");
             totals_rule(out, "\u250c", "\u2510",
                         "THE DEVICE'S OWN COUNTERS  -  difference since the quiet window");
-            totals_row(out, " %s",
-                       "Source: the TxCnt / RxCnt columns of the health monitor's own FPGA");
-            totals_row(out, " %s",
-                       "port tables - ASSISTANT for ports 0-15, MANAGER for 16-34 - stored");
-            totals_row(out, " %s",
-                       "once per 1 Hz cycle. These are DIFFERENCES, not those readings: the");
-            totals_row(out, " %s",
-                       "device never clears its counters, so what is shown is the last cycle");
-            totals_row(out, " %s",
-                       "minus the one snapshotted in the quiet window before the test. No");
-            totals_row(out, " %s",
-                       "number here appears in an HM table as printed; subtract two of them.");
-            totals_row(out, " %s", "");
-            totals_row(out, " %s",
-                       "It counts every frame while these count only PRBS - PTP and the");
-            totals_row(out, " %s",
-                       "health monitor are excluded from ours by design - so a small steady");
-            totals_row(out, " %s",
-                       "excess on its side is expected and is not loss. Its reading is also");
-            totals_row(out, " %s",
-                       "the last the monitor stored, on its own cycle rather than asked for");
-            totals_row(out, " %s", "here, so it can be up to a second stale.");
-            totals_rule(out, "\u251c", "\u2524", NULL);
+            // What these numbers are, kept here rather than printed: they are
+            // differences between two of the monitor's own readings - the last
+            // cycle minus the one snapshotted in the quiet window - taken from
+            // the TxCnt / RxCnt columns of its FPGA port tables (ASSISTANT for
+            // ports 0-15, MANAGER for 16-34). The device counts every frame
+            // while these count only PRBS, PTP and the health monitor being
+            // excluded from ours by design, so a small steady excess on its
+            // side is expected and is not loss. Its reading arrives on its own
+            // 1 Hz cycle, so it can be up to a second stale. The readings
+            // themselves are printed below this table.
             totals_row(out, " %3s %12s %12s %8s %12s %12s %8s",
                        "DTN", "we sent", "device Rx", "diff",
                        "we valid.", "device Tx", "diff");
@@ -1423,15 +1400,6 @@ static void helper_render_final_totals(FILE *out,
         printf("\n");
         totals_rule(out, "\u250c", "\u2510",
                     "THE DEVICE'S COUNTERS AS THE MONITOR READ THEM  -  not differences");
-        totals_row(out, " %s",
-                   "The two readings the table above differenced. Same numbers as the TxCnt");
-        totals_row(out, " %s",
-                   "and RxCnt columns of the ASSISTANT (ports 0-15) and MANAGER (16-34) FPGA");
-        totals_row(out, " %s",
-                   "port tables, so they can be matched against an HM table directly. The");
-        totals_row(out, " %s",
-                   "device never clears these, so they carry everything since it came up.");
-        totals_rule(out, "\u251c", "\u2524", NULL);
         totals_row(out, " %3s %17s %17s %17s %17s", "DTN",
                    "RxCnt at start", "RxCnt at end",
                    "TxCnt at start", "TxCnt at end");
@@ -1451,8 +1419,7 @@ static void helper_render_final_totals(FILE *out,
         // "RxCnt at end" column above is this table's RxCnt column, so the two
         // can be read against each other here instead of going back through
         // the log to find the last health block.
-        printf("\n--- The health monitor's own port tables, the source of the\n");
-        printf("    readings above (its last complete reading of each FPGA) ---\n");
+        printf("\n--- The health monitor's own port tables ---\n");
         health_monitor_render_port_tables(out);
     } else {
         printf("\n");
