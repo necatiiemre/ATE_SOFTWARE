@@ -6,8 +6,8 @@
 // ShutdownSnapshot
 // ----------------------------------------------------------------------------
 // Keeps the most recently rendered per-second statistics blocks in memory so
-// that, the moment a Ctrl+C (SIGINT) / SIGTERM is received, we can dump the
-// LAST FULL SECOND captured BEFORE the signal into a single log file.
+// that the end of the run can be dumped into a single log file without
+// re-rendering anything during teardown.
 //
 // Three producers, each running on its own thread, overwrite their slot once
 // per second with the text they just printed to the console/log:
@@ -19,11 +19,16 @@
 // instead of every second: the end-of-test totals table (aggregate PRBS
 // counters, the non-PRBS purity check, and the PTP / Health Monitor totals).
 //
-// On shutdown, shutdown_snapshot_dump() writes both slots (in order) to one
-// file. Because the slots are only ever refreshed during normal per-second
-// printing, dumping them right after the main loop exits captures the state as
-// it was in the second just before the stop was requested - not a fresh render
-// produced during teardown.
+// On shutdown, shutdown_snapshot_dump() writes every slot (in order) to one
+// file, each with the wall-clock instant it was captured.
+//
+// WHICH SECOND THE TABLES HOLD: Ctrl+C stops the senders only. The main loop
+// keeps rendering for RX_DRAIN_SECONDS afterwards while the receivers collect
+// what was still in flight, so the per-second slots end up holding the LAST
+// second of that drain - every in-flight packet accounted for - rather than
+// the second before the signal. The freeze happens only once the drain has
+// closed and the totals have been stored, which is what keeps teardown output
+// from overwriting them.
 // ============================================================================
 
 // Slot identifiers. Keep SNAP_SLOT_COUNT last.
@@ -53,9 +58,10 @@ void shutdown_snapshot_init(void);
 // by each producer with the block it just rendered.
 void shutdown_snapshot_store(enum snapshot_slot slot, const char *text);
 
-// Stop updating the per-second slots. Called once when a stop (Ctrl+C) is
-// requested so the summary keeps the last full second captured BEFORE the
-// signal, while the normal per-second log keeps printing as usual. Thread-safe;
+// Stop updating the per-second slots. Called once after the RX drain has
+// closed and the totals have been stored, so the summary keeps the settled
+// end-of-run tables while the normal per-second log keeps printing as usual
+// during teardown. Thread-safe;
 // irreversible for the remainder of the run. SNAP_SLOT_TOTALS is exempt - it is
 // written once by the shutdown path itself, after the freeze.
 void shutdown_snapshot_freeze(void);

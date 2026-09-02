@@ -8,6 +8,12 @@
 
 // Latest rendered text per slot (heap-owned, may be NULL when empty).
 static char *g_slots[SNAP_SLOT_COUNT] = {0};
+// Wall-clock instant each slot was last written. The producers run on
+// different threads and on their own cycles - the health monitor in
+// particular has its own 1 Hz clock - so a section can be a second older than
+// the one above it. Recording when each was captured makes that visible
+// instead of leaving the reader to assume they describe one instant.
+static time_t g_slot_time[SNAP_SLOT_COUNT] = {0};
 // Once frozen (on stop request), store() stops updating the slots so the
 // summary keeps the last full second captured BEFORE the signal.
 static bool g_frozen = false;
@@ -59,6 +65,7 @@ void shutdown_snapshot_store(enum snapshot_slot slot, const char *text)
     }
     free(g_slots[slot]);
     g_slots[slot] = copy;  // may be NULL to clear the slot
+    g_slot_time[slot] = (copy != NULL) ? time(NULL) : (time_t)0;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -88,18 +95,34 @@ int shutdown_snapshot_dump(const char *header_note)
 
     fprintf(fp,
             "════════════════════════════════════════════════════════════════════\n"
-            "  SUMMARY LOG - stats from the last full second before stop (Ctrl+C)\n"
-            "  Captured at : %s\n"
-            "  Note        : %s\n"
+            "  SUMMARY LOG - the settled counters at the end of the test\n"
+            "\n"
+            "  The per-second tables below are the last ones rendered: Ctrl+C\n"
+            "  stops only the senders, and the receivers then keep counting for\n"
+            "  the whole RX drain window, so these hold every packet that was\n"
+            "  still in flight when the stop arrived - not the second before it.\n"
+            "  The END-OF-TEST TOTALS section is rendered once, after the drain\n"
+            "  closed and every worker exited and flushed.\n"
+            "\n"
+            "  Written at  : %s\n"
+            "  Run         : %s\n"
             "════════════════════════════════════════════════════════════════════\n",
             time_str,
             header_note ? header_note : "-");
 
     pthread_mutex_lock(&g_lock);
     for (int slot = 0; slot < SNAP_SLOT_COUNT; slot++) {
+        char slot_time[64];
+        struct tm slot_tm;
+        if (g_slot_time[slot] != (time_t)0 &&
+            localtime_r(&g_slot_time[slot], &slot_tm) != NULL) {
+            strftime(slot_time, sizeof(slot_time), "%H:%M:%S", &slot_tm);
+        } else {
+            snprintf(slot_time, sizeof(slot_time), "--:--:--");
+        }
         fprintf(fp,
-                "\n---------- %s ----------\n",
-                slot_name((enum snapshot_slot)slot));
+                "\n---------- %s  (captured %s) ----------\n",
+                slot_name((enum snapshot_slot)slot), slot_time);
         if (g_slots[slot] != NULL) {
             fputs(g_slots[slot], fp);
         } else {
@@ -119,6 +142,7 @@ void shutdown_snapshot_cleanup(void)
     for (int slot = 0; slot < SNAP_SLOT_COUNT; slot++) {
         free(g_slots[slot]);
         g_slots[slot] = NULL;
+        g_slot_time[slot] = (time_t)0;
     }
     pthread_mutex_unlock(&g_lock);
 }

@@ -940,10 +940,12 @@ int main(int argc, char const *argv[])
     // the snapshot holds those settled values, not something re-rendered during
     // shutdown.
     {
-        char note[96];
+        char note[192];
         snprintf(note, sizeof(note),
-                 "stop requested at test second %u (after %u s RX drain)",
-                 test_time, (unsigned)RX_DRAIN_SECONDS);
+                 "%u s total - %u s quiet window at the start (counters zeroed "
+                 "there), traffic until Ctrl+C, then %u s RX drain",
+                 test_time, (unsigned)TEST_START_QUIET_SECONDS,
+                 (unsigned)RX_DRAIN_SECONDS);
         if (shutdown_snapshot_dump(note) == 0) {
             printf("[SUMMARY] Last-second summary written to %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);
