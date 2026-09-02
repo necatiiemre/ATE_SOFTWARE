@@ -844,6 +844,11 @@ int main(int argc, char const *argv[])
 
         test_time++;
 
+        // Label the renders about to be taken with the second they belong to,
+        // so the retained drain window in the summary log reads as a timeline
+        // rather than a stack of undated tables.
+        shutdown_snapshot_set_test_second(test_time);
+
         const bool final_second = (draining && test_time >= drain_until);
 
         // Ask the RX workers to hand over what they are holding before the
@@ -940,12 +945,14 @@ int main(int argc, char const *argv[])
     // the snapshot holds those settled values, not something re-rendered during
     // shutdown.
     {
-        char note[192];
+        char note[256];
         snprintf(note, sizeof(note),
                  "%u s total - %u s quiet window at the start (counters zeroed "
-                 "there), traffic until Ctrl+C, then %u s RX drain",
+                 "there), traffic to second %u, then the RX drain over seconds "
+                 "%u-%u",
                  test_time, (unsigned)TEST_START_QUIET_SECONDS,
-                 (unsigned)RX_DRAIN_SECONDS);
+                 drain_until - (unsigned)RX_DRAIN_SECONDS,
+                 drain_until - (unsigned)RX_DRAIN_SECONDS + 1, drain_until);
         if (shutdown_snapshot_dump(note) == 0) {
             printf("[SUMMARY] Last-second summary written to %s\n",
                    SHUTDOWN_SNAPSHOT_PATH);

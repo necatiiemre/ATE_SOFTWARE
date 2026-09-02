@@ -6,16 +6,29 @@
 #include <string.h>
 #include <time.h>
 
-// Latest rendered text per slot (heap-owned, may be NULL when empty).
-static char *g_slots[SNAP_SLOT_COUNT] = {0};
-// Wall-clock instant each slot was last written. The producers run on
-// different threads and on their own cycles - the health monitor in
-// particular has its own 1 Hz clock - so a section can be a second older than
-// the one above it. Recording when each was captured makes that visible
-// instead of leaving the reader to assume they describe one instant.
-static time_t g_slot_time[SNAP_SLOT_COUNT] = {0};
-// Once frozen (on stop request), store() stops updating the slots so the
-// summary keeps the last full second captured BEFORE the signal.
+// One retained render.
+struct snap_entry {
+    char    *text;    // heap-owned, NULL when the entry is unused
+    time_t   when;    // wall clock at the moment it was stored
+    unsigned second;  // test second the producer was rendering
+};
+
+// A ring per slot, holding the last SNAP_HISTORY_DEPTH renders. One render is
+// not enough: the interesting window is the whole drain, where the senders are
+// already gone and the receivers are still collecting what was in flight, and
+// reading that window a second at a time is how you see the in-flight packets
+// actually land rather than only their sum.
+static struct snap_entry g_hist[SNAP_SLOT_COUNT][SNAP_HISTORY_DEPTH];
+// Where the next render goes, and how many of the ring's entries are in use.
+static unsigned g_next[SNAP_SLOT_COUNT] = {0};
+static unsigned g_count[SNAP_SLOT_COUNT] = {0};
+// The test second the producers are currently rendering, published once per
+// second by the main loop. The producers themselves do not carry it into
+// store(), and wall clock alone cannot be lined up against a table's own
+// header - this can.
+static unsigned g_test_second = 0;
+// Once frozen, store() stops accepting per-second renders so teardown output
+// cannot push the drain window out of the ring.
 static bool g_frozen = false;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -31,10 +44,30 @@ static const char *slot_name(enum snapshot_slot slot)
     }
 }
 
+// Oldest-to-newest index into a slot's ring. `age` runs 0 (oldest retained)
+// to g_count[slot] - 1 (newest). Caller holds the lock.
+static const struct snap_entry *entry_at(int slot, unsigned age)
+{
+    const unsigned count = g_count[slot];
+    // g_next points one past the newest, so the oldest sits count entries
+    // behind it - modulo the ring, and with the depth added so the subtraction
+    // stays non-negative in unsigned arithmetic.
+    const unsigned oldest =
+        (g_next[slot] + SNAP_HISTORY_DEPTH - count) % SNAP_HISTORY_DEPTH;
+    return &g_hist[slot][(oldest + age) % SNAP_HISTORY_DEPTH];
+}
+
 void shutdown_snapshot_init(void)
 {
     // Mutex is statically initialized; nothing else to do. Provided so callers
     // can be explicit about setup order if they wish.
+}
+
+void shutdown_snapshot_set_test_second(unsigned second)
+{
+    pthread_mutex_lock(&g_lock);
+    g_test_second = second;
+    pthread_mutex_unlock(&g_lock);
 }
 
 void shutdown_snapshot_store(enum snapshot_slot slot, const char *text)
@@ -42,30 +75,37 @@ void shutdown_snapshot_store(enum snapshot_slot slot, const char *text)
     if ((int)slot < 0 || slot >= SNAP_SLOT_COUNT) {
         return;
     }
+    if (text == NULL || text[0] == '\0') {
+        return;  // Nothing rendered this second; leave the ring as it is.
+    }
 
     // Copy outside the lock to keep the critical section short.
-    char *copy = NULL;
-    if (text != NULL && text[0] != '\0') {
-        copy = strdup(text);
-        if (copy == NULL) {
-            return;  // Out of memory: keep the previous snapshot rather than losing it.
-        }
+    char *copy = strdup(text);
+    if (copy == NULL) {
+        return;  // Out of memory: keep what is already retained.
     }
 
     pthread_mutex_lock(&g_lock);
     // SNAP_SLOT_TOTALS is exempt from the freeze: the freeze exists to stop the
-    // per-second producers from overwriting the last pre-stop second, whereas
-    // the totals block is written exactly once, after the freeze, by the
-    // shutdown path itself.
+    // per-second producers from pushing the drain window out of their rings,
+    // whereas the totals block is written exactly once, after the freeze, by
+    // the shutdown path itself.
     if (g_frozen && slot != SNAP_SLOT_TOTALS) {
-        // A stop was requested: keep the pre-signal snapshot untouched.
         pthread_mutex_unlock(&g_lock);
         free(copy);
         return;
     }
-    free(g_slots[slot]);
-    g_slots[slot] = copy;  // may be NULL to clear the slot
-    g_slot_time[slot] = (copy != NULL) ? time(NULL) : (time_t)0;
+
+    struct snap_entry *e = &g_hist[slot][g_next[slot]];
+    free(e->text);  // NULL on an unused entry, the oldest render otherwise
+    e->text   = copy;
+    e->when   = time(NULL);
+    e->second = g_test_second;
+
+    g_next[slot] = (g_next[slot] + 1) % SNAP_HISTORY_DEPTH;
+    if (g_count[slot] < SNAP_HISTORY_DEPTH) {
+        g_count[slot]++;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -95,38 +135,59 @@ int shutdown_snapshot_dump(const char *header_note)
 
     fprintf(fp,
             "════════════════════════════════════════════════════════════════════\n"
-            "  SUMMARY LOG - the settled counters at the end of the test\n"
+            "  SUMMARY LOG - the closing %d seconds of the test, second by second\n"
             "\n"
-            "  The per-second tables below are the last ones rendered: Ctrl+C\n"
-            "  stops only the senders, and the receivers then keep counting for\n"
-            "  the whole RX drain window, so these hold every packet that was\n"
-            "  still in flight when the stop arrived - not the second before it.\n"
+            "  Ctrl+C stops the senders only; the receivers keep counting for the\n"
+            "  whole RX drain that follows, collecting what was still in flight.\n"
+            "  Every per-second table from the last table before the stop through\n"
+            "  the end of that drain is kept here, so the in-flight packets can be\n"
+            "  watched landing rather than only read as a total.\n"
             "  The END-OF-TEST TOTALS section is rendered once, after the drain\n"
             "  closed and every worker exited and flushed.\n"
             "\n"
             "  Written at  : %s\n"
             "  Run         : %s\n"
             "════════════════════════════════════════════════════════════════════\n",
+            SNAP_HISTORY_DEPTH,
             time_str,
             header_note ? header_note : "-");
 
     pthread_mutex_lock(&g_lock);
     for (int slot = 0; slot < SNAP_SLOT_COUNT; slot++) {
-        char slot_time[64];
-        struct tm slot_tm;
-        if (g_slot_time[slot] != (time_t)0 &&
-            localtime_r(&g_slot_time[slot], &slot_tm) != NULL) {
-            strftime(slot_time, sizeof(slot_time), "%H:%M:%S", &slot_tm);
-        } else {
-            snprintf(slot_time, sizeof(slot_time), "--:--:--");
+        const unsigned count = g_count[slot];
+        const char *name = slot_name((enum snapshot_slot)slot);
+
+        if (count == 0) {
+            fprintf(fp, "\n---------- %s ----------\n(no data captured)\n", name);
+            continue;
         }
-        fprintf(fp,
-                "\n---------- %s  (captured %s) ----------\n",
-                slot_name((enum snapshot_slot)slot), slot_time);
-        if (g_slots[slot] != NULL) {
-            fputs(g_slots[slot], fp);
-        } else {
-            fprintf(fp, "(no data captured)\n");
+
+        fprintf(fp, "\n══════════ %s", name);
+        if (count > 1) {
+            fprintf(fp, "  -  %u seconds retained, oldest first", count);
+        }
+        fprintf(fp, " ══════════\n");
+
+        for (unsigned age = 0; age < count; age++) {
+            const struct snap_entry *e = entry_at(slot, age);
+            if (e->text == NULL) {
+                continue;
+            }
+            // A single-entry slot (the totals) needs no per-entry banner - it
+            // is the section.
+            if (count > 1) {
+                char stamp[64];
+                struct tm entry_tm;
+                if (localtime_r(&e->when, &entry_tm) != NULL) {
+                    strftime(stamp, sizeof(stamp), "%H:%M:%S", &entry_tm);
+                } else {
+                    snprintf(stamp, sizeof(stamp), "--:--:--");
+                }
+                fprintf(fp, "\n---------- %s - test second %u (%s)%s ----------\n",
+                        name, e->second, stamp,
+                        (age + 1 == count) ? ", last" : "");
+            }
+            fputs(e->text, fp);
         }
     }
     pthread_mutex_unlock(&g_lock);
@@ -140,9 +201,12 @@ void shutdown_snapshot_cleanup(void)
 {
     pthread_mutex_lock(&g_lock);
     for (int slot = 0; slot < SNAP_SLOT_COUNT; slot++) {
-        free(g_slots[slot]);
-        g_slots[slot] = NULL;
-        g_slot_time[slot] = (time_t)0;
+        for (unsigned i = 0; i < SNAP_HISTORY_DEPTH; i++) {
+            free(g_hist[slot][i].text);
+            g_hist[slot][i].text = NULL;
+        }
+        g_next[slot] = 0;
+        g_count[slot] = 0;
     }
     pthread_mutex_unlock(&g_lock);
 }
