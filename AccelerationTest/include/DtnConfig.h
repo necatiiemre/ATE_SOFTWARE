@@ -104,6 +104,22 @@ typedef struct {
 /** Fill in a VL record with the defaults every reference record uses. */
 void dtn_vl_init(dtn_vl_t *vl, uint16_t vl_id, uint8_t src_port, uint64_t dest_mask);
 
+/**
+ * @brief A record for a VL the configuration does not use.
+ *
+ * The device's VL table looks like an array rather than a list: every record in
+ * the reference configuration is enabled and the ids run without a gap, and the
+ * vendor XML has an ENABLE attribute for exactly this. A table with holes in it
+ * therefore has to spell the holes out.
+ */
+void dtn_vl_init_disabled(dtn_vl_t *vl, uint16_t vl_id);
+
+/** True when the record's ENABLE flag is set. */
+static inline bool dtn_vl_enabled(const dtn_vl_t *vl)
+{
+    return (vl->flags & DTN_VL_FLAG_ENABLE) != 0;
+}
+
 /** Encode one VL record. Returns 0, or -1 if a field is out of range. */
 int dtn_vl_encode(const dtn_vl_t *vl, uint8_t out[DTN_VL_RECORD_LEN]);
 
@@ -142,7 +158,7 @@ uint8_t dtn_next_seq(uint8_t seq);
 size_t dtn_encode_port_table(uint8_t *out, size_t cap, uint16_t value, uint8_t port_count);
 
 /** Upper bound on the frames dtn_build_config_frames can produce. */
-#define DTN_MAX_CONFIG_FRAMES 16
+#define DTN_MAX_CONFIG_FRAMES 64
 
 /**
  * @brief Turn a VL table into the frames that configure the DTN.

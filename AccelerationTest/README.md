@@ -162,6 +162,31 @@ The 28 V power-up broadcast reaches copper with no configuration at all, but a
 query and its reply plausibly do not — the reference would not define those seven
 VLs otherwise. `tests/test_profiles.c` checks the copy stays faithful.
 
+## The VL table is written contiguously
+
+The reference configuration's VL ids run from 3 to 4490 with no gap, every
+record enabled, and the vendor XML carries an `ENABLE` attribute. Taken together
+that reads like a table the device indexes rather than searches — so a sparse
+table would leave every VL above the record count unreachable, which is exactly
+what a first run on the hardware looked like: the DTN's own health monitor
+stopped after configuration and almost nothing came back over fibre.
+
+Each round is therefore expanded across VL 3 to the highest id it uses, with a
+disabled record for every id it does not:
+
+```
+VL    3  disabled  00 03 06 02 00 40 15 ee 00 00 00 00 00 00
+VL  100  ENABLE    00 64 06 02 00 40 d5 ee 02 0f 00 00 00 00
+VL 1024  ENABLE    04 00 06 02 00 40 95 ee 00 00 00 01 00 00
+```
+
+A disabled record clears the `ENABLE` bit of the flag nibble and names no source
+or destination; the enabled ones are byte for byte what they were.
+
+That makes a round 4488 records in 46 frames, about 65 KB and 190 ms — the same
+shape as the reference, which is 4488 records in 47. `--sparse-table` sends only
+the profile's own 129 records in 4 frames, for comparing the two on the bench.
+
 ## Not yet pinned down
 
 * `BAG`, `PRIORITY` and `FEEDBACKVL` share the `0x0602` word and the flag nibble.

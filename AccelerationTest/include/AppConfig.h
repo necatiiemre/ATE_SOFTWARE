@@ -42,6 +42,17 @@ const char *app_config_iface_for_port(uint8_t dtn_port);
 
 const timing_config_t *app_config_timing(void);
 
+/**
+ * @brief Whether to write a contiguous VL table with the unused ids disabled.
+ *
+ * On by default. The reference configuration's ids run from 3 to 4490 with no
+ * gap, which suggests the device indexes its table rather than searching it -
+ * a sparse table would then leave every VL above the record count unreachable.
+ * Turn it off with --sparse-table to send only the profile's own VLs.
+ */
+bool app_config_dense_table(void);
+void app_config_set_dense_table(bool dense);
+
 /** Which copper link the configuration frames go out of. */
 const copper_link_t *app_config_config_link(void);
 

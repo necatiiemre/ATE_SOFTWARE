@@ -92,13 +92,13 @@ static void print_group(const char *title, const dtn_vl_t *records, size_t count
     bool titled = false;
 
     for (size_t i = 0; i < count;) {
-        if (!belongs(&records[i])) {
+        if (!dtn_vl_enabled(&records[i]) || !belongs(&records[i])) {
             i++;
             continue;
         }
         size_t j = i + 1;
         if (collapse)
-            while (j < count && belongs(&records[j]) &&
+            while (j < count && dtn_vl_enabled(&records[j]) && belongs(&records[j]) &&
                    records[j].src_port  == records[i].src_port &&
                    records[j].dest_mask == records[i].dest_mask &&
                    records[j].vl_id     == records[j - 1].vl_id + 1)
@@ -291,7 +291,8 @@ unit_result_t dtn_test_run(void)
     if (!profile)
         return UNIT_RESULT_ABORTED;
 
-    int count = vl_profile_expand(profile, g_records, VL_PROFILE_MAX_RECORDS);
+    int count = vl_profile_expand(profile, g_records, VL_PROFILE_MAX_RECORDS,
+                                  app_config_dense_table());
     if (count < 0) {
         puts("Profile does not fit in the VL table.");
         return UNIT_RESULT_ERROR;
@@ -317,7 +318,8 @@ unit_result_t dtn_test_run(void)
         total += g_frames[i].len;
 
     printf("\n  profile     : %s - %s\n", profile->name, profile->description);
-    printf("  VL records  : %d  (VL %u..%u)\n", count,
+    size_t enabled = vl_profile_enabled_count(g_records, (size_t)count);
+    printf("  VL table    : %d records, %zu enabled  (VL %u..%u)\n", count, enabled,
            g_records[0].vl_id, g_records[count - 1].vl_id);
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
     printf("  config out  : %s (DTN port %u)\n", config_link->iface, config_link->dtn_port);
@@ -360,7 +362,9 @@ unit_result_t dtn_test_run(void)
     }
 
     vl_watch_init(&g_watch, g_records, (size_t)count);
-    log_line("profile %s, %d VL records, %d frames", profile->name, count, frame_count);
+    log_line("profile %s, %d VL records (%zu enabled), %d frames",
+             profile->name, count, vl_profile_enabled_count(g_records, (size_t)count),
+             frame_count);
 
     if (!wait_for_unit(link_count, timing->device_ready_timeout_s)) {
         result = safe_shutdown_requested() ? UNIT_RESULT_ABORTED : UNIT_RESULT_ERROR;

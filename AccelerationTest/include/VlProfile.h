@@ -27,7 +27,10 @@
 #define VL_PROFILE_MAX_LINKS   16
 #define VL_PROFILE_MAX_GROUPS  2
 #define VL_PROFILE_MAX_HM      4
-#define VL_PROFILE_MAX_RECORDS 512
+#define VL_PROFILE_MAX_RECORDS 4608
+
+/* The reference configuration's VL ids start here and run without a gap. */
+#define VL_PROFILE_TABLE_FIRST_VL 3
 
 /** One directed fibre link, source port to destination port. */
 typedef struct {
@@ -86,9 +89,24 @@ const vl_profile_t *vl_profile_all(size_t *count);
 
 /**
  * @brief Expand a profile into VL records, sorted by VL id.
- * @return record count, or -1 if the profile is inconsistent
+ *
+ * With @p dense set, the table is filled from VL_PROFILE_TABLE_FIRST_VL up to
+ * the highest VL the profile uses, and every id the profile does not use gets a
+ * disabled record. That mirrors the reference configuration, whose ids run from
+ * 3 to 4490 with nothing missing - the device looks to index its table rather
+ * than search it, so a sparse table would leave everything above the record
+ * count unreachable.
+ *
+ * Without it the table carries only the profile's own VLs, which is smaller and
+ * faster to send but rests on the device tolerating gaps.
+ *
+ * @return record count, or -1 if the profile does not fit
  */
-int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap);
+int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap,
+                      bool dense);
+
+/** How many of @p records carry the ENABLE flag. */
+size_t vl_profile_enabled_count(const dtn_vl_t *records, size_t count);
 
 /**
  * @brief Reject a profile that cannot work on the hardware.

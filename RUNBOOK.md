@@ -93,8 +93,13 @@ sudo ./build/acceleration_test
 2. pick the round (`1`, `2` or `3`)
 3. read the routing it is about to write, then `y`
 
-It waits for the DTN to start talking, sends the configuration, then draws the
-live table and keeps it up until Ctrl+C.
+It waits for the DTN to start talking, sends the configuration — 46 frames,
+about 190 ms — then draws the live table and keeps it up until Ctrl+C.
+
+The VL table is written contiguously from VL 3, with a disabled record for every
+id the round does not use. `--sparse-table` sends only the round's own 129
+records instead; if the DTN's health monitor stops after configuration, that
+switch is the first thing to try either way round.
 
 **Leave this running.** The DTN needs its VL table before anything the emulator
 sends can be forwarded.

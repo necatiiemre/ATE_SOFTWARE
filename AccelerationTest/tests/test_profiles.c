@@ -96,7 +96,7 @@ static int check_management(void)
     return failures;
 }
 
-static int check_profiles(void)
+static int check_profiles(bool dense)
 {
     size_t count;
     const vl_profile_t *profiles = vl_profile_all(&count);
@@ -104,7 +104,7 @@ static int check_profiles(void)
 
     for (size_t i = 0; i < count; i++) {
         char reason[128];
-        int records = vl_profile_expand(&profiles[i], g_records, VL_PROFILE_MAX_RECORDS);
+        int records = vl_profile_expand(&profiles[i], g_records, VL_PROFILE_MAX_RECORDS, dense);
         if (records < 0) {
             printf("[FAIL] %s does not fit in the VL table\n", profiles[i].name);
             failures++;
@@ -132,8 +132,9 @@ static int check_profiles(void)
         size_t bytes = 0;
         for (int f = 0; f < frames; f++)
             bytes += g_frames[f].len;
-        printf("[ OK ] %-8s %3d VL records, %d frames, %zu bytes\n",
-               profiles[i].name, records, frames, bytes);
+        printf("[ OK ] %-8s %s  %4d records (%zu enabled), %2d frames, %6zu bytes\n",
+               profiles[i].name, dense ? "dense " : "sparse", records,
+               vl_profile_enabled_count(g_records, (size_t)records), frames, bytes);
     }
     return failures;
 }
@@ -148,7 +149,7 @@ int main(void)
     g_blob_len = fread(g_blob, 1, sizeof g_blob, f);
     fclose(f);
 
-    int failures = check_management() + check_profiles();
+    int failures = check_management() + check_profiles(false) + check_profiles(true);
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);
         return 1;

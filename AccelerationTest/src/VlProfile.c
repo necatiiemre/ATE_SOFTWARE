@@ -84,7 +84,47 @@ static int compare_vl_id(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
+size_t vl_profile_enabled_count(const dtn_vl_t *records, size_t count)
+{
+    size_t enabled = 0;
+
+    for (size_t i = 0; i < count; i++)
+        if (dtn_vl_enabled(&records[i]))
+            enabled++;
+    return enabled;
+}
+
+/* Spread the profile's records over a contiguous table, filling the gaps with
+ * disabled ones. Both arrays are sorted by VL id, so one pass does it. */
+static int densify(dtn_vl_t *out, size_t used, size_t cap)
+{
+    if (used == 0)
+        return 0;
+
+    uint16_t first = VL_PROFILE_TABLE_FIRST_VL;
+    uint16_t last  = out[used - 1].vl_id;
+    if (out[0].vl_id < first)
+        first = out[0].vl_id;
+
+    size_t total = (size_t)(last - first) + 1u;
+    if (total > cap)
+        return -1;
+
+    /* Walk backwards so the sparse records are read before they are overwritten. */
+    size_t src = used;
+    for (size_t i = total; i-- > 0;) {
+        uint16_t vl_id = (uint16_t)(first + i);
+
+        if (src > 0 && out[src - 1].vl_id == vl_id)
+            out[i] = out[--src];
+        else
+            dtn_vl_init_disabled(&out[i], vl_id);
+    }
+    return (int)total;
+}
+
+int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap,
+                      bool dense)
 {
     size_t n = 0;
 
@@ -121,7 +161,7 @@ int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
     }
 
     qsort(out, n, sizeof out[0], compare_vl_id);
-    return (int)n;
+    return dense ? densify(out, n, cap) : (int)n;
 }
 
 /* Ports 0-31 carry fibre traffic; 32 and 33 are the copper end-system ports and
@@ -142,15 +182,18 @@ bool vl_profile_validate(const dtn_vl_t *records, size_t count,
                      "VL %u is in the reserved range 0-2", r->vl_id);
             return false;
         }
+        /* Records arrive sorted, so a repeat is always adjacent. */
+        if (i && records[i - 1].vl_id == r->vl_id) {
+            snprintf(reason, reason_cap, "VL %u appears twice", r->vl_id);
+            return false;
+        }
+        if (!dtn_vl_enabled(r))
+            continue;      /* a hole in the table; nothing else applies to it */
+
         if (r->dest_mask == 0) {
             snprintf(reason, reason_cap, "VL %u has no destination port", r->vl_id);
             return false;
         }
-        for (size_t j = i + 1; j < count; j++)
-            if (records[j].vl_id == r->vl_id) {
-                snprintf(reason, reason_cap, "VL %u appears twice", r->vl_id);
-                return false;
-            }
 
         /* VLs that start on a copper or management port are the DTN's own
          * management path and share no ports with the fibre links. */

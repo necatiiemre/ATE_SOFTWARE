@@ -55,6 +55,12 @@ void dtn_vl_init(dtn_vl_t *vl, uint16_t vl_id, uint8_t src_port, uint64_t dest_m
     vl->flags     = DTN_VL_FLAG_ENABLE | DTN_VL_FLAG_RESERVED;
 }
 
+void dtn_vl_init_disabled(dtn_vl_t *vl, uint16_t vl_id)
+{
+    dtn_vl_init(vl, vl_id, 0, 0);
+    vl->flags &= (uint8_t)~DTN_VL_FLAG_ENABLE;
+}
+
 int dtn_vl_encode(const dtn_vl_t *vl, uint8_t out[DTN_VL_RECORD_LEN])
 {
     if (vl->src_port >= DTN_PORT_COUNT)

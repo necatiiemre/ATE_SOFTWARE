@@ -39,6 +39,11 @@ const timing_config_t *app_config_timing(void)
     return &g_timing;
 }
 
+static bool g_dense_table = true;
+
+bool app_config_dense_table(void) { return g_dense_table; }
+void app_config_set_dense_table(bool dense) { g_dense_table = dense; }
+
 const copper_link_t *app_config_config_link(void)
 {
     /* The 100M link is the proven management path: it is where the main ATE
