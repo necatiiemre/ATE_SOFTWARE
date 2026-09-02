@@ -579,6 +579,24 @@ bool Dtn::configureSequence()
         ErrorPrinter::warn("SSH", "DTN: Failed to fetch summary log (file may not exist)");
     }
 
+    // And the per VL-ID counter table: one line per VL-ID that carried
+    // traffic, with what was sent and what came back validated. Too long to
+    // print during the run - roughly 4,400 of them - but it is the finest
+    // grain the test produces, so it belongs with the run's other logs rather
+    // than only on the server.
+    const std::string local_vl_log =
+        g_ReportManager.getTestLogDir() + "/VL_ID_Counters.log";
+    if (g_ssh_deployer_server.fetchFile("/tmp/DTN_IRSW_EQ_VL_ID_Counters.log",
+                                        local_vl_log))
+    {
+        std::cout << "DTN: VL-ID counter log saved to: " << local_vl_log << std::endl;
+    }
+    else
+    {
+        ErrorPrinter::warn("SSH",
+            "DTN: Failed to fetch VL-ID counter log (file may not exist)");
+    }
+
     // Disable PSU output
     if (!g_DeviceManager.enableOutput(PSUG30, false))
     {
