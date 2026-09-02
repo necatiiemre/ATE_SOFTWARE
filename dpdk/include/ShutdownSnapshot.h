@@ -17,15 +17,17 @@
 //   - SNAP_SLOT_PTP    : the PTP session statistics table (main loop thread)
 //   - SNAP_SLOT_HEALTH : Health Monitor + PSU telemetry   (health monitor thread)
 // Each slot keeps a ring of its last SNAP_HISTORY_DEPTH renders rather than
-// only the newest, and the dump writes them oldest first.
+// only the newest, and the dump writes them grouped by test second, oldest
+// second first - all three producers' blocks for one second together.
 //
 // A fourth slot, SNAP_SLOT_TOTALS, is written once at the end of the run
 // instead of every second: the end-of-test totals table (aggregate PRBS
 // counters, the non-PRBS purity check, and the PTP / Health Monitor totals).
 //
-// On shutdown, shutdown_snapshot_dump() writes every slot (in order) to one
-// file, each retained render labelled with its test second and the wall-clock
-// instant it was captured.
+// On shutdown, shutdown_snapshot_dump() writes the retained renders to one
+// file as a timeline: a banner per test second, then that second's blocks from
+// each producer, each stamped with the wall clock at the moment it was
+// captured. The totals close the file.
 //
 // WHICH SECONDS THE TABLES COVER: Ctrl+C stops the senders only. The main loop
 // keeps rendering for RX_DRAIN_SECONDS afterwards while the receivers collect
@@ -85,10 +87,10 @@ void shutdown_snapshot_store(enum snapshot_slot slot, const char *text);
 // written once by the shutdown path itself, after the freeze.
 void shutdown_snapshot_freeze(void);
 
-// Write every slot's retained renders (in slot order, oldest render first) to
-// SHUTDOWN_SNAPSHOT_PATH, prefixed by a header that includes the wall-clock
-// time and `header_note` (may be NULL). Returns 0 on success, -1 on failure.
-// Thread-safe.
+// Write the retained renders to SHUTDOWN_SNAPSHOT_PATH grouped by test second
+// (oldest first, the totals last), prefixed by a header that includes the
+// wall-clock time and `header_note` (may be NULL). Returns 0 on success, -1 on
+// failure. Thread-safe.
 int shutdown_snapshot_dump(const char *header_note);
 
 // Free internal buffers. Optional; intended for a clean process exit.
