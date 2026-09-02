@@ -1001,6 +1001,33 @@ static void helper_render_final_totals(FILE *out,
                seen, matched, mismatched);
         printf("  totals: TX %lu  RX %lu  (%+ld)\n",
                tot_tx, tot_rx, (long)((int64_t)tot_rx - (int64_t)tot_tx));
+
+        // The VL-ID counters are a second, independent accounting of the same
+        // traffic: every sender bumps one as it hands a packet to the wire and
+        // every validator bumps one as it accepts a packet back. So these two
+        // totals have to land on the same numbers as "Sent vs came back"
+        // above, which counts the same events through the per-port stats.
+        //
+        // A difference here is not packet loss - both sides count the same
+        // packets - it means a sender or a validator on some path is not
+        // calling the VL-ID counter at all, and the gap names how much traffic
+        // that path carried.
+        {
+            const int64_t d_tx = (int64_t)tot_tx - (int64_t)tot_rx_pkts;
+            const int64_t d_rx = (int64_t)tot_rx - (int64_t)tot_tx_pkts;
+
+            printf("  against \"Sent vs came back\":\n");
+            printf("    sent      : VL-ID %lu vs %lu  (%+ld)\n",
+                   tot_tx, tot_rx_pkts, (long)d_tx);
+            printf("    validated : VL-ID %lu vs %lu  (%+ld)\n",
+                   tot_rx, tot_tx_pkts, (long)d_rx);
+            if (d_tx == 0 && d_rx == 0) {
+                printf("    both accountings agree exactly\n");
+            } else {
+                printf("    the two accountings disagree - some path is not "
+                       "counting its VL-IDs\n");
+            }
+        }
         if (vf) {
             fclose(vf);
             printf("  full table: %s\n", vl_path);
