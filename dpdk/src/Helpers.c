@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <rte_ethdev.h>
 #include <rte_cycles.h>  // rte_delay_ms
 #include <rte_atomic.h>
@@ -580,6 +581,109 @@ static void helper_print_server_stats(const struct ports_config *ports_config,
 //                      totals above are pure PRBS.
 //   3. PTP / Health Monitor totals, which are deliberately NOT part of the
 //      PRBS numbers and are reported separately here.
+// ==========================================
+// Table helpers for the end-of-test totals
+// ==========================================
+// The totals were a flat list of "label : number" lines. Thirty of those,
+// carrying nine- and twelve-digit figures, is a block you have to read with a
+// finger on the screen: nothing lines up across sections, and telling whether
+// two numbers are equal means counting digits. The helpers below draw the same
+// figures as bordered tables with fixed columns.
+
+// Interior width, matching the END OF TEST banner above it.
+#define TOTALS_W 78
+
+// A rule, optionally carrying a title: ┌─ TITLE ─────────┐
+// Built by counting rather than by writing the dashes out, so the box stays
+// square when a title is edited. The box characters are multi-byte, so their
+// count is what matters here, not strlen of the finished line.
+static void totals_rule(FILE *out, const char *left, const char *right,
+                        const char *title)
+{
+    int used = 0;
+    fputs(left, out);
+    if (title != NULL && title[0] != '\0') {
+        fprintf(out, "─ %s ", title);
+        // One column for the "─", one for each space around the title.
+        used = 3 + (int)strlen(title);
+    }
+    for (int i = used; i < TOTALS_W; i++) {
+        fputs("─", out);
+    }
+    fputs(right, out);
+    fputc('\n', out);
+}
+
+// One row, padded out to the border. Content is ASCII, so byte padding is
+// column padding; the precision truncates rather than letting a long row push
+// the right border out of line.
+static void totals_row(FILE *out, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+static void totals_row(FILE *out, const char *fmt, ...)
+{
+    char line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    // A row wider than the box is clipped rather than allowed to push the
+    // border out of line. Mark it when that happens: a silently clipped row is
+    // a number with its last digits missing, which is worse than an ugly one.
+    if (n > TOTALS_W) {
+        line[TOTALS_W - 1] = '>';
+    }
+    fprintf(out, "│%-*.*s│\n", TOTALS_W, TOTALS_W, line);
+}
+
+// Thousands separators. Done by hand rather than with %'lu, which depends on a
+// locale nothing in this app sets and would silently do nothing under the
+// default "C" locale.
+//
+// Returns a pointer into a small ring of static buffers so several numbers can
+// appear in one call. Single-threaded use only - the totals are rendered once,
+// at shutdown, from the main thread.
+#define NUMBUF_RING 12
+static char *totals_numbuf(void)
+{
+    static char ring[NUMBUF_RING][40];
+    static unsigned next = 0;
+    char *buf = ring[next];
+    next = (next + 1) % NUMBUF_RING;
+    return buf;
+}
+
+static const char *num_u(uint64_t v)
+{
+    char digits[24];
+    const int n = snprintf(digits, sizeof(digits), "%lu", (unsigned long)v);
+    char *buf = totals_numbuf();
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        if (i > 0 && (n - i) % 3 == 0) buf[w++] = ',';
+        buf[w++] = digits[i];
+    }
+    buf[w] = '\0';
+    return buf;
+}
+
+// Always signed, so a difference of zero reads as a deliberate "+0" rather
+// than as a number that might have lost its sign somewhere.
+static const char *num_s(int64_t v)
+{
+    const uint64_t mag = (v < 0) ? (uint64_t)(-(v + 1)) + 1u : (uint64_t)v;
+    char digits[24];
+    const int n = snprintf(digits, sizeof(digits), "%lu", (unsigned long)mag);
+    char *buf = totals_numbuf();
+    int w = 0;
+    buf[w++] = (v < 0) ? '-' : '+';
+    for (int i = 0; i < n; i++) {
+        if (i > 0 && (n - i) % 3 == 0) buf[w++] = ',';
+        buf[w++] = digits[i];
+    }
+    buf[w] = '\0';
+    return buf;
+}
+
 // The text is also stored in the shutdown snapshot so it lands in the summary
 // log, so every printf below goes through `out`.
 #define printf(...) fprintf(out, __VA_ARGS__)
@@ -729,14 +833,26 @@ static void helper_render_final_totals(FILE *out,
     uint64_t total_bits = tot_tx_bytes * 8;
     if (total_bits > 0) ber = (double)tot_bit_err / (double)total_bits;
 
-    printf("\n--- PRBS Totals (all 34 DTN ports) ---\n");
-    printf("  DTN TX  (DTN->Server) : %20lu pkts  %20lu bytes\n", tot_tx_pkts, tot_tx_bytes);
-    printf("  DTN RX  (Server->DTN) : %20lu pkts  %20lu bytes\n", tot_rx_pkts, tot_rx_bytes);
-    printf("  PRBS Good             : %20lu\n", tot_good);
-    printf("  PRBS Bad              : %20lu\n", tot_bad);
-    printf("  Lost                  : %20lu\n", tot_lost);
-    printf("  Bit Errors            : %20lu\n", tot_bit_err);
-    printf("  BER                   : %20.2e\n", ber);
+    const bool prbs_clean = (tot_bad == 0 && tot_lost == 0 && tot_bit_err == 0);
+
+    printf("\n");
+    totals_rule(out, "\u250c", "\u2510", "PRBS TOTALS  -  all 34 DTN ports");
+    totals_row(out, " %-30s %20s %24s", "Direction", "Packets", "Bytes");
+    totals_row(out, " %-30s %20s %24s", "Sent       Server -> DTN",
+               num_u(tot_rx_pkts), num_u(tot_rx_bytes));
+    totals_row(out, " %-30s %20s %24s", "Validated  DTN -> Server",
+               num_u(tot_tx_pkts), num_u(tot_tx_bytes));
+    totals_rule(out, "\u251c", "\u2524", NULL);
+    totals_row(out, " %-30s %20s   %-22s", "PRBS Good", num_u(tot_good), "");
+    totals_row(out, " %-30s %20s   %-22s", "PRBS Bad", num_u(tot_bad),
+               tot_bad ? "<- payload corrupted" : "");
+    totals_row(out, " %-30s %20s   %-22s", "Lost", num_u(tot_lost),
+               tot_lost ? "<- never arrived" : "");
+    totals_row(out, " %-30s %20s   %-22s", "Bit errors", num_u(tot_bit_err),
+               tot_bit_err ? "<- bits flipped" : "");
+    totals_row(out, " %-30s %20.2e   %-22s", "BER", ber,
+               prbs_clean ? "no errors of any kind" : "");
+    totals_rule(out, "\u2514", "\u2518", NULL);
 
     // ---------- 2. Where every arrival went ----------
     // Each line below is measured, and they are meant to add up: the hardware
@@ -753,16 +869,21 @@ static void helper_render_final_totals(FILE *out,
     const uint64_t hw_over =
         (hw_accounted > tot_hw_q_pkts) ? (hw_accounted - tot_hw_q_pkts) : 0;
 
-    printf("\n--- Where every arrival went ---\n");
-    printf("  DPDK queues 0-3, HW packets received      : %lu\n", tot_hw_q_pkts);
-    printf("    validated as PRBS (counted above)       : %lu\n", tot_dpdk_validated);
+    printf("\n");
+    totals_rule(out, "\u250c", "\u2510", "WHERE EVERY ARRIVAL WENT");
+    totals_row(out, " %-52s %22s",
+               "DPDK queues 0-3, HW packets received", num_u(tot_hw_q_pkts));
+    totals_row(out, " %-52s %22s",
+               "  validated as PRBS (counted above)", num_u(tot_dpdk_validated));
     // Real, validated traffic that simply entered from Port 12/13 instead of
     // from the queue its arrival row is paired with. Included in the figure
     // above and held out of the DTN table's per-row columns, so each row
     // compares one stream against itself. This is the exact count that used
     // to be approximated as "target packets / 4" and added to the wrong side.
-    printf("      of which entered from Port 12/13      : %lu\n", tot_raw_origin);
-    printf("    undersized, never validated             : %lu\n", tot_short);
+    totals_row(out, " %-52s %22s",
+               "    of which entered from Port 12/13", num_u(tot_raw_origin));
+    totals_row(out, " %-52s %22s",
+               "  undersized, never validated", num_u(tot_short));
     // Name them by size. One dominant length points at a specific protocol;
     // a spread points at something variable. The per-frame detail for the
     // first dozen is logged as they arrive, earlier in the run.
@@ -772,20 +893,25 @@ static void helper_render_final_totals(FILE *out,
         int un = txrx_get_undersized_lengths(ulens, ucounts,
                                              (int)(sizeof(ulens) / sizeof(ulens[0])));
         for (int i = 0; i < un; i++) {
-            printf("        %5u bytes                          : %lu\n",
-                   ulens[i], ucounts[i]);
+            char label[64];
+            snprintf(label, sizeof(label), "      %u bytes", ulens[i]);
+            totals_row(out, " %-52s %22s", label, num_u(ucounts[i]));
         }
     }
-    printf("    foreign (PTP/ARP/...), never validated  : %lu\n", tot_other);
+    totals_row(out, " %-52s %22s",
+               "  foreign (PTP/ARP/...), never validated", num_u(tot_other));
     if (hw_over) {
-        printf("    OVER-COUNTED                            : %lu\n", hw_over);
+        totals_row(out, " %-52s %22s",
+                   "  OVER-COUNTED  <- more accounted for than arrived",
+                   num_u(hw_over));
     } else {
         // Not a mystery: rx_worker gives up on a frame whose VL-ID belongs to
         // no PRBS stream it can check against - "if raw_port not found, just
         // count as external (no PRBS check)" - and such a frame lands in none
         // of the categories above.
-        printf("    unrecognised VL-ID, nothing to check     : %lu\n",
-               hw_unaccounted);
+        totals_row(out, " %-52s %22s",
+                   "  unrecognised VL-ID, nothing to check",
+                   num_u(hw_unaccounted));
     }
     // Name the foreign traffic rather than just counting it: "319 foreign
     // frames" does not say whether PTP escaped its queue or the switch is
@@ -807,12 +933,24 @@ static void helper_render_final_totals(FILE *out,
                 default:     name = (ftypes[i] < 0x0600) ? "802.3 LLC (STP/BPDU)"
                                                          : "unknown";     break;
             }
-            printf("      0x%04X %-24s : %lu\n", ftypes[i], name, fcounts[i]);
+            char label[80];
+            snprintf(label, sizeof(label), "      0x%04X  %s", ftypes[i], name);
+            totals_row(out, " %-52s %22s", label, num_u(fcounts[i]));
         }
     }
-    printf("  Raw Ports 12/13, validated as PRBS        : %lu\n", tot_raw_validated);
-    printf("  Health Monitor frames excluded  (P12/P13) : %lu / %lu\n", hm12, hm13);
-    printf("  Other foreign frames excluded   (P12/P13) : %lu / %lu\n", fo12, fo13);
+    totals_rule(out, "\u251c", "\u2524", NULL);
+    totals_row(out, " %-52s %22s",
+               "Raw Ports 12/13, validated as PRBS", num_u(tot_raw_validated));
+    {
+        char pair[64];
+        snprintf(pair, sizeof(pair), "%s / %s", num_u(hm12), num_u(hm13));
+        totals_row(out, " %-52s %22s",
+                   "Health Monitor frames excluded      (P12 / P13)", pair);
+        snprintf(pair, sizeof(pair), "%s / %s", num_u(fo12), num_u(fo13));
+        totals_row(out, " %-52s %22s",
+                   "Other foreign frames excluded       (P12 / P13)", pair);
+    }
+    totals_rule(out, "\u2514", "\u2518", NULL);
 
     // ---------- 3. Sent vs came back ----------
     // Both sides are now PRBS counters over the same packets, cleared by the
@@ -844,11 +982,15 @@ static void helper_render_final_totals(FILE *out,
     const int64_t loop_diff = (int64_t)tot_dpdk_validated - (int64_t)sent_loop;
     const int64_t ext_diff  = (int64_t)tot_raw_validated - (int64_t)sent_ext;
 
-    printf("\n--- Sent vs came back, by path ---\n");
-    printf("  Loopback leg (DPDK queues 0-3 + Ports 12/13 TX)\n");
-    printf("    sent                                    : %lu\n", sent_loop);
-    printf("    returned and validated on DPDK queues   : %lu\n", tot_dpdk_validated);
-    printf("    difference (back - sent)                : %+ld\n", (long)loop_diff);
+    printf("\n");
+    totals_rule(out, "\u250c", "\u2510", "SENT vs CAME BACK, BY PATH");
+    totals_row(out, " %-30s %16s %16s %11s",
+               "Path", "Sent", "Returned", "Diff");
+    totals_rule(out, "\u251c", "\u2524", NULL);
+    totals_row(out, " %s",
+               "Loopback leg - DPDK queues 0-3 and the raw ports' own TX,");
+    totals_row(out, " %s",
+               "               all of it validated on the DPDK queues");
     // The loopback leg is two sub-legs and the aggregate cannot say which is
     // short. The DPDK sub-leg compares each row's TX worker against what came
     // back on its paired queue; the raw sub-leg compares each raw port's own
@@ -864,24 +1006,15 @@ static void helper_render_final_totals(FILE *out,
             dpdk_back += (uint64_t)rte_atomic64_read(&dtn_stats[d].good_pkts) +
                          (uint64_t)rte_atomic64_read(&dtn_stats[d].bad_pkts);
         }
-        printf("    of that, DPDK TX workers  sent/back    : %lu / %lu  (%+ld)\n",
-               dpdk_sent, dpdk_back, (long)((int64_t)dpdk_back - (int64_t)dpdk_sent));
+        totals_row(out, "   %-28s %16s %16s %11s", "DPDK TX workers",
+                   num_u(dpdk_sent), num_u(dpdk_back),
+                   num_s((int64_t)dpdk_back - (int64_t)dpdk_sent));
         // The two counters above disagree by a couple of hundred packets, and
         // the per-second tables put the whole of it in the single second the
         // TX workers stop. These are the same traffic counted by the workers
         // themselves, outside the flush path entirely: whichever line below is
         // non-zero names the counter that is wrong.
-        {
-            uint64_t own_tx = 0, own_rx = 0;
-            txrx_get_own_worker_totals(&own_tx, &own_rx);
-            printf("      TX workers' own count vs sent         : %lu  (%+ld)\n",
-                   own_tx, (long)((int64_t)own_tx - (int64_t)dpdk_sent));
-            printf("      RX workers' own count vs back         : %lu  (%+ld)\n",
-                   own_rx, (long)((int64_t)own_rx - (int64_t)dpdk_back));
-            const uint32_t fto = txrx_flush_timeouts();
-            printf("      flush requests that timed out        : %u%s\n", fto,
-                   fto ? "   <- a table was rendered mid-handover" : "");
-        }
+        uint64_t raw_errs_total = 0;
         for (int r = 0; r < 2; r++) {
             struct raw_socket_port *rp = &raw_ports[r];
             uint64_t sent = 0, errs = 0;
@@ -891,30 +1024,76 @@ static void helper_render_final_totals(FILE *out,
                 errs += rp->tx_targets[t].stats.tx_errors;
                 pthread_spin_unlock(&rp->tx_targets[t].stats.lock);
             }
-            printf("    of that, Port %-2u          sent/back    : %lu / %lu  (%+ld)"
-                   ", send() errors %lu\n",
-                   rp->port_id, sent, raw_back[r],
-                   (long)((int64_t)raw_back[r] - (int64_t)sent), errs);
+            raw_errs_total += errs;
+            char label[40];
+            snprintf(label, sizeof(label), "Port %u", rp->port_id);
+            totals_row(out, "   %-28s %16s %16s %11s", label,
+                       num_u(sent), num_u(raw_back[r]),
+                       num_s((int64_t)raw_back[r] - (int64_t)sent));
+        }
+        totals_row(out, "   %-28s %16s %16s %11s", "leg total",
+                   num_u(sent_loop), num_u(tot_dpdk_validated), num_s(loop_diff));
+
+        totals_row(out, " %s", "");
+        totals_row(out, " %s",
+                   "External TX leg - queue 4 out, validated back at Ports 12/13");
+        totals_row(out, "   %-28s %16s %16s %11s", "leg total",
+                   num_u(sent_ext), num_u(tot_raw_validated), num_s(ext_diff));
+
+        // The counters above are read through the flush barrier. These are the
+        // same traffic counted by the workers themselves, outside that path
+        // entirely, so whichever line disagrees names the counter that is
+        // wrong rather than leaving both under suspicion. tx_errors is the
+        // count of send() calls the kernel refused - collected all along and
+        // never shown, which made a refused batch look like a silent loss.
+        totals_rule(out, "\u251c", "\u2524", "cross-checks on the numbers above");
+        {
+            uint64_t own_tx = 0, own_rx = 0;
+            txrx_get_own_worker_totals(&own_tx, &own_rx);
+            totals_row(out, " %-46s %14s %14s",
+                       "TX workers' own count of what they sent",
+                       num_u(own_tx), num_s((int64_t)own_tx - (int64_t)dpdk_sent));
+            totals_row(out, " %-46s %14s %14s",
+                       "RX workers' own count of what came back",
+                       num_u(own_rx), num_s((int64_t)own_rx - (int64_t)dpdk_back));
+            const uint32_t fto = txrx_flush_timeouts();
+            totals_row(out, " %-46s %14s %14s",
+                       "flush requests that timed out", num_u(fto),
+                       fto ? "<- mid-handover" : "");
+            totals_row(out, " %-46s %14s %14s",
+                       "send() calls the kernel refused (P12 + P13)",
+                       num_u(raw_errs_total), "");
         }
     }
-    printf("  External TX leg (queue 4 -> Ports 12/13)\n");
-    printf("    sent                                    : %lu\n", sent_ext);
-    printf("    returned and validated at Ports 12/13   : %lu\n", tot_raw_validated);
-    printf("    difference (back - sent)                : %+ld\n", (long)ext_diff);
+    totals_rule(out, "\u2514", "\u2518", NULL);
 
-    printf("\n--- Sent vs came back ---\n");
-    printf("  Sent      (Server->DTN)                   : %lu\n", tot_rx_pkts);
-    printf("  Returned and validated (DTN->Server)      : %lu\n", tot_tx_pkts);
-    printf("  Difference                                : %s%lu  (%.5f%%)\n",
-           short_return ? "-" : "+", difference, diff_pct);
-    if (diff_significant) {
-        printf("     LARGER THAN THE RESET BOUNDARY CAN EXPLAIN - %s\n",
-               short_return ? "packets went out and did not come back"
-                            : "the two sides are not counting the same traffic");
-    } else if (difference) {
-        printf("     small enough to be a counter read against a moving\n");
-        printf("     target rather than traffic; sign can fall either way\n");
+    printf("\n");
+    totals_rule(out, "\u250c", "\u2510", "SENT vs CAME BACK");
+    totals_row(out, " %-45s %30s ", "Sent      (Server -> DTN)", num_u(tot_rx_pkts));
+    totals_row(out, " %-45s %30s ", "Returned and validated  (DTN -> Server)",
+               num_u(tot_tx_pkts));
+    totals_rule(out, "\u251c", "\u2524", NULL);
+    {
+        char diff_str[64];
+        snprintf(diff_str, sizeof(diff_str), "%s%s   %.5f%%",
+                 short_return ? "-" : "+", num_u(difference), diff_pct);
+        totals_row(out, " %-45s %30s ", "Difference", diff_str);
+        if (diff_significant) {
+            totals_row(out, " %s", "");
+            totals_row(out, " %s", "LARGER THAN THE RESET BOUNDARY CAN EXPLAIN:");
+            totals_row(out, "   %s",
+                       short_return ? "packets went out and did not come back"
+                                    : "the two sides are not counting the same"
+                                      " traffic");
+        } else if (difference) {
+            totals_row(out, " %s", "");
+            totals_row(out, " %s",
+                       "small enough to be a counter read against a moving target");
+            totals_row(out, " %s",
+                       "rather than traffic; the sign can fall either way");
+        }
     }
+    totals_rule(out, "\u2514", "\u2518", NULL);
 
     // ---------- 3b. Each loopback stream against its own pair ----------
     // The DTN table's TX column carries both pipelines, because that is what
@@ -923,11 +1102,14 @@ static void helper_render_final_totals(FILE *out,
     // TX(N+16) with the Port 12/13 traffic taken out of it. Anything else in
     // the row would make every pair differ by that port's share of the raw
     // traffic and say nothing about the link.
+    uint64_t worst = 0;
+    uint16_t worst_pair = 0;
+    int64_t  worst_diff = 0;
+    uint16_t pairs_matched = 0;
     {
-        uint64_t worst = 0;
-        uint16_t worst_pair = 0;
-        int64_t  worst_diff = 0;
-        printf("\n--- Each stream against its own pair (Port 12/13 traffic excluded) ---\n");
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510",
+                    "EACH STREAM AGAINST ITS OWN PAIR  -  Port 12/13 traffic excluded");
         for (uint16_t n = 0; n < DTN_DPDK_PORT_COUNT / 2; n++) {
             const uint16_t m = n + DTN_DPDK_PORT_COUNT / 2;
             // Sent toward DTN n, returned out of DTN m - and the reverse.
@@ -941,15 +1123,25 @@ static void helper_render_final_totals(FILE *out,
             const int64_t d2 = (int64_t)back_n - (int64_t)sent_m;
             const uint64_t a1 = (uint64_t)(d1 < 0 ? -d1 : d1);
             const uint64_t a2 = (uint64_t)(d2 < 0 ? -d2 : d2);
+            if (a1 == 0) pairs_matched++;
+            if (a2 == 0) pairs_matched++;
             if (a1 > worst) { worst = a1; worst_pair = n; worst_diff = d1; }
             if (a2 > worst) { worst = a2; worst_pair = m; worst_diff = d2; }
         }
-        if (worst == 0) {
-            printf("  all %d pairs balance exactly\n", DTN_DPDK_PORT_COUNT);
-        } else {
-            printf("  worst pair: DTN %u, off by %+ld packets\n",
-                   worst_pair, (long)worst_diff);
+        {
+            char measured[64];
+            snprintf(measured, sizeof(measured), "%u of %d balance exactly",
+                     pairs_matched, DTN_DPDK_PORT_COUNT);
+            totals_row(out, " %-45s %30s ", "Pairs checked", measured);
+            if (worst == 0) {
+                totals_row(out, " %-45s %30s ", "Worst pair", "none - all exact");
+            } else {
+                char label[48];
+                snprintf(label, sizeof(label), "Worst pair, DTN %u", worst_pair);
+                totals_row(out, " %-45s %30s ", label, num_s(worst_diff));
+            }
         }
+        totals_rule(out, "\u2514", "\u2518", NULL);
     }
 
     // ---------- 3c. Per VL-ID counts ----------
@@ -961,6 +1153,8 @@ static void helper_render_final_totals(FILE *out,
     // about 4,400 VL-IDs in use and the console has to stay readable. What is
     // printed is the count that balanced and every one that did not, which is
     // the part worth looking at.
+    uint64_t vl_seen = 0, vl_matched = 0, vl_mismatched = 0;
+    int64_t  vl_d_tx = 0, vl_d_rx = 0;
     {
         const char *vl_path = VL_COUNTER_LOG_PATH;
         FILE *vf = fopen(vl_path, "w");
@@ -971,7 +1165,8 @@ static void helper_render_final_totals(FILE *out,
             fprintf(vf, "# Per VL-ID packet counts for this test\n");
             fprintf(vf, "# VL-ID  TX (sent)  RX (validated)  difference\n");
         }
-        printf("\n--- Per VL-ID counts ---\n");
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510", "PER VL-ID COUNTS");
         for (uint32_t vl = 0; vl <= MAX_VL_ID; vl++) {
             uint64_t vtx = 0, vrx = 0;
             txrx_get_vl_counts((uint16_t)vl, &vtx, &vrx);
@@ -990,17 +1185,35 @@ static void helper_render_final_totals(FILE *out,
             mismatched++;
             // Cap the console: the file has all of them, and a run where
             // hundreds disagree is answered by the first few just as well.
+            if (mismatched == 1) {
+                totals_row(out, " %-13s %20s %20s %20s ",
+                           "VL-ID", "TX (sent)", "RX (validated)", "Diff");
+            }
             if (mismatched <= 20) {
-                printf("  VL-ID %5u : TX %lu  RX %lu  (%+ld)\n",
-                       vl, vtx, vrx, (long)((int64_t)vrx - (int64_t)vtx));
+                char label[24];
+                snprintf(label, sizeof(label), "%u", vl);
+                totals_row(out, " %-13s %20s %20s %20s ", label,
+                           num_u(vtx), num_u(vrx),
+                           num_s((int64_t)vrx - (int64_t)vtx));
             } else if (mismatched == 21) {
-                printf("  ... more, see %s\n", vl_path);
+                char more[96];
+                snprintf(more, sizeof(more), "... more, see %s", vl_path);
+                totals_row(out, " %s", more);
             }
         }
-        printf("  %lu VL-IDs carried traffic, %lu balanced exactly, %lu did not\n",
-               seen, matched, mismatched);
-        printf("  totals: TX %lu  RX %lu  (%+ld)\n",
-               tot_tx, tot_rx, (long)((int64_t)tot_rx - (int64_t)tot_tx));
+        if (mismatched > 0) {
+            totals_rule(out, "\u251c", "\u2524", NULL);
+        }
+        {
+            char carried[64];
+            snprintf(carried, sizeof(carried), "%s balanced, %s did not",
+                     num_u(matched), num_u(mismatched));
+            totals_row(out, " %-45s %30s ", "VL-IDs that carried traffic",
+                       num_u(seen));
+            totals_row(out, " %-45s %30s ", "  of those", carried);
+        }
+        totals_row(out, " %-45s %30s ", "Total TX (sent)", num_u(tot_tx));
+        totals_row(out, " %-45s %30s ", "Total RX (validated)", num_u(tot_rx));
 
         // The VL-ID counters are a second, independent accounting of the same
         // traffic: every sender bumps one as it hands a packet to the wire and
@@ -1015,25 +1228,90 @@ static void helper_render_final_totals(FILE *out,
         {
             const int64_t d_tx = (int64_t)tot_tx - (int64_t)tot_rx_pkts;
             const int64_t d_rx = (int64_t)tot_rx - (int64_t)tot_tx_pkts;
+            vl_seen = seen;
+            vl_matched = matched;
+            vl_mismatched = mismatched;
+            vl_d_tx = d_tx;
+            vl_d_rx = d_rx;
 
-            printf("  against \"Sent vs came back\":\n");
-            printf("    sent      : VL-ID %lu vs %lu  (%+ld)\n",
-                   tot_tx, tot_rx_pkts, (long)d_tx);
-            printf("    validated : VL-ID %lu vs %lu  (%+ld)\n",
-                   tot_rx, tot_tx_pkts, (long)d_rx);
-            if (d_tx == 0 && d_rx == 0) {
-                printf("    both accountings agree exactly\n");
+            totals_rule(out, "\u251c", "\u2524",
+                        "against \"SENT vs CAME BACK\"");
+            totals_row(out, " %-21s %20s %20s %12s ",
+                       "", "VL-ID counters", "per-port stats", "Diff");
+            totals_row(out, " %-21s %20s %20s %12s ", "Sent",
+                       num_u(tot_tx), num_u(tot_rx_pkts), num_s(d_tx));
+            totals_row(out, " %-21s %20s %20s %12s ", "Validated",
+                       num_u(tot_rx), num_u(tot_tx_pkts), num_s(d_rx));
+            totals_row(out, " %s",
+                       (d_tx == 0 && d_rx == 0)
+                           ? "both accountings agree exactly"
+                           : "the two disagree - some path is not counting its"
+                             " VL-IDs");
+        }
+        totals_rule(out, "\u251c", "\u2524", NULL);
+        {
+            char note[128];
+            if (vf) {
+                fclose(vf);
+                snprintf(note, sizeof(note), "full table: %s", vl_path);
             } else {
-                printf("    the two accountings disagree - some path is not "
-                       "counting its VL-IDs\n");
+                snprintf(note, sizeof(note), "(could not write %s)", vl_path);
             }
+            totals_row(out, " %s", note);
         }
-        if (vf) {
-            fclose(vf);
-            printf("  full table: %s\n", vl_path);
-        } else {
-            printf("  (could not write %s)\n", vl_path);
-        }
+        totals_rule(out, "\u2514", "\u2518", NULL);
+    }
+
+    // ---------- 3d. Every check on one page ----------
+    // The blocks above each answer one question, and answering "did this run
+    // pass" meant reading all of them and holding the numbers in your head.
+    // They are independent measurements of the same traffic, so collecting
+    // their verdicts costs nothing and turns the totals into something that
+    // can be read at a glance and only then looked into.
+    {
+        char measured[80];
+
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510", "EVERY CHECK ON ONE PAGE");
+        totals_row(out, " %-36s %26s %12s ", "Check", "Measured", "Verdict");
+        totals_rule(out, "\u251c", "\u2524", NULL);
+
+        totals_row(out, " %-36s %26s %12s ",
+                   "Sent vs returned, all paths",
+                   num_s((int64_t)tot_tx_pkts - (int64_t)tot_rx_pkts),
+                   (tot_tx_pkts == tot_rx_pkts) ? "match"
+                       : (diff_significant ? "INVESTIGATE" : "near"));
+        totals_row(out, " %-36s %26s %12s ",
+                   "Loopback leg (queues 0-3 + P12/13)", num_s(loop_diff),
+                   loop_diff ? "off" : "match");
+        totals_row(out, " %-36s %26s %12s ",
+                   "External TX leg (queue 4 -> P12/13)", num_s(ext_diff),
+                   ext_diff ? "off" : "match");
+
+        snprintf(measured, sizeof(measured), "%u of %d",
+                 pairs_matched, DTN_DPDK_PORT_COUNT);
+        totals_row(out, " %-36s %26s %12s ",
+                   "Each stream against its own pair", measured,
+                   (worst == 0) ? "match" : "off");
+
+        snprintf(measured, sizeof(measured), "%s of %s",
+                 num_u(vl_matched), num_u(vl_seen));
+        totals_row(out, " %-36s %26s %12s ",
+                   "Per VL-ID, sent against validated", measured,
+                   vl_mismatched ? "off" : "match");
+
+        snprintf(measured, sizeof(measured), "%s / %s",
+                 num_s(vl_d_tx), num_s(vl_d_rx));
+        totals_row(out, " %-36s %26s %12s ",
+                   "VL-ID totals vs the per-port stats", measured,
+                   (vl_d_tx == 0 && vl_d_rx == 0) ? "match" : "off");
+
+        snprintf(measured, sizeof(measured), "%s / %s / %s",
+                 num_u(tot_bad), num_u(tot_lost), num_u(tot_bit_err));
+        totals_row(out, " %-36s %26s %12s ",
+                   "PRBS bad / lost / bit errors", measured,
+                   prbs_clean ? "clean" : "ERRORS");
+        totals_rule(out, "\u2514", "\u2518", NULL);
     }
 
     // ---------- 4. The device's own view ----------
@@ -1056,15 +1334,22 @@ static void helper_render_final_totals(FILE *out,
         uint64_t dtx = 0, drx = 0;
         if (!health_monitor_get_port_delta((int)dtn, &dtx, &drx)) continue;
         if (!any) {
-            printf("\n--- The device's own counters (difference since the quiet window) ---\n");
-            printf("  DTN |          we sent |        device Rx |   diff"
-                   " |    we validated |        device Tx |   diff\n");
-            printf("  (it counts every frame while these count only PRBS -"
-                   " PTP and the health monitor are excluded from ours by\n"
-                   "   design - so a small steady excess on its side is"
-                   " expected and is not loss. Its reading is also the last\n"
-                   "   the monitor stored, arriving on its own 1 Hz cycle"
-                   " rather than being asked for here.)\n");
+            printf("\n");
+            totals_rule(out, "\u250c", "\u2510",
+                        "THE DEVICE'S OWN COUNTERS  -  difference since the quiet window");
+            totals_row(out, " %s",
+                       "It counts every frame while these count only PRBS - PTP and the");
+            totals_row(out, " %s",
+                       "health monitor are excluded from ours by design - so a small steady");
+            totals_row(out, " %s",
+                       "excess on its side is expected and is not loss. Its reading is also");
+            totals_row(out, " %s",
+                       "the last the monitor stored, arriving on its own 1 Hz cycle rather");
+            totals_row(out, " %s", "than being asked for here.");
+            totals_rule(out, "\u251c", "\u2524", NULL);
+            totals_row(out, " %3s %12s %12s %8s %12s %12s %8s",
+                       "DTN", "we sent", "device Rx", "diff",
+                       "we valid.", "device Tx", "diff");
             any = true;
         }
         uint64_t our_sent, our_back;
@@ -1097,19 +1382,30 @@ static void helper_render_final_totals(FILE *out,
         }
         sum_our_sent += our_sent; sum_dev_rx += drx;
         sum_our_back += our_back; sum_dev_tx += dtx;
-        printf("  %3u | %16lu | %16lu | %+6ld | %15lu | %16lu | %+6ld\n",
-               dtn, our_sent, drx, (long)((int64_t)drx - (int64_t)our_sent),
-               our_back, dtx, (long)((int64_t)dtx - (int64_t)our_back));
+        {
+            char id[8];
+            snprintf(id, sizeof(id), "%u", dtn);
+            totals_row(out, " %3s %12s %12s %8s %12s %12s %8s", id,
+                       num_u(our_sent), num_u(drx),
+                       num_s((int64_t)drx - (int64_t)our_sent),
+                       num_u(our_back), num_u(dtx),
+                       num_s((int64_t)dtx - (int64_t)our_back));
+        }
     }
     if (any) {
-        printf("  --- | %16lu | %16lu | %+6ld | %15lu | %16lu | %+6ld\n",
-               sum_our_sent, sum_dev_rx,
-               (long)((int64_t)sum_dev_rx - (int64_t)sum_our_sent),
-               sum_our_back, sum_dev_tx,
-               (long)((int64_t)sum_dev_tx - (int64_t)sum_our_back));
+        totals_rule(out, "\u251c", "\u2524", NULL);
+        totals_row(out, " %3s %12s %12s %8s %12s %12s %8s", "all",
+                   num_u(sum_our_sent), num_u(sum_dev_rx),
+                   num_s((int64_t)sum_dev_rx - (int64_t)sum_our_sent),
+                   num_u(sum_our_back), num_u(sum_dev_tx),
+                   num_s((int64_t)sum_dev_tx - (int64_t)sum_our_back));
+        totals_rule(out, "\u2514", "\u2518", NULL);
     } else {
-        printf("\n--- The device's own counters ---\n");
-        printf("  no baseline (health monitor had no reading before the test)\n");
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510", "THE DEVICE'S OWN COUNTERS");
+        totals_row(out, " %s",
+                   "no baseline (health monitor had no reading before the test)");
+        totals_rule(out, "\u2514", "\u2518", NULL);
     }
     }
 #endif
@@ -1133,12 +1429,16 @@ static void helper_render_final_totals(FILE *out,
             dresp_rx += ps[i].delay_resp_rx_count;
         }
 
-        printf("\n--- PTP Totals (separate from PRBS) ---\n");
-        printf("  Sessions              : %20u\n", (unsigned)ps_count);
-        printf("  Sync received         : %20lu\n", sync_rx);
-        printf("  Delay_Req sent        : %20lu\n", dreq_tx);
-        printf("  Delay_Resp received   : %20lu\n", dresp_rx);
-        printf("  PTP packets total     : %20lu\n", sync_rx + dreq_tx + dresp_rx);
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510", "PTP TOTALS  -  separate from PRBS");
+        totals_row(out, " %-45s %30s ", "Sessions", num_u(ps_count));
+        totals_row(out, " %-45s %30s ", "Sync received", num_u(sync_rx));
+        totals_row(out, " %-45s %30s ", "Delay_Req sent", num_u(dreq_tx));
+        totals_row(out, " %-45s %30s ", "Delay_Resp received", num_u(dresp_rx));
+        totals_rule(out, "\u251c", "\u2524", NULL);
+        totals_row(out, " %-45s %30s ", "PTP packets total",
+                   num_u(sync_rx + dreq_tx + dresp_rx));
+        totals_rule(out, "\u2514", "\u2518", NULL);
     }
 #endif
 
@@ -1149,12 +1449,17 @@ static void helper_render_final_totals(FILE *out,
         memset(&hs, 0, sizeof(hs));
         get_health_monitor_stats(&hs);
 
-        printf("\n--- Health Monitor Totals (separate from PRBS) ---\n");
-        printf("  Queries sent          : %20lu\n", hs.queries_sent);
-        printf("  Responses received    : %20lu\n", hs.responses_received);
-        printf("  Incomplete cycles     : %20lu\n", hs.timeouts);
-        printf("  HM packets total      : %20lu\n",
-               hs.queries_sent + hs.responses_received);
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510",
+                    "HEALTH MONITOR TOTALS  -  separate from PRBS");
+        totals_row(out, " %-45s %30s ", "Queries sent", num_u(hs.queries_sent));
+        totals_row(out, " %-45s %30s ", "Responses received",
+                   num_u(hs.responses_received));
+        totals_row(out, " %-45s %30s ", "Incomplete cycles", num_u(hs.timeouts));
+        totals_rule(out, "\u251c", "\u2524", NULL);
+        totals_row(out, " %-45s %30s ", "HM packets total",
+                   num_u(hs.queries_sent + hs.responses_received));
+        totals_rule(out, "\u2514", "\u2518", NULL);
     }
 #endif
 
