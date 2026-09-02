@@ -20,6 +20,7 @@ static const char *slot_name(enum snapshot_slot slot)
         case SNAP_SLOT_DTN:    return "DTN PORT STATS";
         case SNAP_SLOT_PTP:    return "PTP SESSION STATS";
         case SNAP_SLOT_HEALTH: return "HEALTH MONITOR + POWER SUPPLY";
+        case SNAP_SLOT_TOTALS: return "END-OF-TEST TOTALS";
         default:               return "UNKNOWN";
     }
 }
