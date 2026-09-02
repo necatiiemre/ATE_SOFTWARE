@@ -1338,14 +1338,27 @@ static void helper_render_final_totals(FILE *out,
             totals_rule(out, "\u250c", "\u2510",
                         "THE DEVICE'S OWN COUNTERS  -  difference since the quiet window");
             totals_row(out, " %s",
+                       "Source: the TxCnt / RxCnt columns of the health monitor's own FPGA");
+            totals_row(out, " %s",
+                       "port tables - ASSISTANT for ports 0-15, MANAGER for 16-34 - stored");
+            totals_row(out, " %s",
+                       "once per 1 Hz cycle. These are DIFFERENCES, not those readings: the");
+            totals_row(out, " %s",
+                       "device never clears its counters, so what is shown is the last cycle");
+            totals_row(out, " %s",
+                       "minus the one snapshotted in the quiet window before the test. No");
+            totals_row(out, " %s",
+                       "number here appears in an HM table as printed; subtract two of them.");
+            totals_row(out, " %s", "");
+            totals_row(out, " %s",
                        "It counts every frame while these count only PRBS - PTP and the");
             totals_row(out, " %s",
                        "health monitor are excluded from ours by design - so a small steady");
             totals_row(out, " %s",
                        "excess on its side is expected and is not loss. Its reading is also");
             totals_row(out, " %s",
-                       "the last the monitor stored, arriving on its own 1 Hz cycle rather");
-            totals_row(out, " %s", "than being asked for here.");
+                       "the last the monitor stored, on its own cycle rather than asked for");
+            totals_row(out, " %s", "here, so it can be up to a second stale.");
             totals_rule(out, "\u251c", "\u2524", NULL);
             totals_row(out, " %3s %12s %12s %8s %12s %12s %8s",
                        "DTN", "we sent", "device Rx", "diff",
