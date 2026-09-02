@@ -59,6 +59,12 @@ static struct health_port_counters g_dev_ports_baseline[HEALTH_MAX_PORTS];
 static struct health_fpga_data g_last_assistant;
 static struct health_fpga_data g_last_manager;
 static bool g_last_tables_valid = false;
+// The same tables as they stood in the quiet window. The end-of-test totals
+// print both, because the differences they report are one minus the other and
+// a reader who only has the end table cannot check them.
+static struct health_fpga_data g_base_assistant;
+static struct health_fpga_data g_base_manager;
+static bool g_base_tables_valid = false;
 
 static void health_store_port_snapshot(const struct health_fpga_data *fpga)
 {
@@ -94,6 +100,9 @@ void health_monitor_mark_port_baseline(void)
     for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
         g_dev_ports_baseline[i] = g_dev_ports[i];
     }
+    g_base_assistant = g_last_assistant;
+    g_base_manager = g_last_manager;
+    g_base_tables_valid = g_last_tables_valid;
 }
 
 bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx)
@@ -680,6 +689,16 @@ void health_monitor_render_port_tables(FILE *out)
         fprintf(out, "[HEALTH] no port tables were received during this run\n");
         return;
     }
+    if (g_base_tables_valid) {
+        fprintf(out, "[HEALTH] ############### AT TEST START ###############\n");
+        health_print_fpga_table(out, "ASSISTANT", &g_base_assistant);
+        fprintf(out, "[HEALTH] ================================================\n");
+        health_print_fpga_table(out, "MANAGER", &g_base_manager);
+    } else {
+        fprintf(out, "[HEALTH] ############### AT TEST START ###############\n");
+        fprintf(out, "[HEALTH] no reading had arrived yet\n");
+    }
+    fprintf(out, "[HEALTH] ############### AT TEST END ###############\n");
     health_print_fpga_table(out, "ASSISTANT", &g_last_assistant);
     fprintf(out, "[HEALTH] ================================================\n");
     health_print_fpga_table(out, "MANAGER", &g_last_manager);

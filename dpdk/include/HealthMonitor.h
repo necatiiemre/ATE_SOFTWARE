@@ -134,9 +134,10 @@ bool health_monitor_get_port_readings(int port,
 /**
  * @brief Print the monitor's own ASSISTANT and MANAGER port tables to `out`.
  *
- * The last per-port data each FPGA reported, in the same layout the monitor
- * prints every second - so the end-of-test reconciliation can be read against
- * the tables its numbers came from without going back through the log.
+ * Both readings, in the same layout the monitor prints every second: the
+ * tables as they stood in the quiet window, then as they stood at the end. The
+ * end-of-test reconciliation is one minus the other, so it can be checked here
+ * without going back through the log for either.
  */
 void health_monitor_render_port_tables(FILE *out);
 
