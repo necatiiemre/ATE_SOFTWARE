@@ -26,8 +26,15 @@
 #include <string.h>
 #include <time.h>
 
-#define DEFAULT_PACKETS_PER_VL  5
+/* The DTN polices each VL at its BAG, which the configuration sets to 1 ms: one
+ * packet per VL per millisecond, anything sooner is dropped. A cycle sends one
+ * packet on every VL, so the cycle period is what has to clear the BAG - 10 ms
+ * leaves an order of magnitude of margin and is still 100 packets a second on
+ * every VL, far more than this test needs. */
+#define DEFAULT_CYCLE_MS       10
+#define BAG_MS                  1
 #define DEFAULT_DRAIN_MS      500
+#define DISPLAY_INTERVAL_MS  1000
 #define INTERFACES_PATH  "cumulus/interfaces"
 
 static scenario_flow_t g_flows[SCENARIO_MAX_FLOWS];
@@ -103,31 +110,65 @@ static void collect(uint16_t rx_mask, unsigned duration_ms)
     }
 }
 
-static bool inject(size_t flow_count, unsigned packets_per_vl, uint16_t rx_mask)
+/** One packet on every VL. */
+static bool send_cycle(size_t flow_count, uint32_t cycle)
 {
-    for (unsigned round = 0; round < packets_per_vl && !g_stop; round++) {
-        for (size_t i = 0; i < flow_count && !g_stop; i++) {
-            const scenario_flow_t *flow = &g_flows[i];
-            int len = vl_frame_build(g_frame, sizeof g_frame, flow->vl_id,
-                                     flow->tx_vlan, flow->src_dtn_port, round);
-            if (len < 0)
-                return false;
-            if (!port_runner_send(flow->tx_server_port, g_frame, (size_t)len))
-                return false;
-            report_sent(&g_report, i);
-        }
-        /* Returns start arriving while we are still sending. */
-        collect(rx_mask, 20);
-        printf("\r  injected round %u/%u", round + 1, packets_per_vl);
-        fflush(stdout);
+    for (size_t i = 0; i < flow_count && !g_stop; i++) {
+        const scenario_flow_t *flow = &g_flows[i];
+        int len = vl_frame_build(g_frame, sizeof g_frame, flow->vl_id,
+                                 flow->tx_vlan, flow->src_dtn_port, cycle);
+        if (len < 0)
+            return false;
+        if (!port_runner_send(flow->tx_server_port, g_frame, (size_t)len))
+            return false;
+        report_sent(&g_report, i);
     }
-    putchar('\n');
+    return true;
+}
+
+/**
+ * @brief Keep traffic going until the operator stops it.
+ *
+ * Each cycle sends one packet per VL and then spends the rest of its period
+ * draining the return path, which both paces the VLs against the BAG and keeps
+ * returns from piling up in the ring.
+ */
+static bool run_continuous(size_t flow_count, uint16_t rx_mask,
+                           unsigned cycle_ms, unsigned duration_s)
+{
+    uint64_t started = report_now_ms();
+    uint64_t next_draw = started;
+    uint64_t deadline = duration_s ? started + (uint64_t)duration_s * 1000u : 0;
+    uint64_t cycles = 0;
+
+    while (!g_stop) {
+        uint64_t cycle_start = report_now_ms();
+
+        if (deadline && cycle_start >= deadline)
+            break;
+        if (!send_cycle(flow_count, (uint32_t)cycles))
+            return false;
+        cycles++;
+
+        /* Spend the rest of the period receiving. */
+        uint64_t spent = report_now_ms() - cycle_start;
+        collect(rx_mask, spent < cycle_ms ? (unsigned)(cycle_ms - spent) : 0);
+
+        uint64_t now = report_now_ms();
+        if (now >= next_draw) {
+            next_draw = now + DISPLAY_INTERVAL_MS;
+            report_render_live(&g_report, (now - started) / 1000, cycles);
+        }
+    }
+
+    collect(rx_mask, DEFAULT_DRAIN_MS);
     return true;
 }
 
 int main(int argc, char **argv)
 {
-    unsigned packets_per_vl = DEFAULT_PACKETS_PER_VL;
+    unsigned cycle_ms = DEFAULT_CYCLE_MS;
+    unsigned duration_s = 0;
     bool skip_cumulus = false;
     int consumed = 0;
 
@@ -143,10 +184,18 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--skip-cumulus") == 0)
             skip_cumulus = true;
-        else if (strcmp(argv[i], "--packets") == 0 && i + 1 < argc)
-            packets_per_vl = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--cycle-ms") == 0 && i + 1 < argc)
+            cycle_ms = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc)
+            duration_s = (unsigned)strtoul(argv[++i], NULL, 10);
         else
             printf("Ignoring unknown argument '%s'\n", argv[i]);
+    }
+
+    if (cycle_ms < BAG_MS) {
+        printf("A cycle shorter than the %d ms BAG would have the DTN drop most of "
+               "what we send; using %d ms.\n", BAG_MS, BAG_MS);
+        cycle_ms = BAG_MS;
     }
 
     signal(SIGINT, on_signal);
@@ -165,7 +214,10 @@ int main(int argc, char **argv)
     scenario_port_masks(g_flows, (size_t)flow_count, &tx_mask, &rx_mask);
 
     printf("\n  scenario     : %s - %s\n", scenario->name, scenario->description);
-    printf("  VLs          : %d  (%u packets each)\n", flow_count, packets_per_vl);
+    printf("  VLs          : %d, one packet each every %u ms (BAG is %d ms)\n",
+           flow_count, cycle_ms, BAG_MS);
+    printf("  duration     : %s\n",
+           duration_s ? "limited" : "until Ctrl+C");
     printf("  server ports : transmit");
     for (uint8_t p = 0; p < FIBRE_SERVER_PORT_COUNT; p++)
         if (tx_mask >> p & 1)
@@ -193,11 +245,8 @@ int main(int argc, char **argv)
     report_init(&g_report, scenario, g_flows, (size_t)flow_count);
 
     puts("");
-    if (!inject((size_t)flow_count, packets_per_vl, rx_mask))
-        puts("  injection stopped early");
-
-    printf("  waiting %d ms for the last returns\n", DEFAULT_DRAIN_MS);
-    collect(rx_mask, DEFAULT_DRAIN_MS);
+    if (!run_continuous((size_t)flow_count, rx_mask, cycle_ms, duration_s))
+        puts("  traffic stopped early");
 
     report_render(&g_report);
     bool all_up = report_all_links_up(&g_report);

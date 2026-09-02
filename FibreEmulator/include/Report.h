@@ -19,7 +19,8 @@
 typedef struct {
     uint64_t sent;
     uint64_t received;
-    uint16_t wrong_vlan;    /**< came back, but not on the VLAN we expected */
+    uint64_t wrong_vlan;    /**< came back, but not on the VLAN we expected */
+    uint64_t last_ms;       /**< monotonic time of the last return */
 } flow_result_t;
 
 typedef struct {
@@ -40,6 +41,12 @@ void report_sent(report_t *report, size_t flow_index);
  * @return true if it matched a flow we are waiting for
  */
 bool report_received(report_t *report, uint16_t vl_id, uint16_t vlan);
+
+/** Milliseconds on a monotonic clock. */
+uint64_t report_now_ms(void);
+
+/** Redraw the per-link table in place while a run is going. */
+void report_render_live(const report_t *report, uint64_t elapsed_s, uint64_t cycles);
 
 /** Per-link rollup, printed at the end of a run. */
 void report_render(const report_t *report);

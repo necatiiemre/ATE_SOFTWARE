@@ -130,9 +130,9 @@ later runs once the switch is already set up.
 The emulator owns the fibre links:
 
 ```
-    DTN link      VLAN in/out   VLs   sent   returned   status
-    port  0 -> 16    97 / 241     10    100        100   ok
-    port  3 -> 19   100 / 244     10    100          0   NOTHING BACK
+  DTN link      VLAN in/out    sent   returned   loss   last
+  port  0 -> 16    97 / 241    3000       3000     0%   0.0s
+  port  3 -> 19   100 / 244    3000          0   100%      -   NOTHING BACK
 ```
 
 The acceleration test owns everything that reaches copper:
