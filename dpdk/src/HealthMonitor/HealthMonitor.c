@@ -52,6 +52,14 @@ struct health_port_counters {
 static struct health_port_counters g_dev_ports[HEALTH_MAX_PORTS];
 static struct health_port_counters g_dev_ports_baseline[HEALTH_MAX_PORTS];
 
+// The last per-port data each FPGA reported, kept so the end-of-test totals can
+// print the monitor's own tables beside the reconciliation that uses them. Held
+// per port rather than as a whole-cycle copy: a cycle that came back short of a
+// port would otherwise blank that port's row rather than show its last reading.
+static struct health_fpga_data g_last_assistant;
+static struct health_fpga_data g_last_manager;
+static bool g_last_tables_valid = false;
+
 static void health_store_port_snapshot(const struct health_fpga_data *fpga)
 {
     for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
@@ -62,6 +70,22 @@ static void health_store_port_snapshot(const struct health_fpga_data *fpga)
         g_dev_ports[p->port_number].tx = p->tx_count;
         g_dev_ports[p->port_number].rx = p->rx_count;
         g_dev_ports[p->port_number].valid = true;
+    }
+}
+
+// Merge one FPGA's valid ports into the retained copy of its table.
+static void health_store_fpga_table(struct health_fpga_data *dst,
+                                    const struct health_fpga_data *src)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        if (src->ports[i].valid) {
+            dst->ports[i] = src->ports[i];
+            g_last_tables_valid = true;
+        }
+    }
+    if (src->packets_received > 0) {
+        dst->packets_received = src->packets_received;
+        dst->port_count_received = src->port_count_received;
     }
 }
 
@@ -83,6 +107,23 @@ bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx)
     if (now_tx < base_tx || now_rx < base_rx) return false;
     *tx = now_tx - base_tx;
     *rx = now_rx - base_rx;
+    return true;
+}
+
+bool health_monitor_get_port_readings(int port,
+                                      uint64_t *tx_base, uint64_t *rx_base,
+                                      uint64_t *tx_now, uint64_t *rx_now)
+{
+    if (port < 0 || port >= HEALTH_MAX_PORTS) return false;
+    if (!g_dev_ports[port].valid) return false;
+    // The baseline may be missing where the delta is not - a port the monitor
+    // only started reporting after the quiet window. Report what exists rather
+    // than nothing: zeros here are visibly zeros, and the end reading is still
+    // worth matching against an HM table.
+    *tx_base = g_dev_ports_baseline[port].valid ? g_dev_ports_baseline[port].tx : 0;
+    *rx_base = g_dev_ports_baseline[port].valid ? g_dev_ports_baseline[port].rx : 0;
+    *tx_now  = g_dev_ports[port].tx;
+    *rx_now  = g_dev_ports[port].rx;
     return true;
 }
 // What the monitor watches to know when to stop. Points at the RX drain flag,
@@ -633,6 +674,17 @@ static void health_print_tables(const struct health_cycle_data *cycle)
     }
 }
 
+void health_monitor_render_port_tables(FILE *out)
+{
+    if (!g_last_tables_valid) {
+        fprintf(out, "[HEALTH] no port tables were received during this run\n");
+        return;
+    }
+    health_print_fpga_table(out, "ASSISTANT", &g_last_assistant);
+    fprintf(out, "[HEALTH] ================================================\n");
+    health_print_fpga_table(out, "MANAGER", &g_last_manager);
+}
+
 static int get_interface_index(const char *ifname)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -827,6 +879,8 @@ static void *health_monitor_thread_func(void *arg)
         // difference them against the baseline taken before the test started.
         health_store_port_snapshot(&cycle.assistant);
         health_store_port_snapshot(&cycle.manager);
+        health_store_fpga_table(&g_last_assistant, &cycle.assistant);
+        health_store_fpga_table(&g_last_manager, &cycle.manager);
 
         uint64_t cycle_end = get_time_ms();
         uint64_t cycle_time = cycle_end - cycle_start;

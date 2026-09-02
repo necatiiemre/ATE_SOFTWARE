@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>   // FILE, for health_monitor_render_port_tables()
 #include <pthread.h>
 #include "HealthTypes.h"
 
@@ -114,6 +115,30 @@ void health_monitor_mark_port_baseline(void);
  * @return false if that port was never seen, or its counter went backwards.
  */
 bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx);
+
+/**
+ * @brief The two readings a port's delta was taken between.
+ *
+ * These are the device's counters as they stand, not differences: the same
+ * numbers the ASSISTANT / MANAGER FPGA port tables print in their TxCnt and
+ * RxCnt columns, so a reading here can be matched against a health monitor
+ * table directly. `_base` is what was snapshotted in the quiet window, `_now`
+ * the last cycle stored.
+ *
+ * @return false if that port was never seen by the monitor.
+ */
+bool health_monitor_get_port_readings(int port,
+                                      uint64_t *tx_base, uint64_t *rx_base,
+                                      uint64_t *tx_now, uint64_t *rx_now);
+
+/**
+ * @brief Print the monitor's own ASSISTANT and MANAGER port tables to `out`.
+ *
+ * The last per-port data each FPGA reported, in the same layout the monitor
+ * prints every second - so the end-of-test reconciliation can be read against
+ * the tables its numbers came from without going back through the log.
+ */
+void health_monitor_render_port_tables(FILE *out);
 
 /**
  * @brief Stop health monitor thread

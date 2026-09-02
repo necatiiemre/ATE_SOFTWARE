@@ -1413,6 +1413,47 @@ static void helper_render_final_totals(FILE *out,
                    num_u(sum_our_back), num_u(sum_dev_tx),
                    num_s((int64_t)sum_dev_tx - (int64_t)sum_our_back));
         totals_rule(out, "\u2514", "\u2518", NULL);
+
+        // The readings themselves, not differenced. Everything above is one
+        // reading minus another, so none of those numbers can be found in a
+        // health monitor table - which is exactly where you go looking when a
+        // row looks wrong. These are the two readings each difference was
+        // taken between, printed as the monitor holds them, so a row here can
+        // be matched against an HM port table line for line.
+        printf("\n");
+        totals_rule(out, "\u250c", "\u2510",
+                    "THE DEVICE'S COUNTERS AS THE MONITOR READ THEM  -  not differences");
+        totals_row(out, " %s",
+                   "The two readings the table above differenced. Same numbers as the TxCnt");
+        totals_row(out, " %s",
+                   "and RxCnt columns of the ASSISTANT (ports 0-15) and MANAGER (16-34) FPGA");
+        totals_row(out, " %s",
+                   "port tables, so they can be matched against an HM table directly. The");
+        totals_row(out, " %s",
+                   "device never clears these, so they carry everything since it came up.");
+        totals_rule(out, "\u251c", "\u2524", NULL);
+        totals_row(out, " %3s %17s %17s %17s %17s", "DTN",
+                   "RxCnt at start", "RxCnt at end",
+                   "TxCnt at start", "TxCnt at end");
+        for (uint16_t dtn = 0; dtn < DTN_PORT_COUNT; dtn++) {
+            uint64_t tb = 0, rb = 0, tn = 0, rn = 0;
+            if (!health_monitor_get_port_readings((int)dtn, &tb, &rb, &tn, &rn)) {
+                continue;
+            }
+            char id[8];
+            snprintf(id, sizeof(id), "%u", dtn);
+            totals_row(out, " %3s %17s %17s %17s %17s", id,
+                       num_u(rb), num_u(rn), num_u(tb), num_u(tn));
+        }
+        totals_rule(out, "\u2514", "\u2518", NULL);
+
+        // And the monitor's own tables, as it prints them every second. The
+        // "RxCnt at end" column above is this table's RxCnt column, so the two
+        // can be read against each other here instead of going back through
+        // the log to find the last health block.
+        printf("\n--- The health monitor's own port tables, the source of the\n");
+        printf("    readings above (its last complete reading of each FPGA) ---\n");
+        health_monitor_render_port_tables(out);
     } else {
         printf("\n");
         totals_rule(out, "\u250c", "\u2510", "THE DEVICE'S OWN COUNTERS");
