@@ -597,6 +597,27 @@ bool Dtn::configureSequence()
             "DTN: Failed to fetch VL-ID counter log (file may not exist)");
     }
 
+    // The switch's own counters, now that the traffic is over. They were
+    // cleared before the test and read once straight after the configuration,
+    // so that reading is the baseline and this one is the test: the difference
+    // between the two is what the switch says it forwarded, from a third party
+    // that is neither end of the link. Taken after dpdk has stopped so nothing
+    // is still in flight, and best-effort - a switch that will not answer must
+    // not fail a test whose traffic has already been counted.
+    const std::string end_of_test_log =
+        g_ReportManager.getTestLogDir() + "/End_Of_DTN_Test_Log.log";
+    if (g_cumulus.saveCounterReport(end_of_test_log,
+                                    "END OF DTN TEST - CUMULUS INTERFACE COUNTERS"))
+    {
+        std::cout << "DTN: End-of-test switch counters saved to: "
+                  << end_of_test_log << std::endl;
+    }
+    else
+    {
+        ErrorPrinter::warn("CUMULUS",
+            "DTN: End-of-test counter log could not be written.");
+    }
+
     // Disable PSU output
     if (!g_DeviceManager.enableOutput(PSUG30, false))
     {
