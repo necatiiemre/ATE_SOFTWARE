@@ -14,6 +14,8 @@
 #include <limits>
 #include <csignal>
 #include <atomic>
+#include <sstream>
+#include <fstream>
 #include "Utils.h"
 
 // LogPaths::rootDir() - runtime root detection (replaces compile-time PROJECT_ROOT)
@@ -28,6 +30,90 @@ static void dpdk_monitor_signal_handler(int sig)
 {
     (void)sig;
     g_dpdk_monitoring_running = false;
+}
+
+// ==================== Server-side NIC counters ====================
+
+// The two server NICs wired straight to the DTN, bypassing the Cumulus
+// switch: Ports 12 and 13 of the DPDK application's raw socket ports. The
+// switch counter reports cannot see a single frame of this traffic, so
+// without these the only account of it is the test's own.
+static const char *const kServerDirectIfaces[] = { "eno12399", "eno12409" };
+
+// Kernel interface counters have no equivalent of the switch's "nv action
+// clear" - short of reloading the driver they cannot be zeroed. So both ends
+// are read instead, and the difference between the two reports is the test,
+// the same way the device's own counters are handled.
+//
+// Quoting, as in CumulusHelper::saveCounterReport: SSHDeployer wraps the
+// remote command in double quotes and hands it to the local shell, so the
+// body must contain no double quotes and no '$' - both would be eaten locally
+// before ssh ever saw them.
+static bool saveServerNicCounterReport(const std::string &local_path,
+                                       const std::string &title)
+{
+    std::ostringstream body;
+    for (const char *iface : kServerDirectIfaces) {
+        body << "echo SERVER_NIC_MARKER_" << iface << "; ";
+        // Three views, because they fail differently: ip -s is the kernel's
+        // own summary, /sys/class/net is the same numbers unformatted and
+        // trivial to diff between two reports, and ethtool -S is the driver's,
+        // which is the only one that names a packet the NIC itself dropped.
+        body << "ip -s -s link show " << iface << " 2>&1; ";
+        body << "grep . /sys/class/net/" << iface << "/statistics/* 2>&1; ";
+        body << "ethtool -S " << iface << " 2>&1; ";
+    }
+    const std::string command = "sh -c '" + body.str() + "'";
+
+    std::string raw;
+    if (!g_ssh_deployer_server.execute(command, &raw, /*use_sudo=*/false,
+                                       /*silent=*/true, /*timeout_ms=*/120000)
+        || raw.empty())
+    {
+        ErrorPrinter::warn("SSH",
+            "DTN: Could not read the server NIC counters");
+        return false;
+    }
+
+    // A marker per interface has to come back, or the report would look
+    // complete while holding nothing.
+    size_t found = 0;
+    for (const char *iface : kServerDirectIfaces) {
+        if (raw.find(std::string("SERVER_NIC_MARKER_") + iface) != std::string::npos) {
+            found++;
+        }
+    }
+    if (found == 0) {
+        ErrorPrinter::warn("SSH",
+            "DTN: Server NIC counter output held no interface data");
+        return false;
+    }
+
+    std::ofstream file(local_path);
+    if (!file.is_open()) {
+        ErrorPrinter::warn("SSH",
+            "DTN: Could not open server NIC counter report for writing: "
+            + local_path);
+        return false;
+    }
+    file << "========================================\n";
+    file << " " << title << "\n";
+    file << " Collected: " << ReportManager::getCurrentTimestamp() << "\n";
+    file << " Interfaces: ";
+    for (size_t i = 0; i < sizeof(kServerDirectIfaces) / sizeof(kServerDirectIfaces[0]); ++i) {
+        file << (i ? ", " : "") << kServerDirectIfaces[i];
+    }
+    file << "\n";
+    file << " These are direct server-to-DTN links; the switch never sees\n";
+    file << " this traffic, so its counter reports do not cover them.\n";
+    file << "========================================\n\n";
+    file << raw;
+    file.close();
+
+    std::cout << "DTN: Server NIC counters (" << found << "/"
+              << sizeof(kServerDirectIfaces) / sizeof(kServerDirectIfaces[0])
+              << " interfaces) saved to: " << local_path << std::endl;
+    return true;
 }
 
 // PSU Configuration: 28V 3.0A
@@ -421,6 +507,13 @@ bool Dtn::configureSequence()
             "DTN: After-config counter log could not be written.");
     }
 
+    // The same moment, for the two NICs the switch cannot see. Its counters
+    // were cleared just above; these cannot be, so this reading is their
+    // baseline and the one taken at the end of the run is the test.
+    saveServerNicCounterReport(
+        g_ReportManager.getTestLogDir() + "/After_DTN_Config_Server_NIC_Log.log",
+        "AFTER DTN CONFIG - SERVER NIC COUNTERS (baseline)");
+
     sleep(2);
     // Start SerialTimeForwarder after remote_config_sender is running
     // Reads time from MicroChip SyncServer (USB0), forwards to USB1, verifies on USB2
@@ -617,6 +710,11 @@ bool Dtn::configureSequence()
         ErrorPrinter::warn("CUMULUS",
             "DTN: End-of-test counter log could not be written.");
     }
+
+    // And the two direct NICs, against the baseline taken after the config.
+    saveServerNicCounterReport(
+        g_ReportManager.getTestLogDir() + "/End_Of_DTN_Test_Server_NIC_Log.log",
+        "END OF DTN TEST - SERVER NIC COUNTERS");
 
     // Disable PSU output
     if (!g_DeviceManager.enableOutput(PSUG30, false))
