@@ -16,6 +16,7 @@
 #include <atomic>
 #include <sstream>
 #include <fstream>
+#include <map>
 #include "Utils.h"
 
 // LogPaths::rootDir() - runtime root detection (replaces compile-time PROJECT_ROOT)
@@ -40,17 +41,64 @@ static void dpdk_monitor_signal_handler(int sig)
 // without these the only account of it is the test's own.
 static const char *const kServerDirectIfaces[] = { "eno12399", "eno12409" };
 
+// The baseline reading, kept so the end-of-test report can subtract it. What
+// the switch gets from clearing its counters, these get from differencing two
+// readings - so the report says what the test did, not what the server has
+// forwarded since it booted.
+typedef std::map<std::string, unsigned long long> NicCounterMap;
+static std::map<std::string, NicCounterMap> g_server_nic_baseline;
+
+// Pull the /sys/class/net lines out of a report body. They come back as
+//   /sys/class/net/eno12399/statistics/rx_packets:1234
+// which is the one of the three views that is a plain name and a plain number
+// - ip -s and ethtool -S are laid out for reading, not for subtracting.
+static std::map<std::string, NicCounterMap> parseNicCounters(const std::string &raw)
+{
+    std::map<std::string, NicCounterMap> out;
+    const std::string prefix = "/sys/class/net/";
+    size_t pos = 0;
+    while ((pos = raw.find(prefix, pos)) != std::string::npos) {
+        const size_t line_end = raw.find('\n', pos);
+        const std::string line = raw.substr(pos, line_end == std::string::npos
+                                                 ? std::string::npos
+                                                 : line_end - pos);
+        pos = (line_end == std::string::npos) ? raw.size() : line_end + 1;
+
+        // .../<iface>/statistics/<name>:<value>
+        const size_t iface_start = prefix.size();
+        const size_t iface_end = line.find('/', iface_start);
+        if (iface_end == std::string::npos) continue;
+        const std::string marker = "/statistics/";
+        if (line.compare(iface_end, marker.size(), marker) != 0) continue;
+        const size_t name_start = iface_end + marker.size();
+        const size_t colon = line.find(':', name_start);
+        if (colon == std::string::npos) continue;
+
+        const std::string iface = line.substr(iface_start, iface_end - iface_start);
+        const std::string name = line.substr(name_start, colon - name_start);
+        const std::string value = line.substr(colon + 1);
+        try {
+            out[iface][name] = std::stoull(value);
+        } catch (const std::exception &) {
+            // A line that is not a number is not a counter; skip it rather
+            // than letting one malformed row lose the whole interface.
+        }
+    }
+    return out;
+}
+
 // Kernel interface counters have no equivalent of the switch's "nv action
-// clear" - short of reloading the driver they cannot be zeroed. So both ends
-// are read instead, and the difference between the two reports is the test,
-// the same way the device's own counters are handled.
+// clear" - short of reloading the driver they cannot be zeroed, and that
+// would take down every port the driver owns. So both ends are read instead
+// and the end-of-test report leads with the difference.
 //
 // Quoting, as in CumulusHelper::saveCounterReport: SSHDeployer wraps the
 // remote command in double quotes and hands it to the local shell, so the
 // body must contain no double quotes and no '$' - both would be eaten locally
 // before ssh ever saw them.
 static bool saveServerNicCounterReport(const std::string &local_path,
-                                       const std::string &title)
+                                       const std::string &title,
+                                       bool is_baseline)
 {
     std::ostringstream body;
     for (const char *iface : kServerDirectIfaces) {
@@ -107,6 +155,49 @@ static bool saveServerNicCounterReport(const std::string &local_path,
     file << " These are direct server-to-DTN links; the switch never sees\n";
     file << " this traffic, so its counter reports do not cover them.\n";
     file << "========================================\n\n";
+
+    const std::map<std::string, NicCounterMap> now = parseNicCounters(raw);
+    if (is_baseline) {
+        g_server_nic_baseline = now;
+    } else if (!g_server_nic_baseline.empty()) {
+        // The part worth reading, so it goes first: what this test did, with
+        // the two readings it came from beside it.
+        file << "---------- CHANGE SINCE THE BASELINE (this test only) ----------\n\n";
+        for (const auto &iface_entry : now) {
+            const auto base_it = g_server_nic_baseline.find(iface_entry.first);
+            file << iface_entry.first << "\n";
+            if (base_it == g_server_nic_baseline.end()) {
+                file << "  (no baseline reading for this interface)\n\n";
+                continue;
+            }
+            for (const auto &counter : iface_entry.second) {
+                const auto base_counter = base_it->second.find(counter.first);
+                file << "  " << std::left << std::setw(22) << counter.first
+                     << std::right;
+                if (base_counter == base_it->second.end()) {
+                    file << std::setw(18) << "n/a"
+                         << "   (not in the baseline reading)\n";
+                    continue;
+                }
+                // A counter that went backwards means the interface was reset
+                // under us; saying so beats printing a number near 2^64.
+                if (counter.second < base_counter->second) {
+                    file << std::setw(18) << "?"
+                         << "   (went backwards: " << base_counter->second
+                         << " -> " << counter.second << ")\n";
+                    continue;
+                }
+                file << std::setw(18) << (counter.second - base_counter->second)
+                     << "   (" << base_counter->second << " -> "
+                     << counter.second << ")\n";
+            }
+            file << "\n";
+        }
+        file << "---------- THE READINGS THEMSELVES ----------\n\n";
+    } else {
+        file << "(no baseline reading was taken, so no difference can be shown)\n\n";
+    }
+
     file << raw;
     file.close();
 
@@ -512,7 +603,8 @@ bool Dtn::configureSequence()
     // baseline and the one taken at the end of the run is the test.
     saveServerNicCounterReport(
         g_ReportManager.getTestLogDir() + "/After_DTN_Config_Server_NIC_Log.log",
-        "AFTER DTN CONFIG - SERVER NIC COUNTERS (baseline)");
+        "AFTER DTN CONFIG - SERVER NIC COUNTERS (baseline)",
+        /*is_baseline=*/true);
 
     sleep(2);
     // Start SerialTimeForwarder after remote_config_sender is running
@@ -714,7 +806,8 @@ bool Dtn::configureSequence()
     // And the two direct NICs, against the baseline taken after the config.
     saveServerNicCounterReport(
         g_ReportManager.getTestLogDir() + "/End_Of_DTN_Test_Server_NIC_Log.log",
-        "END OF DTN TEST - SERVER NIC COUNTERS");
+        "END OF DTN TEST - SERVER NIC COUNTERS",
+        /*is_baseline=*/false);
 
     // Disable PSU output
     if (!g_DeviceManager.enableOutput(PSUG30, false))
