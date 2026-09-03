@@ -277,10 +277,9 @@ public:
      * @brief Run "nv show interface <port> counters" for every port in
      *        dtnCounterPorts() and write a per-port report to a local file.
      *
-     * Only the "Ingress Buffer Statistics" and "Egress Queue Statistics"
-     * tables are kept - the rest of the nv output (detailed/drop/error/size
-     * counters, PFC, QoS) is discarded. All ports are queried in one SSH
-     * session.
+     * The whole of nv's output is kept for each port: detailed counters,
+     * drops, errors, packet size distribution, ingress buffers, egress
+     * queues, PFC and QoS. All ports are queried in one SSH session.
      *
      * @param local_path Destination file. Its directory must already exist.
      * @param title      Heading written at the top of the file (e.g.

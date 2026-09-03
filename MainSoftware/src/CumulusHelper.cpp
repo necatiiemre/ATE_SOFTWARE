@@ -52,65 +52,6 @@ std::string stripAnsi(const std::string& s) {
     return std::regex_replace(s, ansi_re, "");
 }
 
-// Split text into lines, dropping a trailing '\r' from CRLF input.
-std::vector<std::string> splitLines(const std::string& text) {
-    std::vector<std::string> lines;
-    std::istringstream stream(text);
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        lines.push_back(line);
-    }
-    return lines;
-}
-
-// True if the line is the '=====' rule that nv prints under a section title.
-bool isSectionRule(const std::string& line) {
-    std::string t = rtrim(line);
-    if (t.size() < 3) return false;
-    return t.find_first_not_of('=') == std::string::npos;
-}
-
-// Pull one named section out of "nv show interface <port> counters" output.
-// Sections look like:
-//
-//     Ingress Buffer Statistics
-//     ============================
-//         <table rows>
-//
-// so the section starts at the title line (whose successor is a '=' rule) and
-// ends just before the next such title. Returns "" when not found.
-std::string extractSection(const std::string& text, const std::string& title) {
-    const std::vector<std::string> lines = splitLines(text);
-
-    size_t start = lines.size();
-    for (size_t i = 0; i + 1 < lines.size(); ++i) {
-        if (rtrim(lines[i]) == title && isSectionRule(lines[i + 1])) {
-            start = i;
-            break;
-        }
-    }
-    if (start == lines.size()) return "";
-
-    // Walk to the next section title (a non-empty line followed by a rule).
-    size_t end = lines.size();
-    for (size_t i = start + 2; i + 1 < lines.size(); ++i) {
-        if (!rtrim(lines[i]).empty() && isSectionRule(lines[i + 1])) {
-            end = i;
-            break;
-        }
-    }
-
-    // Trim the blank lines that separate this section from the next one.
-    while (end > start && rtrim(lines[end - 1]).empty()) --end;
-
-    std::ostringstream out;
-    for (size_t i = start; i < end; ++i) {
-        out << lines[i] << "\n";
-    }
-    return out.str();
-}
-
 // Per-port marker echoed before each "nv show" so one SSH session's combined
 // output can be split back up locally. Deliberately alphanumeric+underscore:
 // the remote command travels inside double quotes, so anything needing shell
@@ -2143,27 +2084,53 @@ bool CumulusHelper::saveCounterReport(const std::string &local_path,
         const std::string block = raw.substr(
             start, end == std::string::npos ? std::string::npos : end - start);
 
-        const std::string ingress =
-            extractSection(block, "Ingress Buffer Statistics");
-        const std::string egress =
-            extractSection(block, "Egress Queue Statistics");
+        // Everything nv printed for this port, not a chosen pair of tables.
+        // The sections left out were the ones that say whether anything went
+        // wrong - drops, FCS and alignment errors, packet size distribution,
+        // PFC pause frames - which is what a counter report is read for when
+        // the numbers do not add up.
+        //
+        // Trim the blank lines around the block so the report does not carry
+        // the gaps between one nv invocation and the next. Whole lines only:
+        // trimming leading whitespace outright would take the indentation off
+        // the first line that has content, and nv aligns its column headers
+        // with exactly that indentation.
+        size_t begin = 0;
+        while (begin < block.size()) {
+            const size_t line_end = block.find('\n', begin);
+            const std::string line =
+                block.substr(begin, line_end == std::string::npos
+                                        ? std::string::npos
+                                        : line_end - begin);
+            if (line.find_first_not_of(" \t\r") != std::string::npos) {
+                break;  // First line carrying content; keep it as it is.
+            }
+            if (line_end == std::string::npos) {
+                begin = block.size();
+                break;
+            }
+            begin = line_end + 1;
+        }
+        const size_t last = block.find_last_not_of(" \t\r\n");
+        const std::string body =
+            (begin >= block.size() || last == std::string::npos || last < begin)
+                ? std::string()
+                : block.substr(begin, last - begin + 1);
 
         report << "========================================\n";
         report << " Interface: " << ports[i] << "\n";
         report << "========================================\n";
-        if (ingress.empty() && egress.empty()) {
+        if (body.empty()) {
             report << "(no counter data returned for this interface)\n\n";
             continue;
         }
-        if (!ingress.empty()) report << ingress << "\n";
-        if (!egress.empty())  report << egress  << "\n";
-        report << "\n";
+        report << body << "\n\n";
         ++ports_with_data;
     }
 
     if (ports_with_data == 0) {
         ErrorPrinter::warn("CUMULUS",
-            "Interface counter output contained no Ingress/Egress tables - "
+            "Interface counter output held no data for any port - "
             "not writing " + local_path);
         return false;
     }
