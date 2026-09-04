@@ -39,9 +39,15 @@ bool port_runner_send(uint8_t server_port, const uint8_t *frame, size_t len);
 
 /**
  * @brief Take the next received frame from a server port.
+ *
+ * Some NICs strip the VLAN tag on receive and report it out of band. When that
+ * happens the frame in @p buf has no tag and @p stripped_vlan carries it
+ * instead; it is set to 0 when the tag is still in the frame.
+ *
  * @return length, or 0 when nothing is waiting
  */
-int port_runner_receive(uint8_t server_port, uint8_t *buf, size_t cap);
+int port_runner_receive(uint8_t server_port, uint8_t *buf, size_t cap,
+                        uint16_t *stripped_vlan);
 
 void port_runner_close(void);
 

@@ -23,12 +23,26 @@ typedef struct {
     uint64_t last_ms;       /**< monotonic time of the last return */
 } flow_result_t;
 
+/**
+ * @brief What the receive path saw, before any of it was matched to a flow.
+ *
+ * Without this a run cannot tell "the DTN forwards nothing" from "it forwards
+ * and we fail to recognise it", which look identical in the loss column.
+ */
+typedef struct {
+    uint64_t frames[8];     /**< every frame off the wire, per server port */
+    uint64_t ours;          /**< carried our magic word */
+    uint64_t foreign;       /**< something else on the link */
+    uint64_t unmatched;     /**< ours, but no flow is waiting for that VL */
+    uint64_t wrong_vlan;    /**< ours, matched, but not the VLAN we expected */
+} rx_stats_t;
+
 typedef struct {
     const scenario_t      *scenario;
     const scenario_flow_t *flows;
     size_t                 flow_count;
     flow_result_t          results[SCENARIO_MAX_FLOWS];
-    uint64_t               unrecognised;  /**< frames that were not ours */
+    rx_stats_t             rx;
 } report_t;
 
 void report_init(report_t *report, const scenario_t *scenario,
@@ -36,9 +50,21 @@ void report_init(report_t *report, const scenario_t *scenario,
 
 void report_sent(report_t *report, size_t flow_index);
 
+/** Note a frame off the wire, whatever it turns out to be. */
+void report_frame_seen(report_t *report, uint8_t server_port);
+
+/** Note a frame that did not carry our magic word. */
+void report_foreign(report_t *report);
+
 /**
- * @brief Account for a frame that came back.
- * @return true if it matched a flow we are waiting for
+ * @brief Account for one of our probes coming back.
+ *
+ * A probe is identified by its VL id alone. The VLAN it arrives on is checked
+ * and reported, but a surprise there is not the same as a lost packet - NICs
+ * strip tags, and a probe that came back on an unexpected VLAN still proves the
+ * DTN forwarded it.
+ *
+ * @return true if a flow was waiting for that VL
  */
 bool report_received(report_t *report, uint16_t vl_id, uint16_t vlan);
 

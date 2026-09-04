@@ -179,8 +179,11 @@ bool port_runner_send(uint8_t server_port, const uint8_t *frame, size_t len)
     return false;
 }
 
-int port_runner_receive(uint8_t server_port, uint8_t *out, size_t cap)
+int port_runner_receive(uint8_t server_port, uint8_t *out, size_t cap,
+                        uint16_t *stripped_vlan)
 {
+    if (stripped_vlan)
+        *stripped_vlan = 0;
     if (server_port >= FIBRE_SERVER_PORT_COUNT || g_dpdk_id[server_port] < 0)
         return 0;
     uint16_t port = (uint16_t)g_dpdk_id[server_port];
@@ -196,6 +199,9 @@ int port_runner_receive(uint8_t server_port, uint8_t *out, size_t cap)
 
     struct rte_mbuf *buf = g_pending[port].bufs[g_pending[port].next++];
     uint16_t len = rte_pktmbuf_pkt_len(buf);
+
+    if (stripped_vlan && (buf->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED))
+        *stripped_vlan = buf->vlan_tci & 0x0FFF;
     if (len > cap)
         len = (uint16_t)cap;
     memcpy(out, rte_pktmbuf_mtod(buf, const uint8_t *), len);

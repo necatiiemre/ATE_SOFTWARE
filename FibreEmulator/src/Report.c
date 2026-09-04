@@ -26,19 +26,36 @@ uint64_t report_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
 }
 
+void report_frame_seen(report_t *report, uint8_t server_port)
+{
+    if (server_port < 8)
+        report->rx.frames[server_port]++;
+}
+
+void report_foreign(report_t *report)
+{
+    report->rx.foreign++;
+}
+
 bool report_received(report_t *report, uint16_t vl_id, uint16_t vlan)
 {
+    report->rx.ours++;
+
     for (size_t i = 0; i < report->flow_count; i++) {
         if (report->flows[i].vl_id != vl_id || !report->flows[i].expect_return)
             continue;
-        if (report->flows[i].rx_vlan == vlan)
-            report->results[i].received++;
-        else
-            report->results[i].wrong_vlan++;
+
+        /* It came back, which is the thing being tested. */
+        report->results[i].received++;
         report->results[i].last_ms = report_now_ms();
+
+        if (report->flows[i].rx_vlan != vlan) {
+            report->results[i].wrong_vlan++;
+            report->rx.wrong_vlan++;
+        }
         return true;
     }
-    report->unrecognised++;
+    report->rx.unmatched++;
     return false;
 }
 
@@ -138,9 +155,17 @@ void report_render_live(const report_t *report, uint64_t elapsed_s, uint64_t cyc
                loss, last, link.received ? "" : "   NOTHING BACK");
     }
 
-    if (report->unrecognised)
-        printf("\n  %llu frame(s) came back that were not ours\n",
-               (unsigned long long)report->unrecognised);
+    printf("\n  received: ");
+    for (uint8_t p = 0; p < 8; p++)
+        if (report->rx.frames[p])
+            printf("port %u: %llu  ", p, (unsigned long long)report->rx.frames[p]);
+    if (!report->rx.ours && !report->rx.foreign)
+        printf("nothing at all");
+    printf("\n  of those: %llu ours, %llu foreign, %llu unmatched, %llu wrong VLAN\n",
+           (unsigned long long)report->rx.ours,
+           (unsigned long long)report->rx.foreign,
+           (unsigned long long)report->rx.unmatched,
+           (unsigned long long)report->rx.wrong_vlan);
     printf("\nCtrl+C to stop\n");
     fflush(stdout);
 }
@@ -183,7 +208,16 @@ void report_render(const report_t *report)
                (unsigned long long)report->results[k].sent);
     }
 
-    if (report->unrecognised)
-        printf("\n  %llu frame(s) came back that were not ours\n",
-               (unsigned long long)report->unrecognised);
+    printf("\n  receive path\n");
+    for (uint8_t p = 0; p < 8; p++)
+        if (report->rx.frames[p])
+            printf("    server port %u: %llu frame(s)\n", p,
+                   (unsigned long long)report->rx.frames[p]);
+    if (!report->rx.ours && !report->rx.foreign)
+        puts("    nothing arrived on any receive port");
+    printf("    %llu ours, %llu foreign, %llu unmatched, %llu on an unexpected VLAN\n",
+           (unsigned long long)report->rx.ours,
+           (unsigned long long)report->rx.foreign,
+           (unsigned long long)report->rx.unmatched,
+           (unsigned long long)report->rx.wrong_vlan);
 }

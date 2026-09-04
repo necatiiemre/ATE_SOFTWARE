@@ -85,6 +85,35 @@ sent from here has a VL table to be forwarded by.
 
 Exit status is 0 when every link returned traffic.
 
+## When everything reads 100% loss
+
+The loss column alone cannot tell "the DTN forwards nothing" from "it forwards
+and we fail to recognise it", so every run also reports what the receive path
+actually saw:
+
+```
+  receive path
+    server port 2: 1043 frame(s)
+    server port 4: 1005 frame(s)
+    4096 ours, 0 foreign, 0 unmatched, 0 on an unexpected VLAN
+```
+
+* **Nothing at all** — no frame reached any receive port. The DTN is not
+  forwarding, or the switch is not configured, or the ports are wrong. Look at
+  the acceleration test's log next: did the configuration go in, was there a
+  status reply.
+* **Frames arrive, all foreign** — something is on the link but it is not ours.
+  Our probes are not getting through; the DTN is forwarding something else.
+* **Frames arrive, ours, but unmatched** — they came back on VL ids nothing is
+  waiting for. The two programs are on different rounds.
+* **Ours, matched, on an unexpected VLAN** — the path works and the tagging is
+  not what the map predicts. Not counted as loss: a probe that came back proves
+  the DTN forwarded it, whatever tag it wears.
+
+A probe is identified by its VL id, never by its VLAN. Some NICs strip the tag
+on receive and report it out of band, which is read from the mbuf when it
+happens.
+
 ## Layout
 
 ```

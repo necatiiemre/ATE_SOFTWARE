@@ -88,26 +88,35 @@ static void collect(uint16_t rx_mask, unsigned duration_ms)
 {
     uint64_t deadline = now_ms() + duration_ms;
 
-    while (now_ms() < deadline && !g_stop) {
+    /* Always sweep at least once: a cycle that overran its period would
+     * otherwise never drain the ring. */
+    do {
         bool idle = true;
 
         for (uint8_t port = 0; port < FIBRE_SERVER_PORT_COUNT; port++) {
             if (!(rx_mask >> port & 1))
                 continue;
-            int len = port_runner_receive(port, g_rx, sizeof g_rx);
+
+            uint16_t stripped = 0;
+            int len = port_runner_receive(port, g_rx, sizeof g_rx, &stripped);
             if (len <= 0)
                 continue;
             idle = false;
+            report_frame_seen(&g_report, port);
 
             vl_probe_t probe;
-            if (vl_frame_parse(g_rx, (size_t)len, &probe))
-                report_received(&g_report, probe.vl_id, probe.vlan);
+            if (!vl_frame_parse(g_rx, (size_t)len, &probe)) {
+                report_foreign(&g_report);
+                continue;
+            }
+            /* The NIC may have taken the tag out of the frame for us. */
+            report_received(&g_report, probe.vl_id, probe.vlan ? probe.vlan : stripped);
         }
         if (idle) {
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 200000L};
             nanosleep(&ts, NULL);
         }
-    }
+    } while (now_ms() < deadline && !g_stop);
 }
 
 /** One packet on every VL. */
