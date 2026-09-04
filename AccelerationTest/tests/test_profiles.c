@@ -91,8 +91,20 @@ static int check_management(void)
             failures++;
         }
     }
+    /* And the protocol block, which has to name the same VLs. */
+    size_t protocol_len;
+    const uint8_t *protocol = vl_profile_protocol_block(&protocol_len);
+    if (protocol_len != 200) {
+        printf("[FAIL] protocol block is %zu bytes, the reference is 200\n", protocol_len);
+        failures++;
+    } else if (protocol[0] != 0x00 || protocol[1] != 0x04) {
+        printf("[FAIL] protocol block does not start like the reference\n");
+        failures++;
+    }
+
     if (!failures)
-        printf("[ OK ] %zu management VLs match the reference byte for byte\n", count);
+        printf("[ OK ] %zu management VLs and the %zu-byte protocol block match "
+               "the reference\n", count, protocol_len);
     return failures;
 }
 
@@ -122,7 +134,10 @@ static int check_profiles(bool dense)
                 break;
             }
 
-        int frames = dtn_build_config_frames(g_records, (size_t)records, -1,
+        size_t protocol_len;
+        const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
+        int frames = dtn_build_config_frames(g_records, (size_t)records,
+                                             protocol_block, protocol_len, -1,
                                              g_frames, DTN_MAX_CONFIG_FRAMES);
         if (frames < 0) {
             printf("[FAIL] %s: frames could not be built\n", profiles[i].name);

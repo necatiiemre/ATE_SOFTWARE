@@ -69,20 +69,25 @@ typedef struct {
 } vl_profile_t;
 
 /**
- * @brief The DTN's own management VLs, VL 4484-4490.
+ * @brief The DTN's own management VLs, VL 4419-4490.
  *
- * Copied from the reference configuration, which is the only evidence we have
- * of what this path needs. They connect the internal management port 34 to both
- * copper end-system ports in both directions. VL 4488 is the one the main ATE
- * software filters status replies on (HEALTH_MONITOR_RESPONSE_VL_IDX), and it
- * is also the only record in the whole reference table with a different
- * parameter word.
- *
- * The 28 V power-up broadcast reaches copper without any configuration at all,
- * but a query and its reply plausibly do not - the reference would not define
- * these seven VLs otherwise.
+ * Copied verbatim from the reference configuration: a broadcast from the
+ * internal management port 34 to all 32 fibre ports, a pair per fibre port, and
+ * both copper ports wired to it in both directions. The DTN's own health
+ * monitor and the reply to a 0x52 status query travel on these.
  */
 const dtn_vl_t *vl_profile_management(size_t *count);
+
+/** The same records in their wire form, for comparing against the reference. */
+size_t vl_profile_management_records(const uint8_t **raw);
+
+/**
+ * @brief The block written at address 0x46, verbatim from the reference.
+ *
+ * It enumerates VL 4420-4487, the copper-to-management VLs among them, so a
+ * configuration that writes those records has to write this block too.
+ */
+const uint8_t *vl_profile_protocol_block(size_t *len);
 
 /** The built-in profiles, in menu order. */
 const vl_profile_t *vl_profile_all(size_t *count);

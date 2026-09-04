@@ -156,11 +156,18 @@ They are different things and both reach the workstation over copper:
   yet it is the source of the PTP Sync broadcast and of the reply to a `0x52`
   status query, and the health data reports it as the last of 35 ports.
 
-Every profile therefore also carries VL 4484-4490, copied byte for byte from the
-reference configuration, wiring port 34 to both copper ports in both directions.
-The 28 V power-up broadcast reaches copper with no configuration at all, but a
-query and its reply plausibly do not — the reference would not define those seven
-VLs otherwise. `tests/test_profiles.c` checks the copy stays faithful.
+Every profile therefore also carries **VL 4419-4490** and the block written at
+address `0x46`, both copied byte for byte from the reference configuration.
+
+That block looks like a PTP table and was left out at first, which turned out to
+be why a configured DTN went silent: it does not describe PTP, it *enumerates*
+VL 4420-4487 — the copper-to-management VLs among them. The records and the
+block have to agree, so either both go or neither does.
+
+The 72 records are a broadcast from port 34 to all 32 fibre ports (VL 4419), a
+pair per fibre port (4420-4483), and both copper ports wired to port 34 in both
+directions (4484-4490). VL 4488 is the one status replies arrive on.
+`tests/test_profiles.c` checks the copy stays faithful.
 
 ## The VL table is written contiguously
 

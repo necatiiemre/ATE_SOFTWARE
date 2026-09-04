@@ -108,8 +108,13 @@ static void print_group(const char *title, const dtn_vl_t *records, size_t count
             printf("\n  %s\n", title);
             titled = true;
         }
-        printf("    port %2u -> %2d   VL %u", records[i].src_port,
-               first_destination(&records[i]), records[i].vl_id);
+        int fanout = __builtin_popcountll(records[i].dest_mask);
+        if (fanout > 1)
+            printf("    port %2u -> %2d ports   VL %u", records[i].src_port, fanout,
+                   records[i].vl_id);
+        else
+            printf("    port %2u -> %2d         VL %u", records[i].src_port,
+                   first_destination(&records[i]), records[i].vl_id);
         if (j - i > 1)
             printf("-%u  (%zu VLs)", records[j - 1].vl_id, j - i);
         putchar('\n');
@@ -306,7 +311,10 @@ unit_result_t dtn_test_run(void)
 
     /* Untagged: the workstation is wired straight to the DTN's copper
      * end-system ports, with no bridge in between to steer on a VLAN tag. */
-    int frame_count = dtn_build_config_frames(g_records, (size_t)count, -1,
+    size_t protocol_len;
+    const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
+    int frame_count = dtn_build_config_frames(g_records, (size_t)count,
+                                              protocol_block, protocol_len, -1,
                                               g_frames, DTN_MAX_CONFIG_FRAMES);
     if (frame_count < 0) {
         puts("Could not build the configuration frames.");

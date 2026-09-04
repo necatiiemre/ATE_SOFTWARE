@@ -232,8 +232,9 @@ static const uint8_t STATUS_QUERY[] = {
 static uint8_t g_record_buf[DTN_MAX_RECORDS_PER_BLOCK * DTN_VL_RECORD_LEN];
 static uint8_t g_port_table[DTN_PORT_COUNT * 4];
 
-int dtn_build_config_frames(const dtn_vl_t *vls, size_t count, int vlan,
-                            dtn_frame_t *frames, size_t max_frames)
+int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
+                            const uint8_t *protocol_block, size_t protocol_len,
+                            int vlan, dtn_frame_t *frames, size_t max_frames)
 {
     uint8_t payload[DTN_MAX_FRAME];
     uint8_t es_global[sizeof REF_ES_GLOBAL];
@@ -271,6 +272,11 @@ int dtn_build_config_frames(const dtn_vl_t *vls, size_t count, int vlan,
     blocks[0] = (dtn_block_t){DTN_ADDR_ES_GLOBAL, es_global, sizeof es_global};
     blocks[1] = (dtn_block_t){DTN_ADDR_ES_PARAMS, REF_ES_PARAMS, sizeof REF_ES_PARAMS};
     EMIT(2, true, "end system");
+
+    if (protocol_block && protocol_len) {
+        blocks[0] = (dtn_block_t){DTN_ADDR_PTP, protocol_block, (uint16_t)protocol_len};
+        EMIT(1, true, "protocol block");
+    }
 
     size_t chunks = (count + DTN_MAX_RECORDS_PER_BLOCK - 1) / DTN_MAX_RECORDS_PER_BLOCK;
     for (size_t c = 0; c < chunks; c++) {
