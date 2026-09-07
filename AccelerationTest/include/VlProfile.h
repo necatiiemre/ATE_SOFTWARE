@@ -27,7 +27,8 @@
 #define VL_PROFILE_MAX_LINKS   16
 #define VL_PROFILE_MAX_GROUPS  2
 #define VL_PROFILE_MAX_HM      4
-/* A round is 122 records; the DTN's management path adds 72 more. */
+/* A round is 122 records, plus the DTN's own health monitor; the full
+ * management path adds 72 more. */
 #define VL_PROFILE_MAX_RECORDS 256
 
 /** One directed fibre link, source port to destination port. */
@@ -63,9 +64,15 @@ typedef struct {
     vl_link_group_t  groups[VL_PROFILE_MAX_GROUPS];
     uint8_t          hm_count;
     vl_hm_t          hm[VL_PROFILE_MAX_HM];
-    /* Append VL 4419-4490 so the DTN keeps its own health monitor and its
-     * answer to a 0x52 query. The captured configuration leaves them out, so a
-     * profile with this set is deliberately more than the capture. */
+    /* One record for DTN_HEALTH_MONITOR_VL, management port out to copper, so
+     * the DTN's own health monitor has a way off the box. The capture's 122
+     * records do not carry it; on by default because both health monitors are
+     * wanted during a run. */
+    bool             dtn_health_monitor;
+
+    /* Append VL 4419-4490 so the DTN keeps the whole management path the
+     * reference configuration gives it. Off by default - it belongs to
+     * RemoteConfigSender's end-system block, which answers on VL 4488. */
     bool             management;
 } vl_profile_t;
 
@@ -98,7 +105,8 @@ const vl_profile_t *vl_profile_all(size_t *count);
  * @brief Expand a profile into VL records, in the order the capture writes them.
  *
  * Forward links first, then the reverse links, then the health-monitor taps,
- * and finally the management VLs if the profile asks for them. The result is
+ * then the DTN's own health-monitor record, and finally the management VLs if
+ * the profile asks for them. The result is
  * neither contiguous nor sorted by VL id - the capture is not either, which is
  * what proves the device reads the id out of each record instead of indexing
  * its table by position.

@@ -212,14 +212,22 @@ size_t dtn_encode_port_table(uint8_t *out, size_t cap, uint16_t value, uint8_t p
 /* Fixed blocks, copied verbatim from the reference configuration that the
  * hardware is known to accept. None of them varies with the VL table. */
 
-/* Byte 2-3 is 0x1188 - VL 4488, the id the main software filters the device's
- * own health monitor on (HEALTH_MONITOR_RESPONSE_VL_IDX). The reference
- * configuration happens to hold 4488 VL records too, so the field reads equally
- * well as a record count; it is not one. Overwriting it with the record count
- * is what silences the DTN's own health monitor after a smaller table is
- * written, so this block goes out exactly as captured. */
+/* The end-system block, from the packet the rig is known to accept. It differs
+ * from RemoteConfigSender's in exactly three bytes:
+ *
+ *   data[2..3]  11 88 -> 00 26   the health-monitor VL, see DTN_HEALTH_MONITOR_VL
+ *   data[8]     c7    -> f7      bits 4 and 5 set; meaning unknown, copied as is
+ *
+ * data[4..5] is 0x05ee, Lmax 1518. The rest is unidentified and fixed.
+ *
+ * Nothing here is recomputed from the VL table. An earlier version overwrote
+ * data[2..3] with the record count - the reference table happens to hold 4488
+ * records, so 0x1188 read equally well as a count - which silenced the device
+ * as soon as a smaller table was written. */
 static const uint8_t REF_ES_GLOBAL[] = {
-    0x00, 0x01, 0x11, 0x88, 0x05, 0xee, 0x04, 0x09, 0xc7, 0x00};
+    0x00, 0x01,
+    (uint8_t)(DTN_HEALTH_MONITOR_VL >> 8), (uint8_t)DTN_HEALTH_MONITOR_VL,
+    0x05, 0xee, 0x04, 0x09, 0xf7, 0x00};
 static const uint8_t REF_ES_PARAMS[] = {
     0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x01, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -238,9 +246,9 @@ static const uint8_t STATUS_QUERY[] = {
 static uint8_t g_record_buf[DTN_MAX_RECORDS_PER_BLOCK * DTN_VL_RECORD_LEN];
 static uint8_t g_port_table[DTN_PORT_COUNT * 4];
 
-const dtn_config_opts_t DTN_CONFIG_REFERENCE = {
+const dtn_config_opts_t DTN_CONFIG_DEFAULT = {
     .end_system     = true,
-    .protocol_block = true,
+    .protocol_block = false,
     .port_table     = false,
     .status_query   = true,
 };
@@ -258,7 +266,7 @@ int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
     if (count == 0 || count > 0xFFFF)
         return -1;
     if (!opts)
-        opts = &DTN_CONFIG_REFERENCE;
+        opts = &DTN_CONFIG_DEFAULT;
 
     /* Emit one frame; the sequence byte advances with each. */
     #define EMIT(nblocks, terminate, text)                                          \

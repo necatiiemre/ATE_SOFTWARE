@@ -173,6 +173,7 @@ const dtn_vl_t *vl_profile_management(size_t *count)
             {.vl_id = 100, .src_port = hm0, .dst_port = 33, .flags = HM_FLAGS}, \
             {.vl_id = 101, .src_port = hm1, .dst_port = 33, .flags = HM_FLAGS}, \
         },                                                               \
+        .dtn_health_monitor = true,                                      \
         .management = false,                                             \
     }
 
@@ -226,6 +227,19 @@ int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
         dtn_vl_init(&out[n], profile->hm[h].vl_id, profile->hm[h].src_port,
                     1ull << profile->hm[h].dst_port);
         out[n].flags = profile->hm[h].flags;
+        n++;
+    }
+
+    /* The DTN's own health monitor. The end-system block names the VL; without
+     * a record for it the device has no way out to copper, and the capture's
+     * 122 records do not carry one. Flag nibble 0xD is what the reference gives
+     * this VL specifically - every other record, taps included, uses 0x9. */
+    if (profile->dtn_health_monitor) {
+        if (n == cap)
+            return -1;
+        dtn_vl_init(&out[n], DTN_HEALTH_MONITOR_VL, DTN_PORT_MANAGEMENT,
+                    1ull << DTN_HEALTH_MONITOR_PORT);
+        out[n].flags = FLAGS_NORMAL | DTN_VL_FLAG_PRIORITY;
         n++;
     }
 

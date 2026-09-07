@@ -317,7 +317,7 @@ unit_result_t dtn_test_run(void)
     const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
     int frame_count = dtn_build_config_frames(g_records, (size_t)count,
                                               protocol_block, protocol_len, -1,
-                                              &DTN_CONFIG_REFERENCE,
+                                              &DTN_CONFIG_DEFAULT,
                                               g_frames, DTN_MAX_CONFIG_FRAMES);
     if (frame_count < 0) {
         puts("Could not build the configuration frames.");

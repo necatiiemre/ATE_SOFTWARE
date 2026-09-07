@@ -201,17 +201,49 @@ Two other things the capture settles:
 flag nibble, block chain, markers, the 104-record split and the sequence
 numbering all have to be right at once for it to pass.
 
-## The DTN's own health monitor, and `--keep-management`
+## The end-system block, and where the DTN's own health monitor goes
 
-The capture's 122 records are the round and nothing else, so a configured DTN
-loses VL 4488 — port 34 out to the 100M copper port — and stops sending its own
-health monitor. That is a property of the captured configuration, not a bug in
-it: the fibre-side unit's health monitor still arrives, on VL 100 and 101.
+The configuration is three datagrams: the end-system blocks at seq 0, the switch
+table at seq 1 and seq 2. RemoteConfigSender sends a fourth, block `0x46`, whose
+body enumerates VL 4420-4487 — VLs this table does not contain, so it is left
+out.
 
-`--keep-management` appends VL 4419-4490 verbatim, 194 records instead of 122,
-so the device keeps its own health monitor and its answer to a `0x52` query. The
-fibre part of the table is identical either way, so the two can be compared on
-the bench without changing anything else.
+The end-system block `0x10` differs from RemoteConfigSender's in three bytes:
+
+| data byte | RemoteConfigSender | ours |
+|---|---|---|
+| 0-1 | `00 01` | `00 01` |
+| **2-3** | **`11 88`** (4488) | **`00 26`** (38) |
+| 4-5 | `05 ee` (Lmax 1518) | `05 ee` |
+| 6-7 | `04 09` | `04 09` |
+| **8** | **`c7`** | **`f7`** |
+| 9 | `00` | `00` |
+
+Bytes 2-3 are the VL the DTN puts its own health monitor and its `0x52` replies
+on. The main ATE software has RemoteConfigSender's value compiled in —
+`HEALTH_MONITOR_RESPONSE_VL_IDX`, and the receive filter at
+`dpdk/src/HealthMonitor/HealthMonitor.c:660` drops every frame whose destination
+MAC does not end `11 88`. Our end-system block says `00 26`, so the device
+answers on VL 38 instead. Our receiver does not filter by VL, so it sees either
+and reports the id it saw.
+
+`c7` → `f7` sets bits 4 and 5. Two samples are not enough to say what they mean,
+so the block is sent verbatim. Nothing in it is recomputed from the VL table.
+
+Neither `0x10` nor `0x17` contains a port number or a destination mask, so a VL
+named in the end-system block still needs a switch record to leave the box. The
+capture has no such record, which is why the table is 123 rather than 122:
+
+```
+VL   38  00 26 06 02 00 40 d5 ee 02 22 00 00 00 00   port 34 -> port 33
+```
+
+Flag nibble `0xD` is what the reference gives this VL specifically; every other
+record, the fibre-side taps included, uses `0x9`.
+
+`--keep-management` appends VL 4419-4490 verbatim on top, the whole management
+path the reference configuration builds. It belongs with RemoteConfigSender's
+end-system block, which answers on VL 4488, so it is off by default.
 
 ## Not yet pinned down
 

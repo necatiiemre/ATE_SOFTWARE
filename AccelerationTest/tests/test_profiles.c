@@ -134,7 +134,7 @@ static int check_profiles(bool management)
         const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
         int frames = dtn_build_config_frames(g_records, (size_t)records,
                                              protocol_block, protocol_len, -1,
-                                             &DTN_CONFIG_REFERENCE,
+                                             &DTN_CONFIG_DEFAULT,
                                              g_frames, DTN_MAX_CONFIG_FRAMES);
         if (frames < 0) {
             printf("[FAIL] %s: frames could not be built\n", profiles[i].name);

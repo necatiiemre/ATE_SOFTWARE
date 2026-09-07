@@ -93,18 +93,26 @@ sudo ./build/acceleration_test
 2. pick the round (`1`, `2` or `3`)
 3. read the routing it is about to write, then `y`
 
-It waits for the DTN to start talking, sends the configuration — 5 frames,
-about 20 ms — then draws the live table and keeps it up until Ctrl+C.
+It waits for the DTN to start talking, sends the configuration — 4 frames,
+about 16 ms — then draws the live table and keeps it up until Ctrl+C.
 
-The four configuration frames reproduce the captured configuration: the
-end-system blocks (seq 0), the `0x46` block (seq 1) and the 122-record switch
-table split over seq 2 and seq 3, followed by a `0x52` status query. Frames
-seq 2 and seq 3 are byte-identical to the capture, which `make test` checks.
+The configuration is three datagrams plus a `0x52` status query:
 
-The DTN's own health monitor rides VL 4488, and the capture's table does not
-carry it — so after configuration the device stops sending it. Add
-`--keep-management` to append VL 4419-4490 verbatim (194 records instead of 122)
-and keep that path alive; the fibre part of the table is unchanged either way.
+| seq | blocks | what |
+|---|---|---|
+| 0 | `0x10` `0x17` | end system |
+| 1 | `0x70` `0x72` | switch table, 104 records |
+| 2 | `0x72` `0x74` `0x71` | switch table, 19 records |
+| 3 | — | status query |
+
+The 122 fibre records are byte-identical to the capture, in its order, which
+`make test` checks. The 123rd is VL 38 from the management port out to the 100M
+copper port — the DTN's own health monitor, which the capture leaves without a
+way off the box.
+
+`--keep-management` appends VL 4419-4490 on top (195 records), the whole
+management path the reference configuration builds. The fibre part of the table
+is unchanged either way.
 
 **Leave this running.** The DTN needs its VL table before anything the emulator
 sends can be forwarded.

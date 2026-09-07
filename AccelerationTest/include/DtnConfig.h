@@ -45,7 +45,25 @@
 #define DTN_ADDR_PORT_TABLE     0x73    /* per-port table */
 #define DTN_ADDR_SW_MISC        0x74    /* switch misc */
 
-#define DTN_PORT_COUNT          35      /* ports 0..34; 34 is the CPU port */
+#define DTN_PORT_COUNT          35      /* ports 0..34 */
+#define DTN_PORT_MANAGEMENT     34      /* internal, not a physical port */
+
+/**
+ * The VL the DTN puts its own health monitor and its 0x52 replies on. It is
+ * bytes 2-3 of the end-system block, so the block and the switch record that
+ * carries the VL out to copper are both built from this one constant - they
+ * cannot drift apart.
+ *
+ * RemoteConfigSender writes 0x1188 here, and the main ATE software has that
+ * number compiled in (HEALTH_MONITOR_RESPONSE_VL_IDX, and the receive filter at
+ * dpdk/src/HealthMonitor/HealthMonitor.c:660 drops everything else). The
+ * end-system block we were given writes 0x0026, so the device answers on VL 38
+ * instead - which is why a DTN configured from here goes quiet as far as the
+ * main software is concerned. Our receiver does not filter by VL, so it sees
+ * either.
+ */
+#define DTN_HEALTH_MONITOR_VL   0x0026
+#define DTN_HEALTH_MONITOR_PORT 33      /* out of the 100M copper end-system port */
 #define DTN_VL_RECORD_LEN       14
 #define DTN_MAX_FRAME           1518
 #define DTN_MAX_BLOCKS          8
@@ -177,12 +195,14 @@ typedef struct {
 } dtn_config_opts_t;
 
 /**
- * @brief What the captured configuration sends.
+ * @brief The three-datagram configuration: end system, then the switch table.
  *
- * End-system blocks and 0x46, then the switch table, and no port table: the
+ * seq 0 is the end-system blocks, seq 1 and seq 2 the switch table, and a 0x52
+ * status query closes it off. No 0x46 - its body enumerates VL 4420-4487, which
+ * this configuration's table does not contain - and no port table, because the
  * capture's closing datagram goes straight from 0x72 to 0x74 to 0x71.
  */
-extern const dtn_config_opts_t DTN_CONFIG_REFERENCE;
+extern const dtn_config_opts_t DTN_CONFIG_DEFAULT;
 
 /**
  * @brief Turn a VL table into the frames that configure the DTN.
@@ -194,7 +214,7 @@ extern const dtn_config_opts_t DTN_CONFIG_REFERENCE;
  *
  * @param protocol_block payload for address 0x46; ignored unless opts asks for it
  * @param vlan 802.1Q tag, or -1 for untagged (the copper path)
- * @param opts which optional pieces to include; NULL means DTN_CONFIG_REFERENCE
+ * @param opts which optional pieces to include; NULL means DTN_CONFIG_DEFAULT
  * @return frame count, or -1 if the VL table does not fit
  */
 int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
