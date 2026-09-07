@@ -60,9 +60,10 @@ make test          # logic only, no DPDK needed
 make               # needs DPDK
 ```
 
-Both test runs should end in `PASS`. `AccelerationTest`'s test rebuilds the 47
-frames of a configuration the hardware is known to accept and compares them byte
-for byte, so a pass means the encoder is still emitting valid frames.
+Both test runs should end in `PASS`. `AccelerationTest` runs three: it rebuilds
+the 47 frames of a configuration the hardware is known to accept, reproduces all
+three rounds against the captured config1 byte for byte, and checks the profiles
+are self-consistent. A pass means the encoder is still emitting valid frames.
 
 ---
 
@@ -130,15 +131,24 @@ cd FibreEmulator
 sudo ./build/fibre_emulator -l 0-3 -n 4 \
      -a 0000:21:00.0 -a 0000:21:00.1 -a 0000:41:00.0 -a 0000:41:00.1 \
      -a 0000:64:00.0 -a 0000:64:00.1 -a 0000:81:00.0 -a 0000:81:00.1 \
-     -- --packets 10
+     --
 ```
 
-Pick **the same round**. It configures the Mellanox switch, injects ten packets
-on each of 122 VLs, and prints the table.
+Everything before `--` is EAL's; everything after is ours. Pick **the same
+round**. It configures the Mellanox switch, then sends continuously — one packet
+per VL per cycle, on all 122 VLs — and redraws its table once a second until
+Ctrl+C.
 
 The `-a` list is not optional: it keeps EAL off the copper NICs. `-l 0-3` is
-plenty and leaves the other program a core to poll on. Add `--skip-cumulus` on
-later runs once the switch is already set up.
+plenty and leaves the other program a core to poll on.
+
+Our options, all after the `--`:
+
+| option | default | what |
+|---|---|---|
+| `--skip-cumulus` | off | leave the Mellanox switch alone; use it once it is already set up |
+| `--cycle-ms N` | 4 | ms between cycles; anything below the 1 ms BAG is refused |
+| `--duration N` | 0 | stop after N seconds instead of waiting for Ctrl+C |
 
 ---
 
@@ -158,8 +168,11 @@ The acceleration test owns everything that reaches copper:
   link       DTN  VL-ID   packets      bytes   last   sizes           status
   eno12409    33    100       284     322340   0.0s   1187,1083       ok
   eno12409    33    101         0          0      -   -               MISSING
-  eno12399    32   4485        30      35610   0.0s   1187            ok
+  eno12409    33     38        30      35610   0.0s   1187            ok
 ```
+
+VL 100 and 101 are the fibre-side unit's health monitor, routed fibre → copper
+by the taps. VL 38 is the DTN's own — the record we add on top of the capture.
 
 Neither can confirm the whole path alone:
 
@@ -167,7 +180,7 @@ Neither can confirm the whole path alone:
 |---|---|
 | DTN forwards fibre to fibre | emulator, `ok` on a link row |
 | DTN forwards fibre to copper | acceleration test, VL 100/101 not `MISSING` |
-| DTN's own health monitor is alive | acceleration test, VL 4485/4487/4488 `ok` |
+| DTN's own health monitor is alive | acceleration test, VL 38 `ok` |
 | DTN accepted the configuration | both — a table of `ok` rows is the answer |
 
 ---
@@ -192,8 +205,13 @@ are on the wrong ports, or the NICs got bound to DPDK after all.
 list, or the NIC is not bound to a DPDK driver.
 
 **Everything on copper is MISSING but the fibre links are fine.** The DTN is
-forwarding fibre to fibre but not to copper. That points at the copper cabling or
-at the management VLs, not at the fibre configuration.
+forwarding fibre to fibre but not to copper. That points at the copper cabling,
+not at the fibre configuration.
+
+**VL 38 never appears.** The DTN's own health monitor is not coming out. Either
+the end-system block's VL field is not what we think it is, or the VL 38 record
+is not enough on its own — try `--keep-management`, which sends the whole
+management path the reference configuration builds instead.
 
 ---
 
