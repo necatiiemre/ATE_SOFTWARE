@@ -263,6 +263,17 @@ are on the wrong ports, or the NICs got bound to DPDK after all.
 **`server port N was not found`.** EAL did not get that PCI address in its `-a`
 list, or the NIC is not bound to a DPDK driver.
 
+**`empty mbuf pool` / `Rx queue allocation failed` on one port.** The mbuf pool
+is sized from the number of ports the round opens, so this is hugepages running
+short rather than a bug. Round 2 opens all eight server ports (six to transmit,
+four to receive, and the two sets barely overlap); rounds 1 and 3 open six. Give
+the emulator ~35 MB of hugepages more than it has, or check nothing else is
+holding them:
+
+```bash
+cat /proc/meminfo | grep -i huge
+```
+
 **Everything on copper is MISSING but the fibre links are fine.** The DTN is
 forwarding fibre to fibre but not to copper. That points at the copper cabling,
 not at the fibre configuration.

@@ -3,18 +3,26 @@
 #include "FibreMap.h"
 
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_ethdev.h>
+#include <rte_lcore.h>
 #include <rte_mbuf.h>
 
 #include <stdio.h>
 #include <string.h>
 
-#define NUM_MBUFS       8191
 #define MBUF_CACHE_SIZE  250
 #define RX_RING_SIZE    1024
-#define TX_RING_SIZE    1024
+#define TX_RING_SIZE     512
 #define BURST_SIZE        32
 #define MAX_PORTS         16
+
+/* What one open port can hold at once: a full receive ring, a transmit ring the
+ * driver has not reclaimed yet, and a burst sitting in g_pending. The pool has
+ * to cover every port opened, which is why it is not created until the scenario
+ * has said how many that is - a fixed 8191 covered seven ports and left the
+ * eighth to fail with "empty mbuf pool", and only round 2 needs all eight. */
+#define MBUFS_PER_PORT  (RX_RING_SIZE + TX_RING_SIZE + 2 * BURST_SIZE)
 
 static struct rte_mempool *g_pool;
 static uint16_t            g_open_mask;
@@ -39,11 +47,34 @@ bool port_runner_init(int argc, char **argv, int *consumed)
     }
     if (consumed)
         *consumed = taken;
+    return true;
+}
 
-    g_pool = rte_pktmbuf_pool_create("fibre_emulator", NUM_MBUFS, MBUF_CACHE_SIZE,
+/* DPDK likes a pool size one short of a power of two. */
+static unsigned round_up_pool(unsigned want)
+{
+    unsigned n = 1024;
+
+    while (n - 1 < want && n < (1u << 20))
+        n <<= 1;
+    return n - 1;
+}
+
+static bool make_pool(unsigned ports)
+{
+    unsigned want = ports * MBUFS_PER_PORT
+                  + MBUF_CACHE_SIZE * rte_lcore_count()
+                  + 512;
+    unsigned size = round_up_pool(want);
+
+    printf("[dpdk] mbuf pool: %u for %u port(s)\n", size, ports);
+    g_pool = rte_pktmbuf_pool_create("fibre_emulator", size, MBUF_CACHE_SIZE,
                                      0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
     if (!g_pool) {
-        fprintf(stderr, "[dpdk] cannot create the mbuf pool\n");
+        fprintf(stderr, "[dpdk] cannot create a pool of %u mbufs (%s) - about %u MB "
+                        "of hugepages are needed for %u port(s)\n",
+                size, rte_strerror(rte_errno),
+                (unsigned)((size * (unsigned)RTE_MBUF_DEFAULT_BUF_SIZE) >> 20), ports);
         return false;
     }
     return true;
@@ -134,6 +165,13 @@ bool port_runner_open(uint16_t server_port_mask)
         }
     }
     if (missing)
+        return false;
+
+    unsigned ports = 0;
+    for (uint8_t sp = 0; sp < FIBRE_SERVER_PORT_COUNT; sp++)
+        if (g_dpdk_id[sp] >= 0)
+            ports++;
+    if (!make_pool(ports))
         return false;
 
     for (uint8_t sp = 0; sp < FIBRE_SERVER_PORT_COUNT; sp++) {

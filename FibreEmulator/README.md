@@ -174,6 +174,19 @@ A probe is identified by its VL id, never by its VLAN. Some NICs strip the tag
 on receive and report it out of band, which is read from the mbuf when it
 happens.
 
+## Memory
+
+The mbuf pool is created once the round has said how many server ports it needs,
+because that number is not the same for every round. A port holds a full receive
+ring, a transmit ring the driver has not reclaimed, and a burst in hand, so the
+pool is sized from the port count and rounded up to one short of a power of two:
+about 16 MB for four ports and 33 MB for eight.
+
+Round 2 opens all eight. Its transmit set and its receive set barely overlap —
+a consequence of the switch's crossed receive mapping — where rounds 1 and 3
+open six. A pool fixed at 8191 mbufs covered seven ports and left the eighth to
+fail with `empty mbuf pool`, which only round 2 ever hit.
+
 ## Layout
 
 ```

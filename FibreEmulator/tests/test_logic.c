@@ -249,8 +249,11 @@ static void test_scenarios(void)
                     break;
                 }
         }
-        printf("[ OK ] %-8s %d flows, TX on %d server ports, RX on %d\n",
-               scenarios[s].name, flows, tx_ports, rx_ports);
+        /* How many ports get opened matters: the mbuf pool is sized from it,
+         * and round 2 is the one that needs all eight. */
+        int open_ports = __builtin_popcount((unsigned)(tx_mask | rx_mask));
+        printf("[ OK ] %-8s %d flows, TX on %d server ports, RX on %d, %d open\n",
+               scenarios[s].name, flows, tx_ports, rx_ports, open_ports);
     }
 }
 
