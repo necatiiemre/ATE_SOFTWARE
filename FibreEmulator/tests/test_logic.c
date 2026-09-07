@@ -95,9 +95,23 @@ static void test_frames(void)
     check(frame[16] == 0x08 && frame[17] == 0x00, "VLAN tag precedes IPv4");
     check(frame[14] == 0x00 && frame[15] == 97, "VLAN 97 in the tag");
 
+    /* The AFDX sequence byte sits outside the IP total_length, so the frame is
+     * one byte longer than IP declares - exactly as the reference frames are. */
+    uint16_t ip_total = (uint16_t)((frame[18 + 2] << 8) | frame[18 + 3]);
+    check(ip_total == VL_FRAME_SIZE - 14 - 4 - 1, "IP total_length excludes the AFDX byte");
+    uint16_t udp_len = (uint16_t)((frame[18 + 20 + 4] << 8) | frame[18 + 20 + 5]);
+    check(udp_len == ip_total - 20, "UDP length agrees with IP");
+    check(frame[VL_FRAME_SIZE - 1] == vl_frame_afdx_seq(7), "AFDX sequence byte is last");
+    check(vl_frame_afdx_seq(0) == 0 && vl_frame_afdx_seq(1) == 1 &&
+          vl_frame_afdx_seq(255) == 255 && vl_frame_afdx_seq(256) == 1,
+          "AFDX sequence wraps 1..255 after a single 0");
+    check(frame[18 + 12] == 10 && frame[18 + 13] == 1 && frame[18 + 14] == 0 &&
+          frame[18 + 15] == 1, "source IP follows 10.1.<port>.1");
+
     check(vl_frame_parse(frame, (size_t)len, &probe), "frame is recognised");
     check(probe.vl_id == 1024 && probe.vlan == 97 && probe.sequence == 7 &&
           probe.src_dtn_port == 0, "probe fields survive the round trip");
+    check(probe.afdx_seq == vl_frame_afdx_seq(7), "AFDX sequence survives the round trip");
 
     /* The switch retags on the way back; the payload must still identify it. */
     frame[14] = 0x00; frame[15] = (uint8_t)225;

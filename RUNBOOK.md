@@ -114,6 +114,10 @@ way off the box.
 management path the reference configuration builds. The fibre part of the table
 is unchanged either way.
 
+All three rounds are built the same way: only the six port pairs and, in round
+3, the two tap ports differ. The VL ids, the flag nibbles, the framing and the
+VL 38 record are identical across them.
+
 **Leave this running.** The DTN needs its VL table before anything the emulator
 sends can be forwarded.
 

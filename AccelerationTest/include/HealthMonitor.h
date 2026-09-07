@@ -20,6 +20,7 @@
 
 /* Offsets into the UDP payload, shared by every device packet. */
 #define HM_UDP_PAYLOAD_OFFSET  42   /* 14 eth + 20 ip + 8 udp, no VLAN */
+#define HM_UDP_PAYLOAD_OFFSET_TAGGED 46
 #define HM_OFF_DEVICE_ID        0
 #define HM_OFF_OPERATION_TYPE   2
 #define HM_OFF_CONFIG_TYPE      3
@@ -35,6 +36,7 @@
 typedef struct {
     bool     is_device_frame;  /**< came from the DTN's management path */
     uint16_t vl_id;            /**< low 16 bits of the destination MAC */
+    int      vlan;             /**< 802.1Q tag, or -1 when untagged */
     uint8_t  operation_type;   /**< 0x52 read, 0x57 write */
     uint8_t  status_enable;    /**< HM_SOURCE_*; only meaningful on 1187/94 byte packets */
     size_t   payload_len;
@@ -43,6 +45,12 @@ typedef struct {
 
 /**
  * @brief Classify one frame straight off the wire.
+ *
+ * Tagged frames count too. The DTN's own traffic arrives untagged, but a VL the
+ * switch forwards from fibre to copper - the fibre-side unit's health monitor
+ * on VL 100 and 101 - may still carry the tag it came in with, and dropping
+ * those would look exactly like the unit never sending them.
+ *
  * @return true when it came from the DTN (UDP 100->100 to 224.224.x.x)
  */
 bool hm_classify(const uint8_t *frame, size_t len, hm_frame_t *out);

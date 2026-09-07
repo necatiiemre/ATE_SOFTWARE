@@ -12,14 +12,26 @@ uint64_t hm_now_ms(void)
 
 bool hm_classify(const uint8_t *frame, size_t len, hm_frame_t *out)
 {
+    size_t hdr = HM_UDP_PAYLOAD_OFFSET;
+    int    vlan = -1;
+
     memset(out, 0, sizeof *out);
+    out->vlan = -1;
 
-    if (len < HM_UDP_PAYLOAD_OFFSET + 7)
+    if (len < 18)
         return false;
-    if (frame[12] != 0x08 || frame[13] != 0x00)   /* untagged IPv4 only */
+    if (frame[12] == 0x81 && frame[13] == 0x00) {
+        if (frame[16] != 0x08 || frame[17] != 0x00)
+            return false;
+        vlan = ((frame[14] << 8) | frame[15]) & 0x0FFF;
+        hdr  = HM_UDP_PAYLOAD_OFFSET_TAGGED;
+    } else if (frame[12] != 0x08 || frame[13] != 0x00) {
+        return false;
+    }
+    if (len < hdr + 7)
         return false;
 
-    const uint8_t *ip = frame + 14;
+    const uint8_t *ip = frame + hdr - 28;
     if ((ip[0] >> 4) != 4 || ip[9] != 17)         /* IPv4, UDP */
         return false;
     if (ip[16] != 224 || ip[17] != 224)           /* 224.224.x.x */
@@ -36,12 +48,13 @@ bool hm_classify(const uint8_t *frame, size_t len, hm_frame_t *out)
         return false;
 
     size_t payload_len = (size_t)udp_len - 8;
-    if (HM_UDP_PAYLOAD_OFFSET + payload_len > len)
-        payload_len = len - HM_UDP_PAYLOAD_OFFSET;
+    if (hdr + payload_len > len)
+        payload_len = len - hdr;
 
     out->is_device_frame = true;
     out->vl_id         = (uint16_t)((frame[4] << 8) | frame[5]);
-    out->payload       = frame + HM_UDP_PAYLOAD_OFFSET;
+    out->vlan          = vlan;
+    out->payload       = frame + hdr;
     out->payload_len   = payload_len;
     out->operation_type = out->payload[HM_OFF_OPERATION_TYPE];
     out->status_enable  = payload_len > HM_OFF_STATUS_ENABLE

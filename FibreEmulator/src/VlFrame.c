@@ -7,6 +7,7 @@
 #define IP_LEN    20
 #define UDP_LEN    8
 #define HEADERS   (ETH_LEN + VLAN_LEN + IP_LEN + UDP_LEN)
+#define AFDX_LEN   1
 #define UDP_PORT 100
 
 static void put_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
@@ -33,10 +34,15 @@ static uint16_t ip_checksum(const uint8_t *header)
     return (uint16_t)~sum;
 }
 
+uint8_t vl_frame_afdx_seq(uint32_t cycle)
+{
+    return cycle == 0 ? 0 : (uint8_t)((cycle - 1) % 255u + 1u);
+}
+
 int vl_frame_build(uint8_t *out, size_t cap, uint16_t vl_id, uint16_t vlan,
                    uint8_t src_dtn_port, uint32_t sequence)
 {
-    if (cap < VL_FRAME_SIZE || VL_FRAME_SIZE < HEADERS + 12)
+    if (cap < VL_FRAME_SIZE || VL_FRAME_SIZE < HEADERS + AFDX_LEN + 12)
         return -1;
 
     memset(out, 0, VL_FRAME_SIZE);
@@ -50,12 +56,17 @@ int vl_frame_build(uint8_t *out, size_t cap, uint16_t vl_id, uint16_t vlan,
     put_be16(out + 14, (uint16_t)(vlan & 0x0FFF));
     put_be16(out + 16, 0x0800);
 
+    /* The AFDX trailer byte is not part of the IP datagram, so every length
+     * below is one short of the frame - exactly as the reference frames are. */
+    uint16_t ip_total = (uint16_t)(VL_FRAME_SIZE - ETH_LEN - VLAN_LEN - AFDX_LEN);
+
     uint8_t *ip = out + ETH_LEN + VLAN_LEN;
     ip[0] = 0x45;
-    put_be16(ip + 2, (uint16_t)(VL_FRAME_SIZE - ETH_LEN - VLAN_LEN));
+    put_be16(ip + 2, ip_total);
     ip[8] = 1;      /* TTL */
     ip[9] = 17;     /* UDP */
-    ip[12] = 10;    /* 10.0.0.0 */
+    /* 10.1.<source port>.1, following the reference frames' 10.1.33.1. */
+    ip[12] = 10; ip[13] = 1; ip[14] = src_dtn_port; ip[15] = 1;
     ip[16] = 224; ip[17] = 224;
     put_be16(ip + 18, vl_id);
     put_be16(ip + 10, ip_checksum(ip));
@@ -63,7 +74,7 @@ int vl_frame_build(uint8_t *out, size_t cap, uint16_t vl_id, uint16_t vlan,
     uint8_t *udp = ip + IP_LEN;
     put_be16(udp + 0, UDP_PORT);
     put_be16(udp + 2, UDP_PORT);
-    put_be16(udp + 4, (uint16_t)(VL_FRAME_SIZE - ETH_LEN - VLAN_LEN - IP_LEN));
+    put_be16(udp + 4, (uint16_t)(ip_total - IP_LEN));
 
     uint8_t *payload = udp + UDP_LEN;
     put_be32(payload + 0, VL_FRAME_MAGIC);
@@ -71,6 +82,7 @@ int vl_frame_build(uint8_t *out, size_t cap, uint16_t vl_id, uint16_t vlan,
     payload[6] = src_dtn_port;
     put_be32(payload + 8, sequence);
 
+    out[VL_FRAME_SIZE - 1] = vl_frame_afdx_seq(sequence);
     return VL_FRAME_SIZE;
 }
 
@@ -80,7 +92,7 @@ bool vl_frame_parse(const uint8_t *frame, size_t len, vl_probe_t *probe)
     uint16_t vlan = 0;
 
     memset(probe, 0, sizeof *probe);
-    if (len < HEADERS + 12)
+    if (len < HEADERS + AFDX_LEN + 12)
         return false;
 
     if (get_be16(frame + 12) == 0x8100) {
@@ -105,6 +117,7 @@ bool vl_frame_parse(const uint8_t *frame, size_t len, vl_probe_t *probe)
     probe->vl_id        = get_be16(payload + 4);
     probe->src_dtn_port = payload[6];
     probe->sequence     = get_be32(payload + 8);
+    probe->afdx_seq     = frame[len - 1];
     probe->vlan         = vlan;
     return true;
 }

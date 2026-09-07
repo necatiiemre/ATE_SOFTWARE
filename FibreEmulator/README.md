@@ -41,6 +41,34 @@ which reaches DTN port 0; the DTN forwards it to port 16; it comes back to
 server port 4 tagged VLAN 241. A VL that goes out and never returns is the
 finding.
 
+## The probe frame
+
+Contents do not matter to the DTN, but the shape does. A probe is 128 bytes:
+
+```
+eth 14 | vlan 4 | ip 20 | udp 8 | payload 81 | afdx 1
+```
+
+* the VL id sits in the low two bytes of the destination MAC **and** in the low
+  two bytes of the destination IP (`224.224.<VL>`), the way the DTN's own
+  traffic carries it
+* UDP 100 → 100, source IP `10.1.<source port>.1`, following the reference
+  frames' `10.1.33.1`
+* the last byte is the **AFDX sequence number, outside the IP total_length** —
+  the frame is one byte longer than IP declares. Every frame in the reference
+  configuration is built this way, and an AFDX switch is entitled to drop one
+  that is not; probes without it were a candidate for the first run's total
+  loss. It counts 0 once, then 1..255, one per VL per cycle.
+* 128 bytes sits inside the VL records' Lmin 64 and Lmax 1518 either way the
+  device counts the VLAN tag
+
+The payload carries a magic word, the VL id, the source DTN port and the cycle
+number, which is all the receive side needs to recognise its own frames.
+
+The two health-monitor taps (VL 100 and 101) are injected the same way, but they
+leave over copper, so only the acceleration test sees them arrive — which is why
+its receiver accepts tagged frames as well as untagged ones.
+
 ## Running
 
 ```
