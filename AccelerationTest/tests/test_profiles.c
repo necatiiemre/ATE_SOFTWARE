@@ -108,7 +108,7 @@ static int check_management(void)
     return failures;
 }
 
-static int check_profiles(bool dense)
+static int check_profiles(bool management)
 {
     size_t count;
     const vl_profile_t *profiles = vl_profile_all(&count);
@@ -116,7 +116,10 @@ static int check_profiles(bool dense)
 
     for (size_t i = 0; i < count; i++) {
         char reason[128];
-        int records = vl_profile_expand(&profiles[i], g_records, VL_PROFILE_MAX_RECORDS, dense);
+        vl_profile_t round = profiles[i];
+        round.management = management;
+
+        int records = vl_profile_expand(&round, g_records, VL_PROFILE_MAX_RECORDS);
         if (records < 0) {
             printf("[FAIL] %s does not fit in the VL table\n", profiles[i].name);
             failures++;
@@ -127,17 +130,11 @@ static int check_profiles(bool dense)
             failures++;
             continue;
         }
-        for (int k = 1; k < records; k++)
-            if (g_records[k].vl_id <= g_records[k - 1].vl_id) {
-                printf("[FAIL] %s: VL ids are not sorted at index %d\n", profiles[i].name, k);
-                failures++;
-                break;
-            }
-
         size_t protocol_len;
         const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
         int frames = dtn_build_config_frames(g_records, (size_t)records,
                                              protocol_block, protocol_len, -1,
+                                             &DTN_CONFIG_REFERENCE,
                                              g_frames, DTN_MAX_CONFIG_FRAMES);
         if (frames < 0) {
             printf("[FAIL] %s: frames could not be built\n", profiles[i].name);
@@ -147,9 +144,11 @@ static int check_profiles(bool dense)
         size_t bytes = 0;
         for (int f = 0; f < frames; f++)
             bytes += g_frames[f].len;
-        printf("[ OK ] %-8s %s  %4d records (%zu enabled), %2d frames, %6zu bytes\n",
-               profiles[i].name, dense ? "dense " : "sparse", records,
-               vl_profile_enabled_count(g_records, (size_t)records), frames, bytes);
+        printf("[ OK ] %-8s %-18s %4d records (%zu enabled), %2d frames, %6zu bytes\n",
+               profiles[i].name,
+               management ? "round + mgmt VLs" : "round only",
+               records, vl_profile_enabled_count(g_records, (size_t)records),
+               frames, bytes);
     }
     return failures;
 }

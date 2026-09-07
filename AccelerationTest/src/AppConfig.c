@@ -39,10 +39,10 @@ const timing_config_t *app_config_timing(void)
     return &g_timing;
 }
 
-static bool g_dense_table = true;
+static bool g_management_vls;
 
-bool app_config_dense_table(void) { return g_dense_table; }
-void app_config_set_dense_table(bool dense) { g_dense_table = dense; }
+bool app_config_management_vls(void) { return g_management_vls; }
+void app_config_set_management_vls(bool keep) { g_management_vls = keep; }
 
 const copper_link_t *app_config_config_link(void)
 {

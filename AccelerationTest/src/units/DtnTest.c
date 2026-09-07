@@ -296,8 +296,10 @@ unit_result_t dtn_test_run(void)
     if (!profile)
         return UNIT_RESULT_ABORTED;
 
-    int count = vl_profile_expand(profile, g_records, VL_PROFILE_MAX_RECORDS,
-                                  app_config_dense_table());
+    vl_profile_t round = *profile;
+    round.management = app_config_management_vls();
+
+    int count = vl_profile_expand(&round, g_records, VL_PROFILE_MAX_RECORDS);
     if (count < 0) {
         puts("Profile does not fit in the VL table.");
         return UNIT_RESULT_ERROR;
@@ -315,6 +317,7 @@ unit_result_t dtn_test_run(void)
     const uint8_t *protocol_block = vl_profile_protocol_block(&protocol_len);
     int frame_count = dtn_build_config_frames(g_records, (size_t)count,
                                               protocol_block, protocol_len, -1,
+                                              &DTN_CONFIG_REFERENCE,
                                               g_frames, DTN_MAX_CONFIG_FRAMES);
     if (frame_count < 0) {
         puts("Could not build the configuration frames.");
@@ -327,8 +330,8 @@ unit_result_t dtn_test_run(void)
 
     printf("\n  profile     : %s - %s\n", profile->name, profile->description);
     size_t enabled = vl_profile_enabled_count(g_records, (size_t)count);
-    printf("  VL table    : %d records, %zu enabled  (VL %u..%u)\n", count, enabled,
-           g_records[0].vl_id, g_records[count - 1].vl_id);
+    printf("  VL table    : %d records, %zu enabled%s\n", count, enabled,
+           round.management ? "  (round + DTN management VLs)" : "  (round only)");
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
     printf("  config out  : %s (DTN port %u)\n", config_link->iface, config_link->dtn_port);
     printf("  listening   :");

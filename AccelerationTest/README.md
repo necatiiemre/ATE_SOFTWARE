@@ -159,40 +159,59 @@ They are different things and both reach the workstation over copper:
 Every profile therefore also carries **VL 4419-4490** and the block written at
 address `0x46`, both copied byte for byte from the reference configuration.
 
-That block looks like a PTP table and was left out at first, which turned out to
-be why a configured DTN went silent: it does not describe PTP, it *enumerates*
-VL 4420-4487 — the copper-to-management VLs among them. The records and the
-block have to agree, so either both go or neither does.
+That block looks like a PTP table but its body *enumerates* VL 4420-4487. It is
+sent as its own datagram before the switch table: the capture numbers its first
+switch datagram seq 2, which is only possible if the end-system datagram and
+this one precede it.
 
 The 72 records are a broadcast from port 34 to all 32 fibre ports (VL 4419), a
 pair per fibre port (4420-4483), and both copper ports wired to port 34 in both
 directions (4484-4490). VL 4488 is the one status replies arrive on.
 `tests/test_profiles.c` checks the copy stays faithful.
 
-## The VL table is written contiguously
+## The VL table is sparse, and not sorted
 
-The reference configuration's VL ids run from 3 to 4490 with no gap, every
-record enabled, and the vendor XML carries an `ENABLE` attribute. Taken together
-that reads like a table the device indexes rather than searches — so a sparse
-table would leave every VL above the record count unreachable, which is exactly
-what a first run on the hardware looked like: the DTN's own health monitor
-stopped after configuration and almost nothing came back over fibre.
-
-Each round is therefore expanded across VL 3 to the highest id it uses, with a
-disabled record for every id it does not:
+The captured configuration for round 1 settles this. It is two datagrams, seq 2
+and seq 3, carrying 122 records: the 120 fibre VLs and the two health-monitor
+taps, in link order with the taps last.
 
 ```
-VL    3  disabled  00 03 06 02 00 40 15 ee 00 00 00 00 00 00
-VL  100  ENABLE    00 64 06 02 00 40 d5 ee 02 0f 00 00 00 00
-VL 1024  ENABLE    04 00 06 02 00 40 95 ee 00 00 00 01 00 00
+VL 1024  ENABLE  04 00 06 02 00 40 95 ee 00 00 00 01 00 00   port  0 -> 16
+...
+VL 2083  ENABLE  08 23 06 02 00 40 95 ee 00 15 00 00 00 20   port 21 ->  5
+VL  100  ENABLE  00 64 06 02 00 40 95 ee 02 0f 00 00 00 00   port 15 -> 33
+VL  101  ENABLE  00 65 06 02 00 40 95 ee 02 1f 00 00 00 00   port 31 -> 33
 ```
 
-A disabled record clears the `ENABLE` bit of the flag nibble and names no source
-or destination; the enabled ones are byte for byte what they were.
+VL 100 and 101 come *after* VL 2083, so the ids are not in order — which means
+the device reads the id out of each record rather than indexing its table by
+position. A contiguous table with the unused ids disabled, which an earlier
+reading of the reference blob suggested, is not needed and is not what the
+hardware is given.
 
-That makes a round 4488 records in 46 frames, about 65 KB and 190 ms — the same
-shape as the reference, which is 4488 records in 47. `--sparse-table` sends only
-the profile's own 129 records in 4 frames, for comparing the two on the bench.
+Two other things the capture settles:
+
+* every record carries flag nibble `0x9`, the health-monitor taps included. The
+  `0xD` in the reference blob belongs to VL 4488 specifically, not to taps.
+* the closing datagram goes `0x72` → `0x74` → `0x71`. There is no `0x73` port
+  table.
+
+`tests/test_config1.c` rebuilds both datagrams and compares them with
+`tests/fixtures/config1_switch.bin` byte for byte. Record layout, record order,
+flag nibble, block chain, markers, the 104-record split and the sequence
+numbering all have to be right at once for it to pass.
+
+## The DTN's own health monitor, and `--keep-management`
+
+The capture's 122 records are the round and nothing else, so a configured DTN
+loses VL 4488 — port 34 out to the 100M copper port — and stops sending its own
+health monitor. That is a property of the captured configuration, not a bug in
+it: the fibre-side unit's health monitor still arrives, on VL 100 and 101.
+
+`--keep-management` appends VL 4419-4490 verbatim, 194 records instead of 122,
+so the device keeps its own health monitor and its answer to a `0x52` query. The
+fibre part of the table is identical either way, so the two can be compared on
+the bench without changing anything else.
 
 ## Not yet pinned down
 
@@ -200,9 +219,11 @@ the profile's own 129 records in 4 frames, for comparing the two on the bench.
   Every reference record uses `BAG=1MS PRIORITY=LOW FEEDBACKVL=FALSE`, so their
   encodings cannot be derived from it. The XML reader raises rather than guessing
   when a profile deviates.
-* The end-system VL-count field is written as the number of records. The
-  reference VL IDs are contiguous, so "count" and "span" are indistinguishable
-  there — and our profiles are sparse.
+* Bytes 2-3 of the end-system block `0x10` are `0x1188`. That is VL 4488, the id
+  `HEALTH_MONITOR_RESPONSE_VL_IDX` names — and the reference table happens to
+  hold 4488 records, so the field reads equally well as a record count. It is
+  sent verbatim rather than recomputed: writing the record count there is a good
+  candidate for why a smaller table silences the device.
 * Whether the device accepts `0x57` writes on a copper end-system port. Reads are
   proven: the health monitor polls over `eno12409`. Writes have only ever gone
   over the tagged fibre path. The device's `eth_wrong_op_cnt`,

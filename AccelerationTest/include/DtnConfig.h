@@ -36,7 +36,7 @@
 #define DTN_NET_B               0x40
 
 /* Config-space start addresses (the "CfgType" byte). */
-#define DTN_ADDR_ES_GLOBAL      0x10    /* end-system globals: VL count, Lmax */
+#define DTN_ADDR_ES_GLOBAL      0x10    /* end-system globals: HM VL, Lmax */
 #define DTN_ADDR_ES_PARAMS      0x17    /* end-system parameters */
 #define DTN_ADDR_PTP            0x46    /* PTP session table */
 #define DTN_ADDR_SW_BEGIN       0x70    /* switch table: begin */
@@ -107,10 +107,11 @@ void dtn_vl_init(dtn_vl_t *vl, uint16_t vl_id, uint8_t src_port, uint64_t dest_m
 /**
  * @brief A record for a VL the configuration does not use.
  *
- * The device's VL table looks like an array rather than a list: every record in
- * the reference configuration is enabled and the ids run without a gap, and the
- * vendor XML has an ENABLE attribute for exactly this. A table with holes in it
- * therefore has to spell the holes out.
+ * The vendor XML has an ENABLE attribute for exactly this. The device does not
+ * need the holes spelled out - the captured configuration writes 122 records
+ * whose ids are neither contiguous nor sorted, which only works if the device
+ * reads the id out of each record - but a disabled record is still the way to
+ * retire a VL a previous configuration left behind.
  */
 void dtn_vl_init_disabled(dtn_vl_t *vl, uint16_t vl_id);
 
@@ -161,19 +162,44 @@ size_t dtn_encode_port_table(uint8_t *out, size_t cap, uint16_t value, uint8_t p
 #define DTN_MAX_CONFIG_FRAMES 64
 
 /**
+ * @brief Which optional pieces a configuration carries.
+ *
+ * The switch table itself (0x70, 0x72, 0x74, 0x71) is always written; these are
+ * the parts around it. The captured configuration numbers its first switch
+ * datagram seq 2, so two datagrams precede it: the end-system blocks and the
+ * 0x46 block, exactly as RemoteConfigSender sends them.
+ */
+typedef struct {
+    bool end_system;      /**< blocks 0x10 and 0x17, as their own datagram */
+    bool protocol_block;  /**< block 0x46, as its own datagram */
+    bool port_table;      /**< block 0x73, inside the closing datagram */
+    bool status_query;    /**< the trailing 0x52 read */
+} dtn_config_opts_t;
+
+/**
+ * @brief What the captured configuration sends.
+ *
+ * End-system blocks and 0x46, then the switch table, and no port table: the
+ * capture's closing datagram goes straight from 0x72 to 0x74 to 0x71.
+ */
+extern const dtn_config_opts_t DTN_CONFIG_REFERENCE;
+
+/**
  * @brief Turn a VL table into the frames that configure the DTN.
  *
- * Emits the end-system blocks, then the protocol block if one is given, then
- * the VL table split across as many datagrams as it needs, closing the last one
- * with the port table and the switch end markers, and finishes with a 0x52
- * status query so the caller can read back what the device made of it.
+ * Emits the optional end-system and 0x46 datagrams, then the VL table split
+ * across as many datagrams as it needs, closing the last one with the switch
+ * end markers, and optionally finishes with a 0x52 status query so the caller
+ * can read back what the device made of it.
  *
- * @param protocol_block payload for address 0x46, or NULL to leave it out
+ * @param protocol_block payload for address 0x46; ignored unless opts asks for it
  * @param vlan 802.1Q tag, or -1 for untagged (the copper path)
+ * @param opts which optional pieces to include; NULL means DTN_CONFIG_REFERENCE
  * @return frame count, or -1 if the VL table does not fit
  */
 int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
                             const uint8_t *protocol_block, size_t protocol_len,
-                            int vlan, dtn_frame_t *frames, size_t max_frames);
+                            int vlan, const dtn_config_opts_t *opts,
+                            dtn_frame_t *frames, size_t max_frames);
 
 #endif /* DTN_CONFIG_H */

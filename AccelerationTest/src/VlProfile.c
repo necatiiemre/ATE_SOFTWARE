@@ -1,7 +1,6 @@
 #include "VlProfile.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* Fibre links, six pairs per round in each direction. Round 3 overlaps round 2
@@ -13,20 +12,24 @@ static const vl_link_t C2_REV[] = {{22,6},{23,7},{24,8},{25,9},{26,10},{27,11}};
 static const vl_link_t C3_FWD[] = {{10,26},{11,27},{12,28},{13,29},{14,30},{15,31}};
 static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,15}};
 
+/* Every record of the captured configuration carries 0x9, the health-monitor
+ * taps included. 0xD - the extra PRIORITY bit - appears only on the DTN's own
+ * VL 4488 in the reference blob, so it belongs to that VL and not to taps in
+ * general. */
 #define FLAGS_NORMAL (DTN_VL_FLAG_ENABLE | DTN_VL_FLAG_RESERVED)
-/* The health-monitor taps carry flag nibble 0xD rather than the 0x9 every other
- * record uses, matching VL 4488 in the main ATE software. */
-#define HM_FLAGS     (FLAGS_NORMAL | DTN_VL_FLAG_PRIORITY)
+#define HM_FLAGS     FLAGS_NORMAL
 
 /* VL 4419-4490 from the reference configuration, copied verbatim rather than
- * described: the DTN's own health monitor and the reply to a 0x52 status query
- * travel on them. Sending only the seven that touch copper left the device
- * silent once its table was replaced - the protocol block below enumerates
- * VL 4420-4487, so the two have to agree.
+ * described: the DTN's own health monitor (VL 4488, port 34 -> port 33) and the
+ * reply to a 0x52 status query travel on them.
  *
  * VL 4419 broadcasts from the internal management port 34 to all 32 fibre
  * ports, 4420-4483 pair each fibre port with it, 4484-4490 wire it to both
- * copper ports in both directions. */
+ * copper ports in both directions.
+ *
+ * The captured configuration does NOT carry these: its 122 records are the
+ * fibre links and the two taps, nothing else. Appending them is therefore a
+ * deliberate departure from the capture - see vl_profile_t::management. */
 static const uint8_t REF_MGMT_RECORDS[] = {
     0x11, 0x43, 0x06, 0x02, 0x00, 0x40, 0x95, 0xee, 0x03, 0x22, 0xff, 0xff, 0xff, 0xff,
     0x11, 0x44, 0x06, 0x02, 0x00, 0x40, 0x95, 0xee, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -102,9 +105,9 @@ static const uint8_t REF_MGMT_RECORDS[] = {
     0x11, 0x8a, 0x06, 0x02, 0x00, 0x40, 0x95, 0xee, 0x01, 0x21, 0x00, 0x00, 0x00, 0x00,
 };
 
-/* Address 0x46. Not the PTP table it resembles: it enumerates VL 4420-4487,
- * the copper-to-management VLs among them. Leaving it out is what stopped the
- * DTN talking after configuration. */
+/* Address 0x46, sent as its own datagram. The capture's first switch datagram
+ * is seq 2, so two datagrams precede it - the end-system blocks and this one,
+ * exactly as RemoteConfigSender orders them. Its body names VL 4420-4487. */
 static const uint8_t REF_PROTOCOL_BLOCK[] = {
     0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x11, 0x43, 0x00, 0x17,
     0x00, 0x04, 0x11, 0x47, 0x11, 0x46, 0x11, 0x45, 0x11, 0x44,
@@ -170,7 +173,7 @@ const dtn_vl_t *vl_profile_management(size_t *count)
             {.vl_id = 100, .src_port = hm0, .dst_port = 33, .flags = HM_FLAGS}, \
             {.vl_id = 101, .src_port = hm1, .dst_port = 33, .flags = HM_FLAGS}, \
         },                                                               \
-        .management = true,                                              \
+        .management = false,                                             \
     }
 
 static const vl_profile_t g_profiles[] = {
@@ -190,13 +193,6 @@ const vl_profile_t *vl_profile_all(size_t *count)
     return g_profiles;
 }
 
-static int compare_vl_id(const void *a, const void *b)
-{
-    uint16_t x = ((const dtn_vl_t *)a)->vl_id;
-    uint16_t y = ((const dtn_vl_t *)b)->vl_id;
-    return (x > y) - (x < y);
-}
-
 size_t vl_profile_enabled_count(const dtn_vl_t *records, size_t count)
 {
     size_t enabled = 0;
@@ -207,37 +203,7 @@ size_t vl_profile_enabled_count(const dtn_vl_t *records, size_t count)
     return enabled;
 }
 
-/* Spread the profile's records over a contiguous table, filling the gaps with
- * disabled ones. Both arrays are sorted by VL id, so one pass does it. */
-static int densify(dtn_vl_t *out, size_t used, size_t cap)
-{
-    if (used == 0)
-        return 0;
-
-    uint16_t first = VL_PROFILE_TABLE_FIRST_VL;
-    uint16_t last  = out[used - 1].vl_id;
-    if (out[0].vl_id < first)
-        first = out[0].vl_id;
-
-    size_t total = (size_t)(last - first) + 1u;
-    if (total > cap)
-        return -1;
-
-    /* Walk backwards so the sparse records are read before they are overwritten. */
-    size_t src = used;
-    for (size_t i = total; i-- > 0;) {
-        uint16_t vl_id = (uint16_t)(first + i);
-
-        if (src > 0 && out[src - 1].vl_id == vl_id)
-            out[i] = out[--src];
-        else
-            dtn_vl_init_disabled(&out[i], vl_id);
-    }
-    return (int)total;
-}
-
-int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap,
-                      bool dense)
+int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
 {
     size_t n = 0;
 
@@ -273,8 +239,7 @@ int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap,
         n += mgmt_count;
     }
 
-    qsort(out, n, sizeof out[0], compare_vl_id);
-    return dense ? densify(out, n, cap) : (int)n;
+    return (int)n;
 }
 
 /* Ports 0-31 carry fibre traffic; 32 and 33 are the copper end-system ports and
@@ -296,11 +261,13 @@ bool vl_profile_validate(const dtn_vl_t *records, size_t count,
                      "VL %u is in the reserved range 0-2", r->vl_id);
             return false;
         }
-        /* Records arrive sorted, so a repeat is always adjacent. */
-        if (i && records[i - 1].vl_id == r->vl_id) {
-            snprintf(reason, reason_cap, "VL %u appears twice", r->vl_id);
-            return false;
-        }
+        /* The table is neither sorted nor contiguous, so a repeat can be
+         * anywhere. 122 records make the quadratic scan free. */
+        for (size_t k = 0; k < i; k++)
+            if (records[k].vl_id == r->vl_id) {
+                snprintf(reason, reason_cap, "VL %u appears twice", r->vl_id);
+                return false;
+            }
         if (!dtn_vl_enabled(r))
             continue;      /* a hole in the table; nothing else applies to it */
 

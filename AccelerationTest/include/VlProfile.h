@@ -27,10 +27,8 @@
 #define VL_PROFILE_MAX_LINKS   16
 #define VL_PROFILE_MAX_GROUPS  2
 #define VL_PROFILE_MAX_HM      4
-#define VL_PROFILE_MAX_RECORDS 4608
-
-/* The reference configuration's VL ids start here and run without a gap. */
-#define VL_PROFILE_TABLE_FIRST_VL 3
+/* A round is 122 records; the DTN's management path adds 72 more. */
+#define VL_PROFILE_MAX_RECORDS 256
 
 /** One directed fibre link, source port to destination port. */
 typedef struct {
@@ -55,7 +53,7 @@ typedef struct {
     uint16_t vl_id;
     uint8_t  src_port;
     uint8_t  dst_port;
-    uint8_t  flags;      /**< flag nibble; see the note in VlProfile.c */
+    uint8_t  flags;      /**< flag nibble; 0x9, as in the capture */
 } vl_hm_t;
 
 typedef struct {
@@ -65,7 +63,10 @@ typedef struct {
     vl_link_group_t  groups[VL_PROFILE_MAX_GROUPS];
     uint8_t          hm_count;
     vl_hm_t          hm[VL_PROFILE_MAX_HM];
-    bool             management;    /**< include the DTN's own management VLs */
+    /* Append VL 4419-4490 so the DTN keeps its own health monitor and its
+     * answer to a 0x52 query. The captured configuration leaves them out, so a
+     * profile with this set is deliberately more than the capture. */
+    bool             management;
 } vl_profile_t;
 
 /**
@@ -84,8 +85,9 @@ size_t vl_profile_management_records(const uint8_t **raw);
 /**
  * @brief The block written at address 0x46, verbatim from the reference.
  *
- * It enumerates VL 4420-4487, the copper-to-management VLs among them, so a
- * configuration that writes those records has to write this block too.
+ * Sent as its own datagram before the switch table; the capture numbers its
+ * first switch datagram seq 2, which is only possible if this one and the
+ * end-system datagram precede it.
  */
 const uint8_t *vl_profile_protocol_block(size_t *len);
 
@@ -93,22 +95,17 @@ const uint8_t *vl_profile_protocol_block(size_t *len);
 const vl_profile_t *vl_profile_all(size_t *count);
 
 /**
- * @brief Expand a profile into VL records, sorted by VL id.
+ * @brief Expand a profile into VL records, in the order the capture writes them.
  *
- * With @p dense set, the table is filled from VL_PROFILE_TABLE_FIRST_VL up to
- * the highest VL the profile uses, and every id the profile does not use gets a
- * disabled record. That mirrors the reference configuration, whose ids run from
- * 3 to 4490 with nothing missing - the device looks to index its table rather
- * than search it, so a sparse table would leave everything above the record
- * count unreachable.
- *
- * Without it the table carries only the profile's own VLs, which is smaller and
- * faster to send but rests on the device tolerating gaps.
+ * Forward links first, then the reverse links, then the health-monitor taps,
+ * and finally the management VLs if the profile asks for them. The result is
+ * neither contiguous nor sorted by VL id - the capture is not either, which is
+ * what proves the device reads the id out of each record instead of indexing
+ * its table by position.
  *
  * @return record count, or -1 if the profile does not fit
  */
-int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap,
-                      bool dense);
+int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap);
 
 /** How many of @p records carry the ENABLE flag. */
 size_t vl_profile_enabled_count(const dtn_vl_t *records, size_t count);

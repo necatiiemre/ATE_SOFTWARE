@@ -43,15 +43,19 @@ const char *app_config_iface_for_port(uint8_t dtn_port);
 const timing_config_t *app_config_timing(void);
 
 /**
- * @brief Whether to write a contiguous VL table with the unused ids disabled.
+ * @brief Whether to append the DTN's own management VLs to a round.
  *
- * On by default. The reference configuration's ids run from 3 to 4490 with no
- * gap, which suggests the device indexes its table rather than searching it -
- * a sparse table would then leave every VL above the record count unreachable.
- * Turn it off with --sparse-table to send only the profile's own VLs.
+ * Off by default, which makes the configuration byte-identical to the capture:
+ * 122 records, the fibre links and the two taps and nothing else. That is also
+ * what stops the DTN's own health monitor, because VL 4488 - port 34 out to the
+ * 100M copper port - is one of the records the capture leaves out.
+ *
+ * Turn it on with --keep-management to append VL 4419-4490 verbatim, so the
+ * device keeps its own health monitor and its answer to a 0x52 query. The fibre
+ * part of the table is unchanged either way.
  */
-bool app_config_dense_table(void);
-void app_config_set_dense_table(bool dense);
+bool app_config_management_vls(void);
+void app_config_set_management_vls(bool keep);
 
 /** Which copper link the configuration frames go out of. */
 const copper_link_t *app_config_config_link(void);

@@ -210,8 +210,14 @@ size_t dtn_encode_port_table(uint8_t *out, size_t cap, uint16_t value, uint8_t p
 
 /* ------------------------------------------------------------------------- */
 /* Fixed blocks, copied verbatim from the reference configuration that the
- * hardware is known to accept. Only the VL count inside ES_GLOBAL varies. */
+ * hardware is known to accept. None of them varies with the VL table. */
 
+/* Byte 2-3 is 0x1188 - VL 4488, the id the main software filters the device's
+ * own health monitor on (HEALTH_MONITOR_RESPONSE_VL_IDX). The reference
+ * configuration happens to hold 4488 VL records too, so the field reads equally
+ * well as a record count; it is not one. Overwriting it with the record count
+ * is what silences the DTN's own health monitor after a smaller table is
+ * written, so this block goes out exactly as captured. */
 static const uint8_t REF_ES_GLOBAL[] = {
     0x00, 0x01, 0x11, 0x88, 0x05, 0xee, 0x04, 0x09, 0xc7, 0x00};
 static const uint8_t REF_ES_PARAMS[] = {
@@ -232,18 +238,27 @@ static const uint8_t STATUS_QUERY[] = {
 static uint8_t g_record_buf[DTN_MAX_RECORDS_PER_BLOCK * DTN_VL_RECORD_LEN];
 static uint8_t g_port_table[DTN_PORT_COUNT * 4];
 
+const dtn_config_opts_t DTN_CONFIG_REFERENCE = {
+    .end_system     = true,
+    .protocol_block = true,
+    .port_table     = false,
+    .status_query   = true,
+};
+
 int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
                             const uint8_t *protocol_block, size_t protocol_len,
-                            int vlan, dtn_frame_t *frames, size_t max_frames)
+                            int vlan, const dtn_config_opts_t *opts,
+                            dtn_frame_t *frames, size_t max_frames)
 {
     uint8_t payload[DTN_MAX_FRAME];
-    uint8_t es_global[sizeof REF_ES_GLOBAL];
     dtn_block_t blocks[DTN_MAX_BLOCKS];
     size_t emitted = 0;
     uint8_t seq = 0;
 
     if (count == 0 || count > 0xFFFF)
         return -1;
+    if (!opts)
+        opts = &DTN_CONFIG_REFERENCE;
 
     /* Emit one frame; the sequence byte advances with each. */
     #define EMIT(nblocks, terminate, text)                                          \
@@ -265,15 +280,13 @@ int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
             seq = emitted == 1 ? 1 : dtn_next_seq(seq);                             \
         } while (0)
 
-    memcpy(es_global, REF_ES_GLOBAL, sizeof REF_ES_GLOBAL);
-    es_global[2] = (uint8_t)(count >> 8);
-    es_global[3] = (uint8_t)count;
+    if (opts->end_system) {
+        blocks[0] = (dtn_block_t){DTN_ADDR_ES_GLOBAL, REF_ES_GLOBAL, sizeof REF_ES_GLOBAL};
+        blocks[1] = (dtn_block_t){DTN_ADDR_ES_PARAMS, REF_ES_PARAMS, sizeof REF_ES_PARAMS};
+        EMIT(2, true, "end system");
+    }
 
-    blocks[0] = (dtn_block_t){DTN_ADDR_ES_GLOBAL, es_global, sizeof es_global};
-    blocks[1] = (dtn_block_t){DTN_ADDR_ES_PARAMS, REF_ES_PARAMS, sizeof REF_ES_PARAMS};
-    EMIT(2, true, "end system");
-
-    if (protocol_block && protocol_len) {
+    if (opts->protocol_block && protocol_block && protocol_len) {
         blocks[0] = (dtn_block_t){DTN_ADDR_PTP, protocol_block, (uint16_t)protocol_len};
         EMIT(1, true, "protocol block");
     }
@@ -296,11 +309,14 @@ int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
         blocks[nb++] = (dtn_block_t){DTN_ADDR_VL_TABLE, g_record_buf,
                                      (uint16_t)(take * DTN_VL_RECORD_LEN)};
         if (last) {
-            size_t pt = dtn_encode_port_table(g_port_table, sizeof g_port_table,
-                                              0x0112, DTN_PORT_COUNT - 1);
-            if (pt == 0)
-                return -1;
-            blocks[nb++] = (dtn_block_t){DTN_ADDR_PORT_TABLE, g_port_table, (uint16_t)pt};
+            if (opts->port_table) {
+                size_t pt = dtn_encode_port_table(g_port_table, sizeof g_port_table,
+                                                  0x0112, DTN_PORT_COUNT - 1);
+                if (pt == 0)
+                    return -1;
+                blocks[nb++] = (dtn_block_t){DTN_ADDR_PORT_TABLE, g_port_table,
+                                             (uint16_t)pt};
+            }
             blocks[nb++] = (dtn_block_t){DTN_ADDR_SW_MISC, REF_SW_MISC, sizeof REF_SW_MISC};
             blocks[nb++] = (dtn_block_t){DTN_ADDR_SW_END, REF_SW_END, sizeof REF_SW_END};
         }
@@ -308,16 +324,18 @@ int dtn_build_config_frames(const dtn_vl_t *vls, size_t count,
     }
     #undef EMIT
 
-    if (emitted == max_frames)
-        return -1;
-    int flen = dtn_build_frame(STATUS_QUERY, sizeof STATUS_QUERY, seq, 0, -1,
-                               DTN_NET_A, frames[emitted].data, DTN_MAX_FRAME);
-    if (flen < 0)
-        return -1;
-    frames[emitted].seq = seq;
-    frames[emitted].len = (uint16_t)flen;
-    frames[emitted].label = "status query";
-    emitted++;
+    if (opts->status_query) {
+        if (emitted == max_frames)
+            return -1;
+        int flen = dtn_build_frame(STATUS_QUERY, sizeof STATUS_QUERY, seq, 0, -1,
+                                   DTN_NET_A, frames[emitted].data, DTN_MAX_FRAME);
+        if (flen < 0)
+            return -1;
+        frames[emitted].seq = seq;
+        frames[emitted].len = (uint16_t)flen;
+        frames[emitted].label = "status query";
+        emitted++;
+    }
 
     return (int)emitted;
 }

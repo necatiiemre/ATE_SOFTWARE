@@ -23,8 +23,8 @@ static void banner(void)
 int main(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--sparse-table") == 0)
-            app_config_set_dense_table(false);
+        if (strcmp(argv[i], "--keep-management") == 0)
+            app_config_set_management_vls(true);
         else
             printf("Ignoring unknown argument '%s'\n", argv[i]);
     }
@@ -32,9 +32,9 @@ int main(int argc, char **argv)
     safe_shutdown_install();
     banner();
     printf("VL table: %s\n",
-           app_config_dense_table()
-               ? "contiguous, unused ids disabled"
-               : "sparse (--sparse-table)");
+           app_config_management_vls()
+               ? "round + the DTN's own management VLs (--keep-management)"
+               : "round only, as captured");
 
     for (;;) {
         const unit_t *unit = unit_manager_select();

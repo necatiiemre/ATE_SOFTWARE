@@ -93,13 +93,18 @@ sudo ./build/acceleration_test
 2. pick the round (`1`, `2` or `3`)
 3. read the routing it is about to write, then `y`
 
-It waits for the DTN to start talking, sends the configuration — 46 frames,
-about 190 ms — then draws the live table and keeps it up until Ctrl+C.
+It waits for the DTN to start talking, sends the configuration — 5 frames,
+about 20 ms — then draws the live table and keeps it up until Ctrl+C.
 
-The VL table is written contiguously from VL 3, with a disabled record for every
-id the round does not use. `--sparse-table` sends only the round's own 129
-records instead; if the DTN's health monitor stops after configuration, that
-switch is the first thing to try either way round.
+The four configuration frames reproduce the captured configuration: the
+end-system blocks (seq 0), the `0x46` block (seq 1) and the 122-record switch
+table split over seq 2 and seq 3, followed by a `0x52` status query. Frames
+seq 2 and seq 3 are byte-identical to the capture, which `make test` checks.
+
+The DTN's own health monitor rides VL 4488, and the capture's table does not
+carry it — so after configuration the device stops sending it. Add
+`--keep-management` to append VL 4419-4490 verbatim (194 records instead of 122)
+and keep that path alive; the fibre part of the table is unchanged either way.
 
 **Leave this running.** The DTN needs its VL table before anything the emulator
 sends can be forwarded.
