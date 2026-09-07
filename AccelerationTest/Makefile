@@ -21,19 +21,19 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 $(BUILD):
 	mkdir -p $(BUILD) $(BUILD)/units
 
-# Rebuilds the 47 reference frames byte for byte, reproduces the captured
-# config1 datagrams byte for byte, then checks that every round is consistent.
-test: $(BUILD)/test_reference $(BUILD)/test_config1 $(BUILD)/test_profiles
+# Rebuilds the 47 reference frames byte for byte, reproduces all three rounds
+# against the captured config1, then checks the profiles are self-consistent.
+test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles
 	./$(BUILD)/test_reference
 	@echo
-	./$(BUILD)/test_config1
+	./$(BUILD)/test_rounds
 	@echo
 	./$(BUILD)/test_profiles
 
 $(BUILD)/test_reference: tests/test_reference.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_config1: tests/test_config1.c $(LIB_OBJ) | $(BUILD)
+$(BUILD)/test_rounds: tests/test_rounds.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)

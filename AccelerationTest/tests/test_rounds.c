@@ -1,9 +1,15 @@
 /*
- * Byte-exact check against the captured configuration.
+ * Byte-exact check of all three rounds against the captured configuration.
  *
  * tests/fixtures/config1_switch.bin holds the two switch datagrams of the
  * config1 capture - the UDP payload plus the trailing AFDX sequence byte, which
  * is how the capture was read out.
+ *
+ * Only round 1 was captured. Rounds 2 and 3 are the same table with the fibre
+ * ports moved, so they are checked against the capture too: take each captured
+ * record, substitute the ports that round uses, and nothing else may differ.
+ * That is the whole claim being made about them, stated as a test rather than
+ * left in a comment.
  *
  * We send one record more than the capture does: DTN_HEALTH_MONITOR_VL, the
  * device's own health monitor out to copper, which the capture leaves out. So
@@ -103,6 +109,86 @@ static int load_capture(void)
 }
 
 /* ------------------------------------------------------------------ */
+
+/* One round's ports. The VL ids, timing and flags come from the capture. */
+typedef struct {
+    const char *name;
+    uint8_t     fwd_base;   /**< first of the six low fibre ports */
+    uint8_t     rev_base;   /**< first of the six high fibre ports */
+    uint8_t     tap[2];     /**< where the fibre-side unit's health monitor taps */
+} round_ports_t;
+
+static const round_ports_t g_rounds[] = {
+    {"config1",  0, 16, {15, 31}},
+    {"config2",  6, 22, {15, 31}},
+    {"config3", 10, 26, { 0, 16}},
+};
+
+/* The capture's record i, with this round's ports written into it. Records 0-59
+ * are the six forward links, 60-119 the six reverse links, 120-121 the taps. */
+static void expected_record(const round_ports_t *r, int i, uint8_t out[DTN_VL_RECORD_LEN])
+{
+    uint8_t src, dst;
+
+    memcpy(out, g_capture + (size_t)i * DTN_VL_RECORD_LEN, DTN_VL_RECORD_LEN);
+    if (i < 60) {
+        src = (uint8_t)(r->fwd_base + i / 10);
+        dst = (uint8_t)(r->rev_base + i / 10);
+    } else if (i < 120) {
+        src = (uint8_t)(r->rev_base + (i - 60) / 10);
+        dst = (uint8_t)(r->fwd_base + (i - 60) / 10);
+    } else {
+        src = r->tap[i - 120];
+        dst = DTN_HEALTH_MONITOR_PORT;
+    }
+    uint64_t mask = 1ull << dst;
+    out[8]  = (uint8_t)(mask >> 32);
+    out[9]  = src;
+    out[10] = (uint8_t)(mask >> 24);
+    out[11] = (uint8_t)(mask >> 16);
+    out[12] = (uint8_t)(mask >> 8);
+    out[13] = (uint8_t)mask;
+}
+
+static int check_round(const round_ports_t *r)
+{
+    const vl_profile_t *profile = NULL;
+    size_t profile_count;
+    const vl_profile_t *profiles = vl_profile_all(&profile_count);
+    uint8_t ours[DTN_VL_RECORD_LEN], want[DTN_VL_RECORD_LEN];
+
+    for (size_t i = 0; i < profile_count; i++)
+        if (strcmp(profiles[i].name, r->name) == 0)
+            profile = &profiles[i];
+    if (!profile) {
+        printf("[FAIL] there is no %s profile\n", r->name);
+        return 1;
+    }
+
+    int count = vl_profile_expand(profile, g_records, VL_PROFILE_MAX_RECORDS);
+    if (count != CAPTURE_RECORDS + 1) {
+        printf("[FAIL] %s expands to %d records, expected %d\n",
+               r->name, count, CAPTURE_RECORDS + 1);
+        return 1;
+    }
+    for (int i = 0; i < CAPTURE_RECORDS; i++) {
+        expected_record(r, i, want);
+        if (dtn_vl_encode(&g_records[i], ours) < 0 ||
+            memcmp(ours, want, DTN_VL_RECORD_LEN) != 0) {
+            printf("[FAIL] %s record %d (VL %u) is not the capture with this "
+                   "round's ports\n         ours    :", r->name, i, g_records[i].vl_id);
+            for (int k = 0; k < DTN_VL_RECORD_LEN; k++) printf(" %02x", ours[k]);
+            printf("\n         expected:");
+            for (int k = 0; k < DTN_VL_RECORD_LEN; k++) printf(" %02x", want[k]);
+            putchar('\n');
+            return 1;
+        }
+    }
+    printf("[ OK ] %s  %d records: the capture with ports %u-%u <-> %u-%u, "
+           "taps %u and %u\n", r->name, count, r->fwd_base, r->fwd_base + 5,
+           r->rev_base, r->rev_base + 5, r->tap[0], r->tap[1]);
+    return 0;
+}
 
 static int check_records(int count)
 {
@@ -253,10 +339,15 @@ int main(void)
         return 1;
     }
 
-    if (check_records(count) || check_frames(frames)) {
-        puts("FAILED: config1 does not match the capture");
+    int failures = check_records(count) || check_frames(frames);
+    for (size_t i = 0; i < sizeof g_rounds / sizeof g_rounds[0]; i++)
+        failures += check_round(&g_rounds[i]);
+
+    if (failures) {
+        puts("FAILED: a round does not match the capture");
         return 1;
     }
-    puts("PASS: config1 reproduces the capture, plus the DTN's health monitor");
+    puts("PASS: all three rounds reproduce the capture, plus the DTN's "
+         "health monitor");
     return 0;
 }

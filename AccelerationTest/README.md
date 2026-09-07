@@ -245,6 +245,28 @@ record, the fibre-side taps included, uses `0x9`.
 path the reference configuration builds. It belongs with RemoteConfigSender's
 end-system block, which answers on VL 4488, so it is off by default.
 
+## Copper is sockets, not DPDK — the same as the main software
+
+The two copper end-system ports are `AF_PACKET` raw sockets here. That is not a
+simplification of what the rig does; it is what the main ATE software does too.
+
+In `dpdk/`, ports 12-15 are the copper ones and they never reach DPDK. Their PCI
+addresses (`01:00.0` through `01:00.3`) are recorded in `Config.h` as
+documentation only — the ports stay kernel-owned and
+`dpdk/src/RawSocketPort.c` drives them with `socket(AF_PACKET, SOCK_RAW, ...)`.
+The health monitor does the same in `dpdk/src/HealthMonitor/HealthMonitor.c:589`,
+on `eno12409`. DPDK owns the fibre ports and nothing else.
+
+Where the main software goes further is throughput. To push 960 Mbps out of the
+1G copper port it adds `PACKET_TX_RING`/`PACKET_RX_RING` with `TPACKET_V2`,
+`mmap`s the rings, sets `PACKET_QDISC_BYPASS`, and spreads receive over several
+sockets with `PACKET_FANOUT`. We have no reason to: the whole of a run is four
+configuration frames and a health-monitor stream that arrives in six-packet
+cycles. Plain `sendto`/`recvfrom` on a bound `AF_PACKET` socket, with
+`PACKET_MR_PROMISC` so nothing is filtered out, covers it. If a later test ever
+needs line rate on copper, the ring setup in `RawSocketPort.c` is the pattern to
+copy — it is the same socket, configured harder.
+
 ## Not yet pinned down
 
 * `BAG`, `PRIORITY` and `FEEDBACKVL` share the `0x0602` word and the flag nibble.
