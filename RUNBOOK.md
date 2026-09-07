@@ -186,8 +186,29 @@ Under it, the numbers decoded out of that health-monitor stream:
     22  1G        119006      97506      4471          0     0     0     0     0
 ```
 
-Only the ports the round touches are listed. This is where a configuration that
-did not take shows itself:
+Only the ports the round touches are listed; `--all-ports` lists all 35, which
+is what to use when the question is what the device thinks it *has* rather than
+what the round is using. The end-of-run log records all 35 either way.
+
+The three `wrong` counters are the device's account of configuration frames it
+threw away, one per field of the payload header:
+
+```
+26 00 | 57 | 10 | 00 0a | ...
+LRU     Op   Cfg  length
+```
+
+| counter | the device is saying |
+|---|---|
+| `wrong dev` | the LRU id was not `0x2600` — this frame is not addressed to me |
+| `wrong op` | the operation was neither `0x57` (write) nor `0x52` (read) |
+| `wrong type` | I do not implement that block address |
+
+All three are decided before any block data is read, so a frame counted here was
+rejected on its header alone. A configuration the device dislikes for what is
+*inside* a block leaves all three untouched.
+
+This is where a configuration that did not take shows itself:
 
 | symptom | what it means |
 |---|---|

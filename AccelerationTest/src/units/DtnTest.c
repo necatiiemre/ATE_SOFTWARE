@@ -151,6 +151,13 @@ static void collect_ports(const dtn_vl_t *records, size_t count)
 {
     bool seen[DTN_PORT_COUNT] = {false};
 
+    if (app_config_all_ports()) {
+        g_port_count = DTN_PORT_COUNT;
+        for (int p = 0; p < DTN_PORT_COUNT; p++)
+            g_ports[p] = (uint8_t)p;
+        return;
+    }
+
     for (size_t i = 0; i < count; i++) {
         if (!dtn_vl_enabled(&records[i]))
             continue;
@@ -306,7 +313,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
              interruptions);
     vl_watch_log_summary(&g_watch);
-    hd_log_summary(&g_health, g_ports, g_port_count);
+    hd_log_summary(&g_health);
 }
 
 /* ------------------------------------------------------------------ */

@@ -210,7 +210,10 @@ void hd_render(const hd_state_t *state, const uint8_t *ports, size_t port_count)
     }
 }
 
-void hd_log_summary(const hd_state_t *state, const uint8_t *ports, size_t port_count)
+/* The log gets every port that reported, not just the round's: which ports the
+ * device says it has is exactly the question a round that will not take raises,
+ * and the answer is in the same packets whichever round is running. */
+void hd_log_summary(const hd_state_t *state)
 {
     const hd_device_t *pair[2] = {&state->assistant, &state->manager};
     const char *name[2] = {"assistant", "manager"};
@@ -231,11 +234,12 @@ void hd_log_summary(const hd_state_t *state, const uint8_t *ports, size_t port_c
                  (unsigned long long)pair[i]->eth_wrong_op_cnt,
                  (unsigned long long)pair[i]->eth_wrong_type_cnt);
     }
-    for (size_t i = 0; i < port_count; i++) {
-        uint8_t p = ports[i];
-        if (p >= HD_MAX_PORTS || !state->ports[p].valid)
-            continue;
+    for (uint8_t p = 0; p < HD_MAX_PORTS; p++) {
         const hd_port_t *port = &state->ports[p];
+        if (!port->valid) {
+            log_line("  port %2u never reported", p);
+            continue;
+        }
         log_line("  port %2u %-4s rx %llu tx %llu undef-VL %llu wrong-src %llu "
                  "Lmin %llu Lmax %llu CRC %llu",
                  p, speed_name(port->speed),

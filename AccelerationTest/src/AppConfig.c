@@ -44,6 +44,11 @@ static bool g_management_vls;
 bool app_config_management_vls(void) { return g_management_vls; }
 void app_config_set_management_vls(bool keep) { g_management_vls = keep; }
 
+static bool g_all_ports;
+
+bool app_config_all_ports(void) { return g_all_ports; }
+void app_config_set_all_ports(bool all) { g_all_ports = all; }
+
 const copper_link_t *app_config_config_link(void)
 {
     /* The 100M link is the proven management path: it is where the main ATE

@@ -48,7 +48,23 @@
 #define HD_PAYLOAD_8_PORTS     (1083 - HD_HEADER_OFFSET)
 #define HD_PAYLOAD_3_PORTS     ( 438 - HD_HEADER_OFFSET)
 
-/** The device header, from a 1187-byte packet. */
+/**
+ * @brief The device header, from a 1187-byte packet.
+ *
+ * The three eth_wrong_* counters are the device's account of configuration
+ * frames it threw away, one per field of the three-byte payload header:
+ *
+ *     26 00 | 57 | 10 | 00 0a | ...
+ *     LRU     Op   Cfg  length
+ *
+ *   eth_wrong_dev_cnt   the LRU id was not 0x2600 - not addressed to it
+ *   eth_wrong_op_cnt    the operation was neither 0x57 (write) nor 0x52 (read)
+ *   eth_wrong_type_cnt  the block address is one it does not implement
+ *
+ * All three sit before any of the block data, so a frame counted here was
+ * rejected on its header alone. A configuration the device dislikes for what is
+ * *inside* a block leaves these untouched.
+ */
 typedef struct {
     bool     valid;
     uint8_t  status_enable;      /**< 0x01 manager, 0x03 assistant, 0x05 MCU */
@@ -106,7 +122,13 @@ const hd_device_t *hd_latest_device(const hd_state_t *state);
 /** Render the device line and the ports a round cares about. */
 void hd_render(const hd_state_t *state, const uint8_t *ports, size_t port_count);
 
-/** Write the same numbers into the log. */
-void hd_log_summary(const hd_state_t *state, const uint8_t *ports, size_t port_count);
+/**
+ * @brief Write the device lines and every port the device reported into the log.
+ *
+ * All 35, not just the round's: a round that will not take raises the question
+ * of which ports the device thinks it has, and the answer is in the same
+ * packets whichever round is running.
+ */
+void hd_log_summary(const hd_state_t *state);
 
 #endif /* HEALTH_DECODE_H */

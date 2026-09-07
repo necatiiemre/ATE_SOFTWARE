@@ -25,6 +25,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--keep-management") == 0)
             app_config_set_management_vls(true);
+        else if (strcmp(argv[i], "--all-ports") == 0)
+            app_config_set_all_ports(true);
         else
             printf("Ignoring unknown argument '%s'\n", argv[i]);
     }

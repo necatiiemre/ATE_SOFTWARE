@@ -57,6 +57,17 @@ const timing_config_t *app_config_timing(void);
 bool app_config_management_vls(void);
 void app_config_set_management_vls(bool keep);
 
+/**
+ * @brief Whether the live port table lists all 35 ports or only the round's.
+ *
+ * Off by default, which keeps the table short. Turn it on with --all-ports when
+ * the question is what the device thinks it has rather than what the round is
+ * using - a port the device never reports, or reports with nothing on it, is
+ * visible only this way. The end-of-run log always records all 35.
+ */
+bool app_config_all_ports(void);
+void app_config_set_all_ports(bool all);
+
 /** Which copper link the configuration frames go out of. */
 const copper_link_t *app_config_config_link(void);
 

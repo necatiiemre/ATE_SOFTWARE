@@ -267,6 +267,26 @@ cycles. Plain `sendto`/`recvfrom` on a bound `AF_PACKET` socket, with
 needs line rate on copper, the ring setup in `RawSocketPort.c` is the pattern to
 copy — it is the same socket, configured harder.
 
+## What the health-monitor stream says
+
+The stream is not only a heartbeat. The 1187-byte packets carry a device header
+and every packet carries 129-byte per-port blocks, decoded in `HealthDecode.c`
+against the offsets in `dpdk/include/HealthTypes.h`.
+
+The device header's three `eth_wrong_*` counters are its account of
+configuration frames it threw away, one per field of the payload header
+(`26 00` LRU, `57` operation, `10` block address). All three are decided before
+any block data is read, so a frame counted there was rejected on its header
+alone — a configuration the device dislikes for what is *inside* a block leaves
+them untouched. `config_id` is the other half: it changes when the device takes
+a configuration, so it separates "rejected" from "never arrived".
+
+The port blocks give per-port rx/tx and the drop reasons: `vlid_drop` for a VL
+the table does not define, `vl_source_err` for one that arrived on a port that
+is not its source, `vl_min_err`/`vl_max_err` for a frame outside the VL's length
+window. All 35 ports are reported whichever round is running, so the port table
+also answers which ports the device believes it has.
+
 ## Not yet pinned down
 
 * `BAG`, `PRIORITY` and `FEEDBACKVL` share the `0x0602` word and the flag nibble.
