@@ -36,10 +36,42 @@ DTN -> server    VLAN = 225 + dtn_port    (the switch adds it)
 Both rules hold for all 32 breakout ports. Which server port carries which DTN
 port is fixed by the cabling and lives in `src/FibreMap.c`.
 
+Which server port a frame leaves and which one it comes back on are two
+different questions, and the switch answers them differently. Each DTN-facing
+breakout carries its transmit VLAN tagged and its receive VLAN as the PVID:
+
+```
+iface swp30s2          (DTN port 22)
+    bridge-vids 119        97 + 22, tagged, from the server
+    bridge-pvid 247       225 + 22, put on anything the DTN sends
+```
+
+The receive VLAN then leaves through whichever server-facing trunk carries it,
+and the configuration does not pair those with the transmit trunks:
+
+```
+swp13  transmits to DTN  0-3   receives from DTN 20-23     server port 2
+swp14  transmits to DTN  4-7   receives from DTN 16-19     server port 3
+swp15  transmits to DTN  8-11  receives from DTN 28-31     server port 0
+swp16  transmits to DTN 12-15  receives from DTN 24-27     server port 1
+swp17  transmits to DTN 16-19  receives from DTN  4-7      server port 4
+swp18  transmits to DTN 20-23  receives from DTN  0-3      server port 5
+swp19  transmits to DTN 24-27  receives from DTN 12-15     server port 6
+swp20  transmits to DTN 28-31  receives from DTN  8-11     server port 7
+```
+
 So for round 1, injecting VL 1024 means: send from server port 2 tagged VLAN 97,
-which reaches DTN port 0; the DTN forwards it to port 16; it comes back to
-server port 4 tagged VLAN 241. A VL that goes out and never returns is the
-finding.
+which reaches DTN port 0; the DTN forwards it to port 16; it comes back tagged
+VLAN 241, which leaves on swp14 — **server port 3**, not the server port 4 that
+transmits to DTN 16. A VL that goes out and never returns is the finding.
+
+Assuming the two maps were the same cost a round of testing. Rounds 1 and 3
+still worked, because their wrong receive sets happened to be permutations of
+the right ones and a probe is matched by VL id rather than by the port it
+arrives on. Round 2's sets had no port in common with the right ones, so every
+return landed on a port nothing was polling and the whole round read as 100%
+loss with `received: nothing at all`. `tests/test_logic.c` now re-derives both
+maps from `cumulus/interfaces` rather than trusting either.
 
 ## The probe frame
 

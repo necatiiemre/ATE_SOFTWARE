@@ -135,8 +135,10 @@ void report_render_live(const report_t *report, uint64_t elapsed_s, uint64_t cyc
            (unsigned long long)cycles);
     printf("links returning traffic: %zu/%zu\n\n", up, total);
 
-    printf("  DTN link      VLAN in/out    sent   returned   loss   last\n");
-    printf("  ------------  -----------  ------  ---------  -----  -----\n");
+    /* The server ports are in the table because they are not derivable by eye:
+     * a link transmits on one and its return arrives on another. */
+    printf("  DTN link      VLAN in/out  srv out/in    sent   returned   loss   last\n");
+    printf("  ------------  -----------  ----------  ------  ---------  -----  -----\n");
 
     while (next_link(report, &cursor, &link)) {
         double loss = link.sent
@@ -148,9 +150,10 @@ void report_render_live(const report_t *report, uint64_t elapsed_s, uint64_t cyc
         else
             snprintf(last, sizeof last, "    -");
 
-        printf("  port %2u -> %2u   %3u / %3u  %6llu  %9llu  %4.0f%%  %s%s\n",
+        printf("  port %2u -> %2u   %3u / %3u    %2u / %2u    %6llu  %9llu  %4.0f%%  %s%s\n",
                link.first->src_dtn_port, link.first->dst_dtn_port,
                link.first->tx_vlan, link.first->rx_vlan,
+               link.first->tx_server_port, link.first->rx_server_port,
                (unsigned long long)link.sent, (unsigned long long)link.received,
                loss, last, link.received ? "" : "   NOTHING BACK");
     }
@@ -176,16 +179,17 @@ void report_render(const report_t *report)
     size_t cursor = 0;
 
     printf("\n  fibre links\n");
-    printf("    DTN link      VLAN in/out   VLs   sent   returned   status\n");
-    printf("    ------------  -----------  ----  -----  ---------   ------\n");
+    printf("    DTN link      VLAN in/out  srv out/in   VLs   sent   returned   status\n");
+    printf("    ------------  -----------  ----------  ----  -----  ---------   ------\n");
 
     while (next_link(report, &cursor, &link)) {
         const char *status = link.received == 0        ? "NOTHING BACK"
                            : link.received < link.sent ? "partial"
                                                        : "ok";
-        printf("    port %2u -> %2u   %3u / %3u   %4u  %5llu  %9llu   %s",
+        printf("    port %2u -> %2u   %3u / %3u    %2u / %2u    %4u  %5llu  %9llu   %s",
                link.first->src_dtn_port, link.first->dst_dtn_port,
-               link.first->tx_vlan, link.first->rx_vlan, link.vls,
+               link.first->tx_vlan, link.first->rx_vlan,
+               link.first->tx_server_port, link.first->rx_server_port, link.vls,
                (unsigned long long)link.sent, (unsigned long long)link.received, status);
         if (link.wrong)
             printf(" (%llu on the wrong VLAN)", (unsigned long long)link.wrong);

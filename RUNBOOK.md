@@ -157,10 +157,15 @@ Our options, all after the `--`:
 The emulator owns the fibre links:
 
 ```
-  DTN link      VLAN in/out    sent   returned   loss   last
-  port  0 -> 16    97 / 241    3000       3000     0%   0.0s
-  port  3 -> 19   100 / 244    3000          0   100%      -   NOTHING BACK
+  DTN link      VLAN in/out  srv out/in    sent   returned   loss   last
+  port  0 -> 16    97 / 241    2 /  3      3000       3000     0%   0.0s
+  port  3 -> 19   100 / 244    2 /  3      3000          0   100%      -   NOTHING BACK
 ```
+
+`srv out/in` is the server port a link transmits on and the one its return
+arrives on. They are different, and not by a rule you can apply by eye: the
+switch tags what the DTN sends with the port's PVID and sends it out whichever
+trunk carries that VLAN, which is not the trunk that transmits to it.
 
 The acceleration test owns everything that reaches copper:
 
@@ -243,6 +248,13 @@ rejected.
 **Some rows work, some do not.** The configuration went in but a specific link is
 down. Check the fibre cable for that DTN port and the switch's breakout port —
 DTN port N is `swp(25 + N/4)s(N%4)`.
+
+**Every row says NOTHING BACK and `received: nothing at all`.** Not one frame on
+any receive port, not even foreign traffic. That is the receive *ports* being
+wrong rather than the path: compare the `srv out/in` column against
+`cumulus/interfaces` — the trunk carrying VLAN `225 + dtn_port` is where that
+port's traffic actually arrives. `make test` checks this, so a fresh build that
+passes has the maps right.
 
 **The acceleration test never says `unit is up`.** Nothing is arriving on either
 copper link within 90 seconds. Either the DTN is not powered, the copper cables

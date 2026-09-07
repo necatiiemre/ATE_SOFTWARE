@@ -10,7 +10,25 @@
  *     DTN -> server   VLAN = 225 + dtn_port     (the switch adds it)
  *
  * Both rules hold for all 32 breakout ports in the switch's own configuration.
- * Which server port carries a given DTN port is fixed by the cabling.
+ *
+ * Which server port a frame leaves and which one it comes back on are two
+ * different questions, and the switch answers them differently. Each DTN-facing
+ * breakout carries its transmit VLAN tagged and its receive VLAN as the PVID:
+ *
+ *     iface swp30s2          (DTN port 22)
+ *         bridge-vids 119        97 + 22, tagged, from the server
+ *         bridge-pvid 247       225 + 22, put on anything the DTN sends
+ *
+ * The receive VLAN then leaves through whichever server-facing trunk carries
+ * it, and the switch's configuration does not pair those with the transmit
+ * trunks. VLAN 247 is on swp13, which transmits to DTN 0-3 - so traffic from
+ * DTN port 22 arrives on the server port that sends to DTN port 0, not on the
+ * one that sends to DTN 22.
+ *
+ * Assuming the two were the same cost a round: config2 polled four server ports
+ * while its returns were landing on four others, and reported every link as
+ * losing everything. cumulus/interfaces is the authority for both maps and
+ * tests/test_logic.c re-derives them from it.
  */
 
 #ifndef FIBRE_MAP_H
@@ -30,8 +48,16 @@ static inline uint16_t fibre_tx_vlan(uint8_t dtn_port) { return (uint16_t)(97 + 
 /** VLAN a frame carries when it reaches the server from the DTN's @p dtn_port. */
 static inline uint16_t fibre_rx_vlan(uint8_t dtn_port) { return (uint16_t)(225 + dtn_port); }
 
-/** Server DPDK port carrying a DTN fibre port, or -1 if out of range. */
+/** Server DPDK port that transmits to a DTN fibre port, or -1 if out of range. */
 int fibre_server_port(uint8_t dtn_port);
+
+/**
+ * @brief Server DPDK port that traffic from a DTN fibre port arrives on.
+ *
+ * Not the same as fibre_server_port - see the note above. Returns -1 if the
+ * DTN port is out of range.
+ */
+int fibre_rx_server_port(uint8_t dtn_port);
 
 /**
  * @brief PCI address of a server fibre port, or NULL if out of range.
@@ -49,7 +75,7 @@ const char *fibre_server_pci(uint8_t server_port);
 /** DTN port a received VLAN belongs to, or -1 if it is not an RX VLAN. */
 int fibre_dtn_port_from_rx_vlan(uint16_t vlan);
 
-/** Which server ports a scenario needs, as a bitmask. */
+/** Which server ports transmit to these DTN ports, as a bitmask. */
 uint16_t fibre_server_port_mask(const uint8_t *dtn_ports, size_t count);
 
 #endif /* FIBRE_MAP_H */

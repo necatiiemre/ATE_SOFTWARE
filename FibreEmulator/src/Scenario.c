@@ -46,7 +46,7 @@ int scenario_expand(const scenario_t *scenario, scenario_flow_t *out, size_t cap
     for (uint8_t l = 0; l < scenario->link_count; l++) {
         const scenario_link_t *link = &scenario->links[l];
         int tx_port = fibre_server_port(link->src);
-        int rx_port = fibre_server_port(link->dst);
+        int rx_port = fibre_rx_server_port(link->dst);   /* not the same map */
 
         if (tx_port < 0 || rx_port < 0)
             return -1;

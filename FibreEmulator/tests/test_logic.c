@@ -11,6 +11,7 @@
 #include "VlFrame.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -41,6 +42,176 @@ static void test_map(void)
     printf("[ OK ] fibre map\n");
 }
 
+/* ------------------------------------------------------------------ */
+/* The switch configuration is the authority for both port maps, and it is in
+ * the repository, so the maps can be re-derived from it rather than trusted.
+ * Assuming transmit and receive shared one map cost a whole round of testing. */
+
+#define INTERFACES "cumulus/interfaces"
+
+typedef struct {
+    char     name[64];
+    uint16_t vids[64];
+    size_t   vid_count;
+    int      pvid;
+} iface_t;
+
+static iface_t g_ifaces[128];
+static size_t  g_iface_count;
+
+static iface_t *iface_named(const char *name)
+{
+    for (size_t i = 0; i < g_iface_count; i++)
+        if (strcmp(g_ifaces[i].name, name) == 0)
+            return &g_ifaces[i];
+    return NULL;
+}
+
+/* A server-facing trunk is swpN; a DTN-facing breakout is swpNsM. */
+static bool is_trunk(const char *name)
+{
+    if (strncmp(name, "swp", 3) != 0 || name[3] == '\0')
+        return false;
+    for (const char *p = name + 3; *p; p++)
+        if (*p < '0' || *p > '9')
+            return false;
+    return true;
+}
+
+/* The trunk a VLAN leaves the switch through. */
+static const iface_t *trunk_with_vid(uint16_t vid)
+{
+    for (size_t i = 0; i < g_iface_count; i++) {
+        const iface_t *f = &g_ifaces[i];
+        if (!is_trunk(f->name))
+            continue;
+        for (size_t v = 0; v < f->vid_count; v++)
+            if (f->vids[v] == vid)
+                return f;
+    }
+    return NULL;
+}
+
+static int read_interfaces(void)
+{
+    FILE *f = fopen(INTERFACES, "r");
+    char line[512];
+    iface_t *cur = NULL;
+
+    if (!f) {
+        printf("[FAIL] cannot open %s - run from the FibreEmulator directory\n",
+               INTERFACES);
+        return -1;
+    }
+    while (fgets(line, sizeof line, f)) {
+        char name[64];
+
+        if (sscanf(line, " iface %63s", name) == 1) {
+            if (g_iface_count == sizeof g_ifaces / sizeof g_ifaces[0])
+                break;
+            cur = &g_ifaces[g_iface_count++];
+            memset(cur, 0, sizeof *cur);
+            snprintf(cur->name, sizeof cur->name, "%s", name);
+            cur->pvid = -1;
+            continue;
+        }
+        if (!cur)
+            continue;
+
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "bridge-vids", 11) == 0) {
+            for (p += 11; *p; ) {
+                char *end;
+                long v = strtol(p, &end, 10);
+                if (end == p)
+                    break;
+                if (cur->vid_count < sizeof cur->vids / sizeof cur->vids[0])
+                    cur->vids[cur->vid_count++] = (uint16_t)v;
+                p = end;
+            }
+        } else if (strncmp(p, "bridge-pvid", 11) == 0) {
+            cur->pvid = (int)strtol(p + 11, NULL, 10);
+        }
+    }
+    fclose(f);
+    return g_iface_count ? 0 : -1;
+}
+
+static void test_against_switch_config(void)
+{
+    /* swpN <-> server port, taken from the transmit map: the trunk carrying
+     * DTN port p's transmit VLAN belongs to the server port that sends to p. */
+    const iface_t *trunk_of_server[FIBRE_SERVER_PORT_COUNT] = {NULL};
+
+    if (read_interfaces() != 0) {
+        failures++;
+        return;
+    }
+
+    for (uint8_t p = 0; p < FIBRE_DTN_PORT_COUNT; p++) {
+        char breakout[16];
+        snprintf(breakout, sizeof breakout, "swp%us%u", 25u + p / 4u, p % 4u);
+
+        const iface_t *f = iface_named(breakout);
+        if (!f) {
+            printf("[FAIL] %s is not in %s (DTN port %u)\n", breakout, INTERFACES, p);
+            failures++;
+            continue;
+        }
+        check(f->vid_count == 1 && f->vids[0] == fibre_tx_vlan(p),
+              "the breakout carries only its transmit VLAN");
+        check(f->pvid == fibre_rx_vlan(p),
+              "the breakout tags what the DTN sends with its receive VLAN");
+
+        const iface_t *tx_trunk = trunk_with_vid(fibre_tx_vlan(p));
+        if (!tx_trunk) {
+            printf("[FAIL] no trunk carries VLAN %u (DTN port %u transmit)\n",
+                   fibre_tx_vlan(p), p);
+            failures++;
+            continue;
+        }
+        int server = fibre_server_port(p);
+        if (trunk_of_server[server] && trunk_of_server[server] != tx_trunk) {
+            printf("[FAIL] server port %d maps to both %s and %s\n",
+                   server, trunk_of_server[server]->name, tx_trunk->name);
+            failures++;
+        }
+        trunk_of_server[server] = tx_trunk;
+    }
+
+    /* Now the claim worth testing: where each DTN port's traffic comes back. */
+    for (uint8_t p = 0; p < FIBRE_DTN_PORT_COUNT; p++) {
+        const iface_t *rx_trunk = trunk_with_vid(fibre_rx_vlan(p));
+        int server = fibre_rx_server_port(p);
+
+        if (!rx_trunk) {
+            printf("[FAIL] no trunk carries VLAN %u (DTN port %u receive)\n",
+                   fibre_rx_vlan(p), p);
+            failures++;
+            continue;
+        }
+        if (server < 0 || trunk_of_server[server] != rx_trunk) {
+            printf("[FAIL] DTN port %u comes back on %s, but the map says server "
+                   "port %d (%s)\n", p, rx_trunk->name, server,
+                   server >= 0 && trunk_of_server[server]
+                       ? trunk_of_server[server]->name : "?");
+            failures++;
+        }
+    }
+
+    /* And that the two maps really are different, so a future simplification
+     * that merges them fails here rather than in the lab. */
+    bool differs = false;
+    for (uint8_t p = 0; p < FIBRE_DTN_PORT_COUNT; p++)
+        if (fibre_server_port(p) != fibre_rx_server_port(p))
+            differs = true;
+    check(differs, "transmit and receive server ports are not the same map");
+
+    if (!failures)
+        printf("[ OK ] both port maps re-derived from %s\n", INTERFACES);
+}
+
 static void test_scenarios(void)
 {
     size_t count;
@@ -68,8 +239,8 @@ static void test_scenarios(void)
                   "TX server port follows the map");
             if (f->expect_return) {
                 check(f->rx_vlan == fibre_rx_vlan(f->dst_dtn_port), "RX VLAN follows the map");
-                check(f->rx_server_port == fibre_server_port(f->dst_dtn_port),
-                      "RX server port follows the map");
+                check(f->rx_server_port == fibre_rx_server_port(f->dst_dtn_port),
+                      "RX server port follows the receive map, not the transmit one");
             }
             for (int j = i + 1; j < flows; j++)
                 if (g_flows[i].vl_id == g_flows[j].vl_id) {
@@ -149,6 +320,7 @@ static void test_report(void)
 int main(void)
 {
     test_map();
+    test_against_switch_config();
     test_scenarios();
     test_frames();
     test_report();
