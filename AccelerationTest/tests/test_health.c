@@ -6,9 +6,12 @@
  * claims to: build a packet of each of the three shapes with a distinct value
  * at every documented offset, decode it, and require the values back.
  *
- * It also holds the sizes, which is the part most likely to be got wrong -
- * every packet carries two bytes past its last port block, and a decoder that
- * parses "as many blocks as fit" reads them as a port.
+ * It also holds the sizes, which is the part that was got wrong once already.
+ * Every packet carries a byte or two past its last port block, and how many
+ * depends on whether the AFDX sequence byte falls inside the UDP length. Both
+ * answers are fed in here, because the decoder must not depend on which is
+ * right - and a decoder that parses "as many blocks as fit" reads the spare
+ * bytes as a port.
  */
 
 #include "HealthDecode.h"
@@ -80,7 +83,7 @@ static void test_with_header(hd_state_t *state)
     for (uint16_t i = 0; i < 8; i++)
         fill_port(g_packet + HD_DEVICE_HEADER_LEN + i * HD_PORT_BLOCK_LEN, i);
 
-    check(hd_ingest(state, g_packet, HD_PAYLOAD_WITH_HEADER), "1187-byte packet decodes");
+    check(hd_ingest(state, g_packet, HD_BODY_WITH_HEADER + 1), "1187-byte packet decodes");
     check(state->assistant.valid && !state->manager.valid,
           "status_enable 0x03 lands on the assistant");
     check(state->assistant.config_id == 0xBEEF, "config id");
@@ -109,6 +112,23 @@ static void test_with_header(hd_state_t *state)
     printf("[ OK ] 1187-byte packet: device header and 8 port blocks\n");
 }
 
+/* Both readings of where the AFDX byte falls, so the decoder cannot depend on
+ * one of them being right. */
+static void test_both_trailer_conventions(hd_state_t *state)
+{
+    for (int spare = 1; spare <= 2; spare++) {
+        memset(g_packet, 0xEE, sizeof g_packet);
+        fill_device(g_packet, 0x01, (uint16_t)(0x1000 + spare));   /* manager */
+        for (uint16_t i = 0; i < 8; i++)
+            fill_port(g_packet + HD_DEVICE_HEADER_LEN + i * HD_PORT_BLOCK_LEN,
+                      (uint16_t)(16 + i));
+        check(hd_ingest(state, g_packet, (size_t)(HD_BODY_WITH_HEADER + spare)),
+              "the device packet decodes whether 1 or 2 bytes are spare");
+        check(state->manager.config_id == 0x1000 + spare, "and reads the same fields");
+    }
+    printf("[ OK ] both trailer conventions decode identically\n");
+}
+
 static void test_mini_header(hd_state_t *state)
 {
     /* Ports place themselves by the number inside the block, so a mini-header
@@ -116,7 +136,7 @@ static void test_mini_header(hd_state_t *state)
     memset(g_packet, 0xEE, sizeof g_packet);
     for (uint16_t i = 0; i < 8; i++)
         fill_port(g_packet + HD_MINI_HEADER_LEN + i * HD_PORT_BLOCK_LEN, (uint16_t)(8 + i));
-    check(hd_ingest(state, g_packet, HD_PAYLOAD_8_PORTS), "1083-byte packet decodes");
+    check(hd_ingest(state, g_packet, HD_BODY_8_PORTS + 1), "1083-byte packet decodes");
     for (uint16_t i = 8; i < 16; i++)
         check(state->ports[i].valid && state->ports[i].rx_count == 6000u + i,
               "ports 8-15 from the mini-header packet");
@@ -124,7 +144,7 @@ static void test_mini_header(hd_state_t *state)
     memset(g_packet, 0xEE, sizeof g_packet);
     for (uint16_t i = 0; i < 3; i++)
         fill_port(g_packet + HD_MINI_HEADER_LEN + i * HD_PORT_BLOCK_LEN, (uint16_t)(32 + i));
-    check(hd_ingest(state, g_packet, HD_PAYLOAD_3_PORTS), "438-byte packet decodes");
+    check(hd_ingest(state, g_packet, HD_BODY_3_PORTS + 2), "438-byte packet decodes");
     for (uint16_t i = 32; i < 35; i++)
         check(state->ports[i].valid && state->ports[i].rx_count == 6000u + i,
               "ports 32-34 from the 3-port packet");
@@ -136,12 +156,14 @@ static void test_rejects(hd_state_t *state)
     uint64_t before = state->undecoded;
 
     memset(g_packet, 0x00, sizeof g_packet);
-    check(!hd_ingest(state, g_packet, 94 - HD_HEADER_OFFSET), "the MCU packet carries no ports");
-    check(!hd_ingest(state, g_packet, HD_PAYLOAD_WITH_HEADER - 1), "a size between shapes is refused");
+    check(!hd_ingest(state, g_packet, 94 - 43), "the MCU packet carries no ports");
+    check(!hd_ingest(state, g_packet, HD_BODY_WITH_HEADER - 1), "one byte short is refused");
+    check(!hd_ingest(state, g_packet, HD_BODY_8_PORTS + HD_SIZE_ALLOWANCE),
+          "past the allowance is refused");
     fill_device(g_packet, 0x05, 1);
-    check(!hd_ingest(state, g_packet, HD_PAYLOAD_WITH_HEADER),
+    check(!hd_ingest(state, g_packet, HD_BODY_WITH_HEADER + 1),
           "a header that is neither FPGA is refused");
-    check(state->undecoded == before + 3, "each refusal is counted");
+    check(state->undecoded == before + 4, "each refusal is counted");
     printf("[ OK ] anything that is not one of the three shapes is refused\n");
 }
 
@@ -151,12 +173,13 @@ int main(void)
 
     hd_init(&state);
     test_with_header(&state);
+    test_both_trailer_conventions(&state);
     test_mini_header(&state);
     test_rejects(&state);
 
     /* Ports nothing reported must stay unreported rather than read as zeros. */
-    check(!state.ports[20].valid, "a port no packet described is not valid");
-    check(hd_latest_device(&state) == &state.assistant, "the latest device header");
+    check(!state.ports[28].valid, "a port no packet described is not valid");
+    check(hd_latest_device(&state) == &state.manager, "the latest device header");
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);

@@ -34,19 +34,23 @@
 #define HD_PORT_BLOCK_LEN    129
 #define HD_MAX_PORTS          35
 
-/* Frame sizes on the wire, and the UDP payload left once the 42 bytes of
- * Ethernet/IP/UDP are gone. The size is what says which of the three shapes a
- * packet is, so these have to be exact:
+/* What the three shapes need, counted from the UDP payload start:
  *
- *   1145 = 111 device header + 8 port blocks + 2 spare
- *   1041 =   7 mini header   + 8 port blocks + 2 spare
- *    396 =   7 mini header   + 3 port blocks + 2 spare
+ *   1143 = 111 device header + 8 port blocks     (1187-byte frame)
+ *   1039 =   7 mini header   + 8 port blocks     (1083-byte frame)
+ *    394 =   7 mini header   + 3 port blocks     ( 438-byte frame)
  *
- * The main ATE software ignores the two trailing bytes as well. */
-#define HD_HEADER_OFFSET       42
-#define HD_PAYLOAD_WITH_HEADER (1187 - HD_HEADER_OFFSET)
-#define HD_PAYLOAD_8_PORTS     (1083 - HD_HEADER_OFFSET)
-#define HD_PAYLOAD_3_PORTS     ( 438 - HD_HEADER_OFFSET)
+ * The payload is a little longer than its blocks and exactly how much depends
+ * on something not worth pinning down: 1187 - 42 leaves 2 bytes over, but the
+ * AFDX sequence byte sits outside the IP total_length in this protocol, so the
+ * payload the UDP length describes is 1144 and only 1 byte is over. Requiring
+ * an exact size got that wrong and refused every packet. The three shapes are
+ * ~100 bytes apart, so a lower bound with a small allowance separates them with
+ * room to spare and does not care which answer is right. */
+#define HD_BODY_WITH_HEADER (HD_DEVICE_HEADER_LEN + 8 * HD_PORT_BLOCK_LEN)
+#define HD_BODY_8_PORTS     (HD_MINI_HEADER_LEN   + 8 * HD_PORT_BLOCK_LEN)
+#define HD_BODY_3_PORTS     (HD_MINI_HEADER_LEN   + 3 * HD_PORT_BLOCK_LEN)
+#define HD_SIZE_ALLOWANCE   8
 
 /**
  * @brief The device header, from a 1187-byte packet.

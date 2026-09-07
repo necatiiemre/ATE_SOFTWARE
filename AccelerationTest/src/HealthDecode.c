@@ -99,20 +99,19 @@ bool hd_ingest(hd_state_t *state, const uint8_t *payload, size_t len)
 
     state->packets++;
 
-    /* The size is the packet type - the same three-way decision the main ATE
-     * software makes in health_parse_response. Anything else is the MCU packet
-     * or not health data at all, and carries no port blocks. */
-    if (len == HD_PAYLOAD_WITH_HEADER) {
+    /* Which of the three shapes this is. They are ~100 bytes apart, so the
+     * allowance for the trailing bytes cannot make one look like another. */
+    if (len >= HD_BODY_WITH_HEADER && len < HD_BODY_WITH_HEADER + HD_SIZE_ALLOWANCE) {
         offset = HD_DEVICE_HEADER_LEN;
         blocks = 8;
-    } else if (len == HD_PAYLOAD_8_PORTS) {
+    } else if (len >= HD_BODY_8_PORTS && len < HD_BODY_8_PORTS + HD_SIZE_ALLOWANCE) {
         offset = HD_MINI_HEADER_LEN;
         blocks = 8;
-    } else if (len == HD_PAYLOAD_3_PORTS) {
+    } else if (len >= HD_BODY_3_PORTS && len < HD_BODY_3_PORTS + HD_SIZE_ALLOWANCE) {
         offset = HD_MINI_HEADER_LEN;
         blocks = 3;
     } else {
-        state->undecoded++;
+        state->undecoded++;              /* the MCU packet, or not health data */
         return false;
     }
 
