@@ -17,6 +17,7 @@
 
 #include "AppConfig.h"
 #include "DtnConfig.h"
+#include "HealthDecode.h"
 #include "HealthMonitor.h"
 #include "Log.h"
 #include "Prompt.h"
@@ -36,6 +37,9 @@ static dtn_frame_t  g_frames[DTN_MAX_CONFIG_FRAMES];
 static uint8_t      g_rx[RX_BUFFER_SIZE];
 static raw_socket_t g_links[APP_MAX_COPPER_LINKS];
 static vl_watch_t   g_watch;
+static hd_state_t   g_health;
+static uint8_t      g_ports[DTN_PORT_COUNT];
+static size_t       g_port_count;
 
 static void sleep_ms(unsigned ms)
 {
@@ -134,6 +138,32 @@ static void print_routing(const dtn_vl_t *records, size_t count)
                 records, count, is_hm_tap, true);
     print_group("DTN management path (its own health monitor and status replies)",
                 records, count, is_management, false);
+}
+
+/**
+ * @brief The ports this round touches, in ascending order.
+ *
+ * The health data reports all 35; printing only the ones the round uses keeps
+ * the table readable and puts the answer to "is this link carrying anything"
+ * next to the VL that is supposed to be on it.
+ */
+static void collect_ports(const dtn_vl_t *records, size_t count)
+{
+    bool seen[DTN_PORT_COUNT] = {false};
+
+    for (size_t i = 0; i < count; i++) {
+        if (!dtn_vl_enabled(&records[i]))
+            continue;
+        if (records[i].src_port < DTN_PORT_COUNT)
+            seen[records[i].src_port] = true;
+        for (int p = 0; p < DTN_PORT_COUNT; p++)
+            if (records[i].dest_mask >> p & 1)
+                seen[p] = true;
+    }
+    g_port_count = 0;
+    for (int p = 0; p < DTN_PORT_COUNT; p++)
+        if (seen[p])
+            g_ports[g_port_count++] = (uint8_t)p;
 }
 
 /* ------------------------------------------------------------------ */
@@ -236,6 +266,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
             if (hm_classify(g_rx, (size_t)n, &frame)) {
                 hm_watch_saw_frame(&watch);
                 vl_watch_saw(&g_watch, copper[which].dtn_port, frame.vl_id, (size_t)n);
+                hd_ingest(&g_health, frame.payload, frame.payload_len);
             } else {
                 vl_watch_unclassified(&g_watch);
             }
@@ -262,6 +293,9 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
             next_draw = now + timing->display_interval_ms;
             vl_watch_render(&g_watch, (now - started) / 1000, profile_name,
                             watch.alive, interruptions);
+            hd_render(&g_health, g_ports, g_port_count);
+            puts("\nCtrl+C to end the test");
+            fflush(stdout);
         }
     }
 
@@ -272,6 +306,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
              interruptions);
     vl_watch_log_summary(&g_watch);
+    hd_log_summary(&g_health, g_ports, g_port_count);
 }
 
 /* ------------------------------------------------------------------ */
@@ -373,6 +408,8 @@ unit_result_t dtn_test_run(void)
     }
 
     vl_watch_init(&g_watch, g_records, (size_t)count);
+    hd_init(&g_health);
+    collect_ports(g_records, (size_t)count);
     log_line("profile %s, %d VL records (%zu enabled), %d frames",
              profile->name, count, vl_profile_enabled_count(g_records, (size_t)count),
              frame_count);

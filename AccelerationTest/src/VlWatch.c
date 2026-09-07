@@ -148,7 +148,6 @@ void vl_watch_render(const vl_watch_t *watch, uint64_t elapsed_s,
     if (watch->overflow)
         printf("\n  more distinct VLs than the table holds - some are not shown\n");
 
-    printf("\nCtrl+C to end the test\n");
     fflush(stdout);
 }
 

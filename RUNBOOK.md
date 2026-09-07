@@ -174,6 +174,32 @@ The acceleration test owns everything that reaches copper:
 VL 100 and 101 are the fibre-side unit's health monitor, routed fibre → copper
 by the taps. VL 38 is the DTN's own — the record we add on top of the capture.
 
+Under it, the numbers decoded out of that health-monitor stream:
+
+```
+  assistant config 0x0007  beat  42  ports 35  mode 1   rx 1002233 tx 981234   wrong dev/op/type 0/0/0
+  manager   config 0x0007  beat  43  ports 35  mode 1   rx 998110 tx 977402    wrong dev/op/type 0/0/0
+
+  port  speed         rx         tx  undef-VL  wrong-src  Lmin  Lmax   CRC  drop
+  ----  -----  ---------  ---------  --------  ---------  ----  ----  ----  ----
+     6  1G        120222      98006         0          0     0     0     0     0
+    22  1G        119006      97506      4471          0     0     0     0     0
+```
+
+Only the ports the round touches are listed. This is where a configuration that
+did not take shows itself:
+
+| symptom | what it means |
+|---|---|
+| `config` the same as before the run | the device did not take the configuration |
+| `wrong dev/op/type` climbing | it saw the frames and rejected them — wrong LRU id, wrong operation, unknown address |
+| `wrong dev/op/type` all zero and `config` unchanged | the frames never reached it |
+| `rx` climbing, `undef-VL` climbing with it | the port receives, but the VL is not in the table |
+| `wrong-src` climbing | the VL is in the table under a different source port |
+| `Lmin`/`Lmax` climbing | frames are outside the VL's length window |
+| `rx` flat at 0 | nothing is arriving on that port at all — cabling or the far side |
+| `no data` | the port was in no health packet; the FPGA that owns it is not reporting |
+
 Neither can confirm the whole path alone:
 
 | what it proves | where to look |
