@@ -179,21 +179,43 @@ The acceleration test owns everything that reaches copper:
 VL 100 and 101 are the fibre-side unit's health monitor, routed fibre → copper
 by the taps. VL 38 is the DTN's own — the record we add on top of the capture.
 
-Under it, the numbers decoded out of that health-monitor stream:
+Under it, the DTN's own health monitor, decoded:
 
 ```
-  assistant config 0x0007  beat  42  ports 35  mode 1   rx 1002233 tx 981234   wrong dev/op/type 0/0/0
-  manager   config 0x0007  beat  43  ports 35  mode 1   rx 998110 tx 977402    wrong dev/op/type 0/0/0
+  assistant config 0x0007  beat  42  ports 35  mode 1   3.300V  47.35C   rx 1002233 tx 981234   wrong dev/op/type 0/0/0
+  manager   config 0x0007  beat  43  ports 35  mode 1   3.301V  51.10C   rx 998110 tx 977402    wrong dev/op/type 0/0/0
+  MCU       fw 2.1.7   28V primary ok  secondary ok   PBIT ok  CBIT ok
+            board  42.15C   FO transceiver  39.80C   PHY 1G 45 C   PHY 100M 43 C
+            12V 12.010V  0.412A    3V3  3.310V  1.203A    3V3-FO  3.300V  0.150A
+            1V8  1.800V  0.502A    1V3  1.300V  0.980A
+            1V0 manager  1.000V  2.310A    1V0 assistant  1.001V  1.870A
 
-  port  speed         rx         tx  undef-VL  wrong-src  Lmin  Lmax   CRC  drop
-  ----  -----  ---------  ---------  --------  ---------  ----  ----  ----  ----
-     6  1G        120222      98006         0          0     0     0     0     0
-    22  1G        119006      97506      4471          0     0     0     0     0
+  fibre links under test
+  port  carries         speed   BIT           rx           tx  errors
+  ----  --------------  -----  ----  -----------  -----------  ------
+     6  <-> 22          1G     0x11       120222        98006  -
+    22  <-> 6           1G     0x11       119006        97506  undef-VL 4471
+
+  health-monitor taps (fibre-side unit)
+    15  VL 100 -> 33    1G     0x11       119507        97807  -
+
+  copper end system and management
+    33  100M            100M   0x11         4103         4111  -
+    34  VL 38 -> 33     1G     0x11         4104         4112  -
 ```
 
-Only the ports the round touches are listed; `--all-ports` lists all 35, which
-is what to use when the question is what the device thinks it *has* rather than
-what the round is using. The end-of-run log records all 35 either way.
+The table is split the way the routing is, and each port says what it is
+supposed to be carrying, because a counter on its own does not mean much. Only
+the counters that are not zero are named, so a clean port is one line and a port
+in trouble says what kind of trouble.
+
+`--all-ports` adds a fourth group with everything the round does not use, which
+is what to use when the question is what the device thinks it *has*. The
+end-of-run log records all 35 ports and every field decoded either way.
+
+The MCU line is worth watching on a vibration rig: `28V primary` or `secondary`
+going to `FAIL`, or a rail current moving, is a connector on its way out long
+before the switch counters notice.
 
 The three `wrong` counters are the device's account of configuration frames it
 threw away, one per field of the payload header:

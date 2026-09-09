@@ -38,8 +38,6 @@ static uint8_t      g_rx[RX_BUFFER_SIZE];
 static raw_socket_t g_links[APP_MAX_COPPER_LINKS];
 static vl_watch_t   g_watch;
 static hd_state_t   g_health;
-static uint8_t      g_ports[DTN_PORT_COUNT];
-static size_t       g_port_count;
 
 static void sleep_ms(unsigned ms)
 {
@@ -140,37 +138,115 @@ static void print_routing(const dtn_vl_t *records, size_t count)
                 records, count, is_management, false);
 }
 
-/**
- * @brief The ports this round touches, in ascending order.
- *
- * The health data reports all 35; printing only the ones the round uses keeps
- * the table readable and puts the answer to "is this link carrying anything"
- * next to the VL that is supposed to be on it.
- */
+/* ------------------------------------------------------------------ */
+/* The health data describes all 35 ports whichever round is running, but a
+ * round uses twelve of them for links, two for taps and the copper pair for
+ * management. A counter only means something next to what the port is supposed
+ * to be carrying, so the table is split the same way the routing is. */
+
+static hd_port_ref_t g_link_ports[DTN_PORT_COUNT];
+static hd_port_ref_t g_tap_ports[VL_PROFILE_MAX_HM];
+static hd_port_ref_t g_copper_ports[APP_MAX_COPPER_LINKS + 1];
+static hd_port_ref_t g_other_ports[DTN_PORT_COUNT];
+static char          g_notes[DTN_PORT_COUNT][16];
+static hd_group_t    g_groups[4];
+static size_t        g_group_count;
+
+
 static void collect_ports(const dtn_vl_t *records, size_t count)
 {
-    bool seen[DTN_PORT_COUNT] = {false};
+    /* Per fibre port: who it sends to, who it hears from. Every link in a round
+     * is one port to one port, so one of each is enough. */
+    int sends_to[DTN_PORT_COUNT], hears_from[DTN_PORT_COUNT];
+    size_t links = 0, taps = 0, copper = 0, others = 0;
 
-    if (app_config_all_ports()) {
-        g_port_count = DTN_PORT_COUNT;
-        for (int p = 0; p < DTN_PORT_COUNT; p++)
-            g_ports[p] = (uint8_t)p;
-        return;
-    }
+    for (int p = 0; p < DTN_PORT_COUNT; p++)
+        sends_to[p] = hears_from[p] = -1;
 
     for (size_t i = 0; i < count; i++) {
-        if (!dtn_vl_enabled(&records[i]))
+        const dtn_vl_t *r = &records[i];
+        int dst = first_destination(r);
+
+        if (!dtn_vl_enabled(r) || dst < 0 || r->src_port >= DTN_PORT_COUNT)
             continue;
-        if (records[i].src_port < DTN_PORT_COUNT)
-            seen[records[i].src_port] = true;
-        for (int p = 0; p < DTN_PORT_COUNT; p++)
-            if (records[i].dest_mask >> p & 1)
-                seen[p] = true;
+        if (r->src_port == DTN_PORT_MANAGEMENT || dst >= 32)
+            continue;                       /* taps and management, handled below */
+        sends_to[r->src_port] = dst;
+        hears_from[dst] = r->src_port;
     }
-    g_port_count = 0;
-    for (int p = 0; p < DTN_PORT_COUNT; p++)
-        if (seen[p])
-            g_ports[g_port_count++] = (uint8_t)p;
+
+    for (int p = 0; p < DTN_PORT_COUNT && links < DTN_PORT_COUNT; p++) {
+        if (sends_to[p] < 0 && hears_from[p] < 0)
+            continue;
+        if (sends_to[p] >= 0 && hears_from[p] >= 0)
+            snprintf(g_notes[p], sizeof g_notes[p], "<-> %d", sends_to[p]);
+        else if (sends_to[p] >= 0)
+            snprintf(g_notes[p], sizeof g_notes[p], " -> %d", sends_to[p]);
+        else
+            snprintf(g_notes[p], sizeof g_notes[p], " <- %d", hears_from[p]);
+        g_link_ports[links].port = (uint8_t)p;
+        g_link_ports[links].note = g_notes[p];
+        links++;
+    }
+
+    /* The taps, and the DTN's own health monitor out of the management port. */
+    for (size_t i = 0; i < count && taps < VL_PROFILE_MAX_HM; i++) {
+        const dtn_vl_t *r = &records[i];
+        int dst = first_destination(r);
+
+        if (!dtn_vl_enabled(r) || dst < 32 || r->src_port >= DTN_PORT_COUNT)
+            continue;
+        if (r->src_port == DTN_PORT_MANAGEMENT)
+            continue;
+        snprintf(g_notes[r->src_port], sizeof g_notes[r->src_port],
+                 "VL %u -> %d", r->vl_id, dst);
+        g_tap_ports[taps].port = r->src_port;
+        g_tap_ports[taps].note = g_notes[r->src_port];
+        taps++;
+    }
+
+    const copper_link_t *links_cfg;
+    size_t link_count;
+    links_cfg = app_config_copper(&link_count);
+    for (size_t i = 0; i < link_count; i++) {
+        uint8_t p = links_cfg[i].dtn_port;
+        snprintf(g_notes[p], sizeof g_notes[p], "%s", links_cfg[i].speed);
+        g_copper_ports[copper].port = p;
+        g_copper_ports[copper].note = g_notes[p];
+        copper++;
+    }
+    snprintf(g_notes[DTN_PORT_MANAGEMENT], sizeof g_notes[DTN_PORT_MANAGEMENT],
+             "VL %u -> %d", DTN_HEALTH_MONITOR_VL, DTN_HEALTH_MONITOR_PORT);
+    g_copper_ports[copper].port = DTN_PORT_MANAGEMENT;
+    g_copper_ports[copper].note = g_notes[DTN_PORT_MANAGEMENT];
+    copper++;
+
+    g_group_count = 0;
+    g_groups[g_group_count++] = (hd_group_t){"fibre links under test", g_link_ports, links};
+    g_groups[g_group_count++] = (hd_group_t){"health-monitor taps (fibre-side unit)",
+                                             g_tap_ports, taps};
+    g_groups[g_group_count++] = (hd_group_t){"copper end system and management",
+                                             g_copper_ports, copper};
+
+    if (!app_config_all_ports())
+        return;
+
+    /* Everything the round does not use, so a port the device does not report
+     * at all is visible - which is a question a round that will not take
+     * raises, and the health data answers whichever round is running. */
+    for (int p = 0; p < DTN_PORT_COUNT; p++) {
+        bool listed = false;
+        for (size_t i = 0; i < links && !listed; i++)
+            listed = g_link_ports[i].port == p;
+        for (size_t i = 0; i < taps && !listed; i++)
+            listed = g_tap_ports[i].port == p;
+        for (size_t i = 0; i < copper && !listed; i++)
+            listed = g_copper_ports[i].port == p;
+        if (!listed)
+            g_other_ports[others++] = (hd_port_ref_t){(uint8_t)p, NULL};
+    }
+    g_groups[g_group_count++] = (hd_group_t){"not used by this round",
+                                             g_other_ports, others};
 }
 
 /* ------------------------------------------------------------------ */
@@ -300,7 +376,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
             next_draw = now + timing->display_interval_ms;
             vl_watch_render(&g_watch, (now - started) / 1000, profile_name,
                             watch.alive, interruptions);
-            hd_render(&g_health, g_ports, g_port_count);
+            hd_render(&g_health, g_groups, g_group_count);
             puts("\nCtrl+C to end the test");
             fflush(stdout);
         }

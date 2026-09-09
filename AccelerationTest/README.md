@@ -267,25 +267,57 @@ cycles. Plain `sendto`/`recvfrom` on a bound `AF_PACKET` socket, with
 needs line rate on copper, the ring setup in `RawSocketPort.c` is the pattern to
 copy — it is the same socket, configured harder.
 
-## What the health-monitor stream says
+## The DTN's own health monitor
 
-The stream is not only a heartbeat. The 1187-byte packets carry a device header
-and every packet carries 129-byte per-port blocks, decoded in `HealthDecode.c`
-against the offsets in `dpdk/include/HealthTypes.h`.
+The device broadcasts a six-packet cycle on its own once 28 V is applied, and
+`DTN_HEALTH_MONITOR_VL` routes it to the 100M copper port. These are the same
+packets the main ATE software reads; `HealthDecode.c` parses them the same way
+`dpdk/src/HealthMonitor/HealthMonitor.c` does, against the offsets in
+`dpdk/include/HealthTypes.h`.
 
-The device header's three `eth_wrong_*` counters are its account of
-configuration frames it threw away, one per field of the payload header
-(`26 00` LRU, `57` operation, `10` block address). All three are decided before
-any block data is read, so a frame counted there was rejected on its header
-alone — a configuration the device dislikes for what is *inside* a block leaves
-them untouched. `config_id` is the other half: it changes when the device takes
-a configuration, so it separates "rejected" from "never arrived".
+```
+1187 + 1083            assistant FPGA, ports 0-15
+1187 + 1083 + 438      manager FPGA,   ports 16-34
+  94                   MCU
+```
 
-The port blocks give per-port rx/tx and the drop reasons: `vlid_drop` for a VL
-the table does not define, `vl_source_err` for one that arrived on a port that
-is not its source, `vl_min_err`/`vl_max_err` for a frame outside the VL's length
-window. All 35 ports are reported whichever round is running, so the port table
-also answers which ports the device believes it has.
+A 1187-byte packet is a 111-byte device header plus 8 port blocks of 129 bytes;
+the other FPGA packets are a 7-byte mini header plus port blocks. Each block
+names its own port, so blocks are placed by what they say rather than by which
+packet they arrived in — a mini-header packet needs no memory of the one before
+it. Shape is decided by size, and every packet carries a byte or two past its
+last block, so the sizes are matched with an allowance rather than exactly.
+
+**The device header** answers whether the configuration took. `config_id` moves
+when the device accepts one. The three `eth_wrong_*` counters are its account of
+frames it threw away, one per field of the payload header (`26 00` LRU, `57`
+operation, `10` block address) — all decided before any block data is read, so a
+frame counted there was rejected on its header alone, and a configuration the
+device dislikes for what is *inside* a block leaves them untouched. The header
+also carries both core versions, the FIFO sizes, its time of day, and the FPGA's
+supply voltage and temperature. Those last two are bit-packed rather than plain
+numbers — millivolts in bits 3-14 with a tenth in bits 0-2, and Kelvin in bits
+4-14 with a fraction whose divisor depends on whether it reaches 10.
+
+**The port blocks** give rx/tx and every drop reason the switch distinguishes:
+`undef-VL` for a VL id the table does not define, `wrong-src` for one that
+arrived on a port that is not its source, `under-Lmin`/`over-Lmax` for a frame
+outside the VL's length window, plus CRC, alignment, policy drops and the four
+queue overflows. The table prints one line per port and names only the counters
+that are not zero, so a clean port is one line and a port in trouble says what
+kind.
+
+**The MCU packet** is a different shape: no port blocks, but the 28 V primary
+and secondary status, PBIT and CBIT, seven supply rails with their currents, the
+board and FO transceiver temperatures and both PHY temperatures. On a vibration
+rig that is the part most likely to move, so it is worth as much as the switch
+counters.
+
+The live table is split the way the routing is — the round's links, the taps,
+the copper pair and the management port — because a counter only means something
+next to what the port is supposed to be carrying. `--all-ports` adds everything
+the round does not use. The end-of-run log records all 35 regardless, along with
+every field decoded.
 
 ## Not yet pinned down
 
