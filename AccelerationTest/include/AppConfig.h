@@ -68,6 +68,40 @@ void app_config_set_management_vls(bool keep);
 bool app_config_all_ports(void);
 void app_config_set_all_ports(bool all);
 
+/**
+ * @brief Everything the VMC test needs to find its traffic.
+ *
+ * One struct, one place. The VMC's health monitor arrives on a single
+ * interface and is sorted by the VL id in the low two bytes of the destination
+ * MAC; the CBIT VLs carry four different reports, told apart by the message id
+ * in the first payload byte. Both the interface name and every id live here so
+ * that moving to a different rig is one edit in AppConfig.c and nothing else.
+ *
+ * The ids are the ones dpdk_vmc uses. They have not been confirmed against this
+ * rig, which is exactly why they are a table rather than constants scattered
+ * through the decoder.
+ */
+typedef struct {
+    const char *iface;                /**< where the VMC's health monitor arrives */
+
+    uint16_t flcs_cpu_usage;          /**< Pcs_profile_stats */
+    uint16_t vs_cpu_usage;
+    uint16_t flcs_pbit_request;       /**< we do not send these; listed for completeness */
+    uint16_t vs_pbit_request;
+    uint16_t flcs_pbit_response;      /**< vmc_pbit_data_t */
+    uint16_t vs_pbit_response;
+    uint16_t flcs_cbit;               /**< four reports, sorted by message id */
+    uint16_t vs_cbit;
+
+    uint8_t  msg_dtn_es;              /**< dtn_es_cbit_report_t */
+    uint8_t  msg_dtn_sw;              /**< dtn_sw_cbit_report_t */
+    uint8_t  msg_bm_engineering;      /**< bm_engineering_cbit_report_t */
+    uint8_t  msg_bm_flag;             /**< bm_flag_cbit_report_t */
+    uint8_t  msg_pbit_response;       /**< guards the PBIT VLs, which carry other traffic */
+} vmc_config_t;
+
+const vmc_config_t *app_config_vmc(void);
+
 /** Which copper link the configuration frames go out of. */
 const copper_link_t *app_config_config_link(void);
 

@@ -23,7 +23,8 @@ $(BUILD):
 
 # Rebuilds the 47 reference frames byte for byte, reproduces all three rounds
 # against the captured config1, then checks the profiles are self-consistent.
-test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles $(BUILD)/test_health
+test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles \
+      $(BUILD)/test_health $(BUILD)/test_vmc
 	./$(BUILD)/test_reference
 	@echo
 	./$(BUILD)/test_rounds
@@ -31,6 +32,8 @@ test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles $(BUIL
 	./$(BUILD)/test_profiles
 	@echo
 	./$(BUILD)/test_health
+	@echo
+	./$(BUILD)/test_vmc
 
 $(BUILD)/test_reference: tests/test_reference.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -42,6 +45,9 @@ $(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/test_health: tests/test_health.c src/HealthDecode.c src/HealthMonitor.c src/Log.c | $(BUILD)
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/test_vmc: tests/test_vmc.c src/VmcHealth.c src/AppConfig.c src/HealthMonitor.c src/Log.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:

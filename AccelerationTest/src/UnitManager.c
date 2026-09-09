@@ -10,7 +10,7 @@
 /* Menu order follows the main ATE software: CMC, VMC, DTN. */
 static const unit_t g_units[] = {
     {"CMC", "Control Management Computer", false, cmc_test_run},
-    {"VMC", "Vehicle Management Computer",  false, vmc_test_run},
+    {"VMC", "Vehicle Management Computer",  true,  vmc_test_run},
     {"DTN", "Data Transfer Node switch",    true,  dtn_test_run},
 };
 

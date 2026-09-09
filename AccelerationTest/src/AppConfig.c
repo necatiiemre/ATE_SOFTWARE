@@ -49,6 +49,32 @@ static bool g_all_ports;
 bool app_config_all_ports(void) { return g_all_ports; }
 void app_config_set_all_ports(bool all) { g_all_ports = all; }
 
+/* The VMC rig. Interface name and every VL id in one place - see AppConfig.h.
+ * The ids come from dpdk_vmc/include/health_monitor/health_monitor.h. */
+static const vmc_config_t g_vmc = {
+    .iface              = "eno12409",
+
+    .flcs_cpu_usage     = 0x0009,
+    .vs_cpu_usage       = 0x0010,
+    .flcs_pbit_request  = 0x000c,
+    .vs_pbit_request    = 0x000f,
+    .flcs_pbit_response = 0x000a,
+    .vs_pbit_response   = 0x000d,
+    .flcs_cbit          = 0x000b,
+    .vs_cbit            = 0x000e,
+
+    .msg_dtn_es         = 2,
+    .msg_dtn_sw         = 3,
+    .msg_bm_engineering = 5,
+    .msg_bm_flag        = 6,
+    .msg_pbit_response  = 100,
+};
+
+const vmc_config_t *app_config_vmc(void)
+{
+    return &g_vmc;
+}
+
 const copper_link_t *app_config_config_link(void)
 {
     /* The 100M link is the proven management path: it is where the main ATE

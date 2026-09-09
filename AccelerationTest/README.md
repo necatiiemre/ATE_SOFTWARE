@@ -319,6 +319,40 @@ next to what the port is supposed to be carrying. `--all-ports` adds everything
 the round does not use. The end-of-run log records all 35 regardless, along with
 every field decoded.
 
+## The VMC test
+
+The VMC sends its health monitor unasked, so the test configures nothing: it
+opens one interface, sorts what arrives, and keeps a dashboard up until Ctrl+C.
+The reports are the ones `dpdk_vmc` reads; `VmcMessages.h` is that project's
+`vmc_message_types.h` copied verbatim, and `VmcHealth.c` sorts and byte-swaps
+them the same way `dpdk_vmc/src/health_monitor/health_monitor.c` does.
+
+Six reports arrive from each of the VMC's two sides, FLCS and VS:
+
+| report | how it is told apart |
+|---|---|
+| CPU usage | its own VL, `Pcs_profile_stats` |
+| PBIT | its own VL, guarded by a message id because other traffic shares it |
+| CBIT board monitor | one VL, message id |
+| CBIT board flags | the same VL, message id |
+| CBIT DTN end system | the same VL, message id |
+| CBIT DTN switch | the same VL, message id |
+
+Everything on the wire is big-endian and every struct is packed, so each report
+is copied in whole and then swapped field by field. `VmcMessages.h` ends in
+static assertions holding the sizes the comments claim — a compiler that lays
+one out differently fails the build rather than decoding quiet nonsense.
+
+A DTN report that is all zeros is skipped rather than stored: the VMC sends
+those before the DTN has answered it, and overwriting a good report with one
+would lose what the run is there to see.
+
+**Everything that could change with the rig is in `AppConfig.c`** — the
+interface name, all eight VL ids and all five message ids, in one struct. The
+ids are `dpdk_vmc`'s and have not been confirmed against this rig, which is why
+they are a table rather than constants spread through the decoder. Moving to a
+different environment is one edit there and nothing else.
+
 ## Not yet pinned down
 
 * `BAG`, `PRIORITY` and `FEEDBACKVL` share the `0x0602` word and the flag nibble.
@@ -330,6 +364,8 @@ every field decoded.
   hold 4488 records, so the field reads equally well as a record count. It is
   sent verbatim rather than recomputed: writing the record count there is a good
   candidate for why a smaller table silences the device.
+* Whether the VMC's VL ids on this rig are the ones `dpdk_vmc` uses. They are in
+  `AppConfig.c` so that finding out costs one edit.
 * Whether the device accepts `0x57` writes on a copper end-system port. Reads are
   proven: the health monitor polls over `eno12409`. Writes have only ever gone
   over the tagged fibre path. The device's `eth_wrong_op_cnt`,
