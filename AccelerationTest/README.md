@@ -18,7 +18,7 @@ common/src/AppConfig.c     everything that changes with the rig, in one place
 common/src/RawSocket.c     AF_PACKET access to one link
 common/src/Heartbeat.c     a monotonic clock, and whether the unit is still talking
 common/src/SafeShutdown.c  releases sockets on Ctrl-C or any error path
-common/src/Log.c           timestamped run log, flushed line by line
+common/src/Log.c           the run log: a transcript of the terminal
 common/src/Prompt.c        terminal input
 
 dtn/src/DtnTest.c          the DTN acceleration test
@@ -87,8 +87,35 @@ When the health monitor goes quiet and comes back, the DTN has rebooted and lost
 its VL table, so the test re-sends the configuration and records both the loss
 and the recovery with timestamps.
 
-Everything lands in `LOGS/DTN/<profile>_<timestamp>.log`, flushed line by line
-so a run that ends abruptly still leaves what it saw.
+## The log is the terminal
+
+`LOGS/<unit>/<profile>_<timestamp>.log` holds **what was on the screen**, in the
+order it appeared, and nothing else. Once the log is open, stdout is a tee: the
+banners, the live tables, the health-monitor dashboards and the end-of-run
+summaries all reach the file as well as the screen, and nothing is written to
+one that is not written to the other. Reading the log afterwards is reading the
+run.
+
+That is done by replacing `stdout` with a stream that writes twice, rather than
+by asking every caller to. It catches output this project did not write — the
+VMC dashboard is `dpdk_vmc`'s printers verbatim and needed no change to be
+recorded.
+
+The one thing the file does not get is the escape sequence that redraws the
+screen in place. It is an instruction to a terminal rather than something anyone
+printed, and in a file it turns every redraw into a jumble.
+
+Each write is flushed, so a run that ends abruptly — the rig cutting power to
+the workstation is the expected way for one to end — still leaves everything it
+saw.
+
+The log opens before the run's plan is printed, so which round was chosen and
+what routing was written are the first things in it.
+
+**A live dashboard redrawn once a second is a lot of text.** The VMC's is about
+120 KB per redraw, which is around 400 MB an hour. `display_interval_ms` in
+`common/src/AppConfig.c` is how often it is redrawn; raising it divides the log
+by the same amount.
 
 Raw sockets need root or `CAP_NET_RAW`.
 

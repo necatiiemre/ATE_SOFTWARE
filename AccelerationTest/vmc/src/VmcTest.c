@@ -236,27 +236,34 @@ unit_result_t vmc_test_run(void)
     hm_set_abort_flag(&g_temperature_abort);
     vmc_health_init(&g_health, config);
 
+    /* Open the log before anything is printed about the run: the log is a
+     * transcript of the terminal, so what it holds is decided by when it opens
+     * and the plan below belongs in it. */
+    if (!log_open("VMC", "health"))
+        puts("Warning: could not open a log file; the run will not be recorded.");
+    else
+        printf("Logging to %s\n", log_path());
+
     print_plan(config);
 
-    if (!prompt_yes_no("\nStart the test", false))
+    if (!prompt_yes_no("\nStart the test", false)) {
+        log_close();
         return UNIT_RESULT_ABORTED;
+    }
 
     for (uint8_t l = 0; l < config->link_count; l++) {
         bool carrier = false;
 
         if (!raw_socket_link_up(config->links[l].iface, &carrier)) {
             printf("%s is down. Bring it up first.\n", config->links[l].iface);
+            log_close();
             return UNIT_RESULT_ERROR;
         }
         if (!carrier)
             printf("Warning: %s has no carrier - is the cable connected?\n",
                    config->links[l].iface);
     }
-
-    if (!log_open("VMC", "health"))
-        puts("Warning: could not open a log file; the run will not be recorded.");
-    else
-        printf("Logging to %s\n\n", log_path());
+    putchar('\n');
 
     for (uint8_t l = 0; l < config->link_count; l++) {
         if (!raw_socket_open(&g_links[l], config->links[l].iface, true))

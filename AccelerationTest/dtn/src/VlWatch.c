@@ -161,7 +161,7 @@ void vl_watch_log_summary(const vl_watch_t *watch)
         char sizes[32];
 
         format_sizes(e, sizes, sizeof sizes);
-        log_file_only("  DTN port %2u  VL %5u  %10llu packets  %12llu bytes  "
+        log_line("  DTN port %2u  VL %5u  %10llu packets  %12llu bytes  "
                       "sizes %-14s %s",
                       e->dtn_port, e->vl_id, (unsigned long long)e->packets,
                       (unsigned long long)e->bytes, sizes,

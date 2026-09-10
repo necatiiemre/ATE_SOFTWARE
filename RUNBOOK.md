@@ -328,7 +328,16 @@ Round 3 moves the taps because ports 15 and 31 carry fibre traffic in that round
 
 ## 7. What a run leaves behind
 
-`AccelerationTest/LOGS/DTN/<round>_<timestamp>.log` — every event with a
-timestamp, flushed line by line, including which VLs were seen and which never
-arrived. The emulator prints its table and exits 0 only when every fibre link
-returned traffic, so it can be scripted.
+`AccelerationTest/LOGS/<unit>/<profile>_<timestamp>.log` — a transcript of what
+was on the screen, in the order it appeared, and nothing else: the routing that
+was written, every event with its timestamp, each redraw of the live tables and
+the end-of-run summaries. Each write is flushed, so a run that ends with the rig
+cutting power still leaves everything it saw.
+
+A dashboard redrawn once a second adds up — the VMC's is about 120 KB a redraw,
+so roughly 400 MB an hour. `display_interval_ms` in
+`AccelerationTest/common/src/AppConfig.c` sets how often; raising it divides the
+log by the same amount.
+
+The emulator prints its table and exits 0 only when every fibre link returned
+traffic, so it can be scripted.

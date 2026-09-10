@@ -290,7 +290,7 @@ static bool send_configuration(raw_socket_t *config_sock, int frame_count, unsig
             log_line("configuration frame %d (seq %u) failed to send", i, g_frames[i].seq);
             return false;
         }
-        log_file_only("sent seq %u, %u bytes, %s",
+        log_line("sent seq %u, %u bytes, %s",
                       g_frames[i].seq, g_frames[i].len, g_frames[i].label);
         if (i + 1 < frame_count)
             sleep_ms(gap_ms);
@@ -446,6 +446,14 @@ unit_result_t dtn_test_run(void)
     for (int i = 0; i < frame_count; i++)
         total += g_frames[i].len;
 
+    /* Open the log before anything is printed about the run: the log is a
+     * transcript of the terminal, so what it holds is decided by when it opens,
+     * and the routing table below is the record of what the device was told. */
+    if (!log_open("DTN", profile->name))
+        puts("Warning: could not open a log file; the run will not be recorded.");
+    else
+        printf("Logging to %s\n", log_path());
+
     printf("\n  profile     : %s - %s\n", profile->name, profile->description);
     size_t enabled = vl_profile_enabled_count(g_records, (size_t)count);
     printf("  VL table    : %d records, %zu enabled%s\n", count, enabled,
@@ -458,24 +466,23 @@ unit_result_t dtn_test_run(void)
                i + 1 < link_count ? "," : "\n");
     print_routing(g_records, (size_t)count);
 
-    if (!prompt_yes_no("\nStart the test", false))
+    if (!prompt_yes_no("\nStart the test", false)) {
+        log_close();
         return UNIT_RESULT_ABORTED;
+    }
 
     for (size_t i = 0; i < link_count; i++) {
         bool carrier = false;
         if (!raw_socket_link_up(copper[i].iface, &carrier)) {
             printf("%s is down. Bring it up first.\n", copper[i].iface);
+            log_close();
             return UNIT_RESULT_ERROR;
         }
         if (!carrier)
             printf("Warning: %s has no carrier - is the cable connected?\n",
                    copper[i].iface);
     }
-
-    if (!log_open("DTN", profile->name))
-        puts("Warning: could not open a log file; the run will not be recorded.");
-    else
-        printf("Logging to %s\n\n", log_path());
+    putchar('\n');
 
     for (size_t i = 0; i < link_count; i++) {
         if (!raw_socket_open(&g_links[i], copper[i].iface, true))
