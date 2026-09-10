@@ -212,6 +212,24 @@ static void parse_pbit(vmc_pbit_data_t *dst, const uint8_t *payload)
     dst->flcs_cpu_pbit = be16(dst->flcs_cpu_pbit);
 }
 
+/* Every counter is a big-endian uint64 and there is nothing else in the payload
+ * - no header, no message id, no padding. The struct is packed, so the counters
+ * are read and written a copy at a time rather than through a uint64_t pointer
+ * the compiler is entitled to assume is aligned. */
+static void parse_counters(REPORT_MSG *dst, const uint8_t *payload)
+{
+    uint8_t *bytes = (uint8_t *)dst;
+
+    memcpy(dst, payload, sizeof *dst);
+    for (size_t i = 0; i < sizeof *dst / sizeof(uint64_t); i++) {
+        uint64_t v;
+
+        memcpy(&v, bytes + i * sizeof v, sizeof v);
+        v = be64(v);
+        memcpy(bytes + i * sizeof v, &v, sizeof v);
+    }
+}
+
 /* dpdk_vmc drops a DTN report that is all zeros rather than storing it over a
  * good one; the VMC sends those before the DTN has answered it. */
 static bool all_zero(const void *data, size_t len)
@@ -240,6 +258,7 @@ const char *vmc_report_name(vmc_report_t report)
     case VMC_REPORT_BM_FLAG:        return "CBIT board flags";
     case VMC_REPORT_DTN_ES:         return "CBIT DTN end system";
     case VMC_REPORT_DTN_SW:         return "CBIT DTN switch";
+    case VMC_REPORT_COUNTERS:       return "PHY port counters";
     default:                        return "?";
     }
 }
@@ -251,6 +270,7 @@ uint16_t vmc_report_vl(const vmc_config_t *c, vmc_side_t side, vmc_report_t repo
     switch (report) {
     case VMC_REPORT_CPU_USAGE: return vs ? c->vs_cpu_usage : c->flcs_cpu_usage;
     case VMC_REPORT_PBIT:      return vs ? c->vs_pbit_response : c->flcs_pbit_response;
+    case VMC_REPORT_COUNTERS:  return vs ? c->vs_counters : c->flcs_counters;
     default:                   return vs ? c->vs_cbit : c->flcs_cbit;
     }
 }
@@ -427,6 +447,16 @@ bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
         parse_pbit(&health->side[side].pbit, payload);
         note(health, side, VMC_REPORT_PBIT);
         stored = true;
+    } else if (vl_id == c->flcs_counters || vl_id == c->vs_counters) {
+        check_side(health, side, vl_id == c->vs_counters ? VMC_VS : VMC_FLCS, vl_id);
+
+        if (payload_len < sizeof(REPORT_MSG)) {
+            health->too_short++;
+            return false;
+        }
+        parse_counters(&health->side[side].counters, payload);
+        note(health, side, VMC_REPORT_COUNTERS);
+        stored = true;
     } else if (vl_id == c->flcs_cbit || vl_id == c->vs_cbit) {
         check_side(health, side, vl_id == c->vs_cbit ? VMC_VS : VMC_FLCS, vl_id);
 
@@ -504,6 +534,54 @@ static bool drain_and_print_dtn_es_slot(const vmc_report_set_t *set, const char 
     return true;
 }
 
+/* The one report dpdk_vmc has no printer for - it is newer than that code - so
+ * this one is ours. Laid out like the printers next to it so the dashboard
+ * reads as one thing, and marked as ours so nobody looks for it over there. */
+void print_phy_counter_report(const REPORT_MSG *data, const char *device_name)
+{
+    if (!data) return;
+
+    const char *prefix = (device_name != NULL) ? device_name : "UNKNOWN";
+
+    printf("\n");
+    printf("========================================================================================\n");
+    printf("                        [%s] PHY PORT COUNTERS  (ATE)                                   \n", prefix);
+    printf("========================================================================================\n");
+    printf(" PORT | TOTAL SENT           | TOTAL RECEIVED       | PRBS FAILED          | MISSED              \n");
+    printf("------|----------------------|----------------------|----------------------|---------------------\n");
+    for (int i = 0; i < PHY_PORT_NUMBER; i++) {
+        printf(" %4d | %20llu | %20llu | %20llu | %20llu\n", i,
+               (unsigned long long)data->total_sended_package[i],
+               (unsigned long long)data->total_received_package[i],
+               (unsigned long long)data->prbs_failed_package[i],
+               (unsigned long long)data->missed_package[i]);
+    }
+
+    /* The totals, because six rows of near-identical numbers hide a single port
+     * that has stopped, and a run is watched rather than read. */
+    unsigned long long sent = 0, received = 0, failed = 0, missed = 0;
+    for (int i = 0; i < PHY_PORT_NUMBER; i++) {
+        sent     += data->total_sended_package[i];
+        received += data->total_received_package[i];
+        failed   += data->prbs_failed_package[i];
+        missed   += data->missed_package[i];
+    }
+    printf("------|----------------------|----------------------|----------------------|---------------------\n");
+    printf("  ALL | %20llu | %20llu | %20llu | %20llu\n", sent, received, failed, missed);
+    if (failed || missed)
+        printf(" %llu PRBS failure(s) and %llu missed packet(s) across %d port(s)\n",
+               failed, missed, PHY_PORT_NUMBER);
+    printf("========================================================================================\n");
+}
+
+static bool drain_and_print_counters_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_COUNTERS].packets)
+        return false;
+    print_phy_counter_report(&set->counters, device_name);
+    return true;
+}
+
 static bool drain_and_print_dtn_sw_slot(const vmc_report_set_t *set, const char *device_name)
 {
     if (!set->seen[VMC_REPORT_DTN_SW].packets)
@@ -546,6 +624,10 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
 
     any |= drain_and_print_dtn_sw_slot(vs,   "VS");
     any |= drain_and_print_dtn_sw_slot(flcs, "FLCS");
+
+    /* Ours, after everything dpdk_vmc prints, in the same order as the rest. */
+    any |= drain_and_print_counters_slot(vs,   "VS");
+    any |= drain_and_print_counters_slot(flcs, "FLCS");
 
     // Her tick sonunda tanı satırı — sayaçlar + paket gelip gelmediği net.
     uint64_t total         = h->accepted;
@@ -843,5 +925,16 @@ void vmc_health_log_summary(const vmc_health_t *h)
             log_dtn_es(&set->dtn_es);
         if (set->seen[VMC_REPORT_DTN_SW].packets)
             log_dtn_sw(&set->dtn_sw);
+        if (set->seen[VMC_REPORT_COUNTERS].packets) {
+            const REPORT_MSG *m = &set->counters;
+
+            for (int i = 0; i < PHY_PORT_NUMBER; i++)
+                log_line("    PHY port %d: sent %llu, received %llu, "
+                         "PRBS failed %llu, missed %llu", i,
+                         (unsigned long long)m->total_sended_package[i],
+                         (unsigned long long)m->total_received_package[i],
+                         (unsigned long long)m->prbs_failed_package[i],
+                         (unsigned long long)m->missed_package[i]);
+        }
     }
 }

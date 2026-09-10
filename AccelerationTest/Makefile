@@ -54,7 +54,8 @@ $(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)
 $(BUILD)/test_health: tests/test_health.c src/HealthDecode.c src/HealthMonitor.c src/Log.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_vmc_print: tests/test_vmc_print.c src/VmcPrint.c | $(BUILD)
+$(BUILD)/test_vmc_print: tests/test_vmc_print.c src/VmcPrint.c src/VmcHealth.c \
+                         src/AppConfig.c src/HealthMonitor.c src/Log.c | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
 
 $(BUILD)/test_vmc: tests/test_vmc.c src/VmcHealth.c src/VmcPrint.c src/AppConfig.c \

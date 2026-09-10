@@ -106,6 +106,8 @@ typedef struct {
     uint16_t vs_pbit_response;
     uint16_t flcs_cbit;               /**< four reports, sorted by message id */
     uint16_t vs_cbit;
+    uint16_t flcs_counters;           /**< REPORT_MSG, no header and no message id */
+    uint16_t vs_counters;
 
     uint8_t  msg_dtn_es;              /**< dtn_es_cbit_report_t */
     uint8_t  msg_dtn_sw;              /**< dtn_sw_cbit_report_t */

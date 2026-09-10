@@ -16,6 +16,9 @@
  *                            other traffic shares the VL
  *   CBIT        one VL carrying four different reports, told apart by the
  *               message id in the first payload byte
+ *   counters    its own VL,  REPORT_MSG - four counters for each of six PHY
+ *               ports, with no header at all, so the VL id is the whole of
+ *               what identifies it
  *
  * Which VL is which, and which interface carries which side, are in
  * AppConfig.h - one table, so a different rig is one edit.
@@ -48,6 +51,7 @@ typedef enum {
     VMC_REPORT_BM_FLAG,
     VMC_REPORT_DTN_ES,
     VMC_REPORT_DTN_SW,
+    VMC_REPORT_COUNTERS,
     VMC_REPORT_COUNT
 } vmc_report_t;
 
@@ -67,6 +71,7 @@ typedef struct {
     bm_flag_cbit_report_t        bm_flag;
     dtn_es_cbit_report_t         dtn_es;
     dtn_sw_cbit_report_t         dtn_sw;
+    REPORT_MSG                   counters;
 } vmc_report_set_t;
 
 typedef struct {
@@ -108,6 +113,14 @@ void vmc_health_init(vmc_health_t *health, const vmc_config_t *config);
  */
 bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
                        const uint8_t *frame, size_t len);
+
+/**
+ * @brief Print the PHY counter report.
+ *
+ * The one report dpdk_vmc has no printer for - it is newer than that code - so
+ * this one is ours, laid out like the printers beside it.
+ */
+void print_phy_counter_report(const REPORT_MSG *data, const char *device_name);
 
 /** Redraw the dashboard in place. */
 void vmc_health_render(const vmc_health_t *health, uint64_t elapsed_s);

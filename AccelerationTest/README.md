@@ -328,7 +328,7 @@ The reports are the ones `dpdk_vmc` reads; `VmcMessages.h` is that project's
 `vmc_message_types.h` copied verbatim, and `VmcHealth.c` sorts and byte-swaps
 them the same way `dpdk_vmc/src/health_monitor/health_monitor.c` does.
 
-Six reports arrive from each of the VMC's two sides, FLCS and VS:
+Seven reports arrive from each of the VMC's two sides, FLCS and VS:
 
 | report | how it is told apart |
 |---|---|
@@ -338,6 +338,15 @@ Six reports arrive from each of the VMC's two sides, FLCS and VS:
 | CBIT board flags | the same VL, message id |
 | CBIT DTN end system | the same VL, message id |
 | CBIT DTN switch | the same VL, message id |
+| PHY port counters | its own VL, `REPORT_MSG` — no header at all |
+
+The PHY counter report is the odd one: unlike every other report it carries no
+`vmp_cmsw_header_t`, so the payload is the struct and nothing else and the VL id
+is the whole of what identifies it. It is also the one report `dpdk_vmc` has no
+printer for — it is newer than that code — so that printer is ours, laid out
+like the ones beside it and marked `(ATE)` so nobody looks for it over there. It
+prints the four counters for each of the six ports, then the totals, because six
+rows of near-identical numbers hide the one port that has stopped.
 
 **The dashboard is `dpdk_vmc`'s, not ours.** `VmcPrint.c` is lines 924-2126 of
 `dpdk_vmc/src/health_monitor/health_monitor.c` copied verbatim - every printer,

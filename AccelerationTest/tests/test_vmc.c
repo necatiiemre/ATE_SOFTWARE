@@ -291,6 +291,41 @@ static void test_refusals(vmc_health_t *h, const vmc_config_t *c)
 /* The link decides the side. A report whose VL names the other side is filed by
  * its cable and the disagreement counted - that is what a swapped pair looks
  * like, and nothing else does. */
+/* The counter report has no header: the VL id is the whole of what says what it
+ * is, so there is no message id to get wrong and nothing to guard with. */
+static void test_counters(vmc_health_t *h, const vmc_config_t *c)
+{
+    size_t frame_len;
+    uint8_t *p = frame_for(c->flcs_counters, sizeof(REPORT_MSG), &frame_len);
+
+    for (int i = 0; i < PHY_PORT_NUMBER; i++) {
+        put_be64(p + (0 * PHY_PORT_NUMBER + i) * 8, 100000ull + i);   /* sent */
+        put_be64(p + (1 * PHY_PORT_NUMBER + i) * 8, 200000ull + i);   /* received */
+        put_be64(p + (2 * PHY_PORT_NUMBER + i) * 8,      7ull + i);   /* PRBS failed */
+        put_be64(p + (3 * PHY_PORT_NUMBER + i) * 8,     11ull + i);   /* missed */
+    }
+
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "the PHY counter frame is accepted");
+
+    const REPORT_MSG *m = &h->side[VMC_FLCS].counters;
+    for (int i = 0; i < PHY_PORT_NUMBER; i++)
+        check(m->total_sended_package[i] == 100000ull + i &&
+              m->total_received_package[i] == 200000ull + i &&
+              m->prbs_failed_package[i] == 7ull + i &&
+              m->missed_package[i] == 11ull + i,
+              "every counter of every port, swapped");
+    check(h->side[VMC_VS].seen[VMC_REPORT_COUNTERS].packets == 0,
+          "and nothing landed on the other side");
+
+    uint64_t short_before = h->too_short;
+    frame_for(c->vs_counters, sizeof(REPORT_MSG) - 1, &frame_len);
+    check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "a short counter frame is refused");
+    check(h->too_short == short_before + 1, "and counted as short");
+    printf("[ OK ] PHY port counters\n");
+}
+
 static void test_side_comes_from_the_link(vmc_health_t *h, const vmc_config_t *c)
 {
     size_t frame_len;
@@ -335,10 +370,13 @@ static void test_vl_table(const vmc_config_t *c)
     check(c->link_count == 2 && c->links[0].side == VMC_FLCS &&
           c->links[1].side == VMC_VS,
           "two links, the first FLCS and the second VS");
-    for (int r = VMC_REPORT_BM_ENGINEERING; r < VMC_REPORT_COUNT; r++)
+    for (int r = VMC_REPORT_BM_ENGINEERING; r <= VMC_REPORT_DTN_SW; r++)
         check(vmc_report_vl(c, VMC_FLCS, (vmc_report_t)r) == c->flcs_cbit &&
               vmc_report_vl(c, VMC_VS, (vmc_report_t)r) == c->vs_cbit,
               "the four CBIT reports share one VL per side");
+    check(vmc_report_vl(c, VMC_FLCS, VMC_REPORT_COUNTERS) == c->flcs_counters &&
+          vmc_report_vl(c, VMC_VS, VMC_REPORT_COUNTERS) == c->vs_counters,
+          "the PHY counters have a VL of their own");
     for (uint8_t l = 0; l < c->link_count; l++)
         check(c->links[l].iface != NULL && c->links[l].iface[0] != '\0',
               "each link names an interface");
@@ -355,6 +393,7 @@ int main(void)
     test_cpu_usage(&health, c);
     test_pbit(&health, c);
     test_cbit_sorting(&health, c);
+    test_counters(&health, c);
     test_side_comes_from_the_link(&health, c);
     test_refusals(&health, c);
 

@@ -2,7 +2,7 @@
  * VMC acceleration test.
  *
  * The VMC sends its health monitor without being asked, so this test does not
- * configure anything: it opens both interfaces, sorts what arrives into the six
+ * configure anything: it opens both interfaces, sorts what arrives into the
  * reports the VMC produces from each of its two sides, and keeps the dashboard
  * up until the operator stops it.
  *
@@ -50,7 +50,7 @@ static void print_plan(const vmc_config_t *c)
         printf(" %s (%s)%s", c->links[l].iface,
                vmc_side_name((vmc_side_t)c->links[l].side),
                l + 1 < c->link_count ? "," : "\n");
-    printf("  reports     : six per side, sorted by VL id\n\n");
+    printf("  reports     : %d per side, sorted by VL id\n\n", VMC_REPORT_COUNT);
     printf("    %-21s  %6s  %6s\n", "report", "FLCS", "VS");
     printf("    %-21s  %6s  %6s\n", "---------------------", "------", "------");
     for (int r = 0; r < VMC_REPORT_COUNT; r++)
@@ -63,6 +63,9 @@ static void print_plan(const vmc_config_t *c)
            c->msg_dtn_es, c->msg_dtn_sw, c->msg_bm_engineering, c->msg_bm_flag);
     printf("  PBIT is guarded by message id %u, because other traffic shares "
            "its VL.\n", c->msg_pbit_response);
+    printf("  The PHY counter report carries no header at all, so its VL id is "
+           "all there is\n  to go on - %d ports, four counters each.\n",
+           PHY_PORT_NUMBER);
     printf("\n  the side comes from the interface, not the VL id - a report whose\n");
     printf("  VL names the other side is still filed by its cable, and counted.\n");
 }

@@ -67,6 +67,8 @@ static const vmc_config_t g_vmc = {
     .vs_pbit_response   = 0x000d,
     .flcs_cbit          = 0x000b,
     .vs_cbit            = 0x000e,
+    .flcs_counters      = 100,
+    .vs_counters        = 101,
 
     .msg_dtn_es         = 2,
     .msg_dtn_sw         = 3,

@@ -12,6 +12,7 @@
  * terminal; run the application to read it.
  */
 
+#include "VmcHealth.h"
 #include "VmcPrint.h"
 
 #include <stdio.h>
@@ -71,6 +72,7 @@ static bm_flag_cbit_report_t        g_bm_flag;
 static dtn_es_cbit_report_t         g_es;
 static dtn_sw_cbit_report_t         g_sw;
 static Pcs_profile_stats            g_cpu;
+static REPORT_MSG                   g_counters;
 
 static void body_pbit(void)    { print_vmc_pbit_report(&g_pbit, "VS"); }
 static void body_bm_eng(void)  { print_bm_cbit_report(&g_bm_eng, "BM ENGINEERING CBIT REPORT", "VS"); }
@@ -78,6 +80,7 @@ static void body_bm_flag(void) { print_bm_flag_cbit_report(&g_bm_flag, "FLCS"); 
 static void body_es(void)      { print_dtn_es_cbit_report(&g_es, "VS"); }
 static void body_sw(void)      { print_dtn_sw_cbit_report(&g_sw, "FLCS"); }
 static void body_cpu(void)     { print_pcs_profile_stats(&g_cpu, "VS"); }
+static void body_counters(void){ print_phy_counter_report(&g_counters, "FLCS"); }
 
 /* Every printer in the original starts by refusing a null report. */
 static void body_nulls(void)
@@ -87,6 +90,7 @@ static void body_nulls(void)
     print_dtn_es_cbit_report(NULL, "VS");
     print_dtn_sw_cbit_report(NULL, "VS");
     print_pcs_profile_stats(NULL, "VS");
+    print_phy_counter_report(NULL, "VS");
 }
 
 int main(void)
@@ -101,6 +105,7 @@ int main(void)
         {"DTN end system CBIT", body_es},
         {"DTN switch CBIT",     body_sw},
         {"CPU usage",           body_cpu},
+        {"PHY port counters",   body_counters},
     };
 
     fill(&g_pbit,    sizeof g_pbit);
@@ -109,6 +114,7 @@ int main(void)
     fill(&g_es,      sizeof g_es);
     fill(&g_sw,      sizeof g_sw);
     fill(&g_cpu,     sizeof g_cpu);
+    fill(&g_counters, sizeof g_counters);
 
     /* Eight ports, numbered, so the switch printer walks a plausible array. */
     for (int i = 0; i < 8; i++)

@@ -691,6 +691,28 @@ typedef struct Pcs_profile_stats
     Pcs_mem_profile_type   stack_mem;                           // Byte 112  - 135  | 24 byte
 } Pcs_profile_stats;                                            // TOPLAM: 136 byte
 
+
+// ============================================================================
+//
+// PHY COUNTER REPORT  --  FLCS VL = 100 // VS VL = 101
+//
+// Verbatim from the definition the VMC team supplied. Unlike every other report
+// here it carries no vmp_cmsw_header_t: the payload is the struct and nothing
+// else, so the VL id alone says what it is - there is no message id to check.
+//
+// ============================================================================
+
+#define PHY_PORT_NUMBER 6
+#define PHY_PORT_VL_NUMBER 10
+
+typedef struct __attribute__((packed))
+{
+	uint64_t total_sended_package[PHY_PORT_NUMBER];
+	uint64_t total_received_package[PHY_PORT_NUMBER];
+	uint64_t prbs_failed_package[PHY_PORT_NUMBER];
+	uint64_t missed_package[PHY_PORT_NUMBER];
+}REPORT_MSG;
+
 /* The sizes the comments above claim, held by the compiler. A struct that lays
  * out differently here than it does on the wire would decode into quiet
  * nonsense; this turns that into a build failure. */
@@ -702,5 +724,7 @@ _Static_assert(sizeof(dtn_es_cbit_report_t)         ==  352, "DTN ES CBIT is 352
 _Static_assert(sizeof(dtn_sw_cbit_report_t)         == 1064, "DTN SW CBIT is 1064 bytes");
 _Static_assert(sizeof(dtn_sw_port_mon_t)            ==  124, "one switch port is 124 bytes");
 _Static_assert(sizeof(Pcs_profile_stats)            ==  136, "CPU usage is 136 bytes");
+_Static_assert(sizeof(REPORT_MSG) == 4 * PHY_PORT_NUMBER * 8,
+               "the PHY counter report is four counters per port and nothing else");
 
 #endif /* VMC_MESSAGES_H */
