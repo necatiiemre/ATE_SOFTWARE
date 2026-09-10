@@ -338,6 +338,21 @@ Six reports arrive from each of the VMC's two sides, FLCS and VS:
 | CBIT DTN end system | the same VL, message id |
 | CBIT DTN switch | the same VL, message id |
 
+**The dashboard is `dpdk_vmc`'s, not ours.** `VmcPrint.c` is lines 924-2126 of
+`dpdk_vmc/src/health_monitor/health_monitor.c` copied verbatim - every printer,
+the bitfield tables they walk, and the temperature check the dashboard runs
+after each report - and `vmc_health_render` is `hm_print_dashboard` with its
+slot access swapped for ours: same banner, same order, same closing `[HM]`
+diagnostic line. A report shown here and the same report shown by `dpdk_vmc`
+are the same text, so the two can be compared line for line.
+
+Three deliberate departures, none of which change a printed character: the
+three `hm_check_*_temps` functions lose their `static` because the dashboard
+lives in another file here; `hm_temperature_failed()` is added because the
+dashboard cannot read that flag directly; and the temperature limits move to
+`VmcPrint.h`, which is where the original keeps them. Anything this application
+wants to say about a run is printed after the dashboard, never inside it.
+
 Everything on the wire is big-endian and every struct is packed, so each report
 is copied in whole and then swapped field by field. `VmcMessages.h` ends in
 static assertions holding the sizes the comments claim — a compiler that lays

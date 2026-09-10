@@ -2,6 +2,7 @@
 
 #include "HealthMonitor.h"
 #include "Log.h"
+#include "VmcPrint.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -424,48 +425,147 @@ bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
-/* Rendering. The dashboard says what is arriving, then what each side reports;
- * the log gets every field. Flags and error counters are named where they are
- * not zero rather than printed as a wall of zeros. */
-
-static void age(char *out, size_t cap, uint64_t last_ms, uint64_t packets)
-{
-    if (packets == 0)
-        snprintf(out, cap, "%s", "-");
-    else
-        snprintf(out, cap, "%.1fs", (double)(hm_now_ms() - last_ms) / 1000.0);
-}
-
-static void arrival_table(const vmc_health_t *h)
-{
-    printf("\n  %-21s  %4s  %9s %7s   %4s  %9s %7s\n",
-           "report", "VL", "FLCS", "last", "VL", "VS", "last");
-    printf("  %-21s  %4s  %9s %7s   %4s  %9s %7s\n",
-           "---------------------", "----", "---------", "-------",
-           "----", "---------", "-------");
-
-    for (int r = 0; r < VMC_REPORT_COUNT; r++) {
-        char last[2][16];
-
-        for (int s = 0; s < VMC_SIDE_COUNT; s++)
-            age(last[s], sizeof last[s], h->side[s].seen[r].last_ms,
-                h->side[s].seen[r].packets);
-
-        printf("  %-21s  %4u  %9llu %7s   %4u  %9llu %7s\n",
-               vmc_report_name((vmc_report_t)r),
-               vmc_report_vl(h->config, VMC_FLCS, (vmc_report_t)r),
-               (unsigned long long)h->side[VMC_FLCS].seen[r].packets, last[0],
-               vmc_report_vl(h->config, VMC_VS, (vmc_report_t)r),
-               (unsigned long long)h->side[VMC_VS].seen[r].packets, last[1]);
-    }
-}
-
-/* Name the flag words that are not zero. A report where nothing is wrong says
- * "none", which is the line worth being able to read at a glance.
+/* The dashboard. hm_print_dashboard() from
+ * dpdk_vmc/src/health_monitor/health_monitor.c, with its slot access replaced
+ * by ours - same banner, same order, same per-slot printers, same closing [HM]
+ * diagnostic line. The printers themselves are that file's, verbatim, in
+ * VmcPrint.c, so a report here and the same report there are the same text.
  *
- * The words live in a packed struct, so they are read a copy at a time rather
- * than through a uint16_t pointer that the compiler is entitled to assume is
- * aligned. */
+ * Where the counters differ they are mapped rather than renamed: dpdk_vmc keeps
+ * per-VL receive counters, and this keeps per-report ones that add up to the
+ * same thing. */
+
+static bool drain_and_print_pcs_slot(const vmc_report_set_t *set, vmc_side_t side,
+                                     const char *device_name)
+{
+    (void)side;
+    if (!set->seen[VMC_REPORT_CPU_USAGE].packets)
+        return false;
+    print_pcs_profile_stats(&set->cpu_usage, device_name);
+    return true;
+}
+
+static bool drain_and_print_pbit_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_PBIT].packets)
+        return false;
+    print_vmc_pbit_report(&set->pbit, device_name);
+    return true;
+}
+
+static bool drain_and_print_bm_eng_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_BM_ENGINEERING].packets)
+        return false;
+    print_bm_cbit_report(&set->bm_engineering, "BM ENGINEERING CBIT REPORT", device_name);
+    hm_check_bm_engineering_temps(&set->bm_engineering, device_name);
+    return true;
+}
+
+static bool drain_and_print_bm_flag_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_BM_FLAG].packets)
+        return false;
+    print_bm_flag_cbit_report(&set->bm_flag, device_name);
+    return true;
+}
+
+static bool drain_and_print_dtn_es_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_DTN_ES].packets)
+        return false;
+    print_dtn_es_cbit_report(&set->dtn_es, device_name);
+    hm_check_dtn_es_temps(&set->dtn_es, device_name);
+    return true;
+}
+
+static bool drain_and_print_dtn_sw_slot(const vmc_report_set_t *set, const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_DTN_SW].packets)
+        return false;
+    print_dtn_sw_cbit_report(&set->dtn_sw, device_name);
+    hm_check_dtn_sw_temps(&set->dtn_sw, device_name);
+    return true;
+}
+
+void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
+{
+    static uint64_t tick = 0;
+    const vmc_report_set_t *vs = &h->side[VMC_VS];
+    const vmc_report_set_t *flcs = &h->side[VMC_FLCS];
+
+    (void)elapsed_s;
+
+    // Dashboard cycle header — her saniyenin başlangıcını net işaretler
+    printf("\n\n");
+    printf("########################################################################################\n");
+    printf("###  HEALTH MONITOR DASHBOARD — tick %-6lu                                            ###\n",
+           (unsigned long)tick);
+    printf("########################################################################################\n");
+
+    bool any = false;
+    any |= drain_and_print_pcs_slot(vs,   VMC_VS,   "VS");
+    any |= drain_and_print_pcs_slot(flcs, VMC_FLCS, "FLCS");
+
+    any |= drain_and_print_pbit_slot(vs,   "VS");
+    any |= drain_and_print_pbit_slot(flcs, "FLCS");
+
+    any |= drain_and_print_bm_eng_slot(vs,   "VS");
+    any |= drain_and_print_bm_eng_slot(flcs, "FLCS");
+
+    any |= drain_and_print_bm_flag_slot(vs,   "VS");
+    any |= drain_and_print_bm_flag_slot(flcs, "FLCS");
+
+    any |= drain_and_print_dtn_es_slot(vs,   "VS");
+    any |= drain_and_print_dtn_es_slot(flcs, "FLCS");
+
+    any |= drain_and_print_dtn_sw_slot(vs,   "VS");
+    any |= drain_and_print_dtn_sw_slot(flcs, "FLCS");
+
+    // Her tick sonunda tanı satırı — sayaçlar + paket gelip gelmediği net.
+    uint64_t total         = h->accepted;
+    uint64_t vs_cnt        = vs->seen[VMC_REPORT_CPU_USAGE].packets;
+    uint64_t flcs_cnt      = flcs->seen[VMC_REPORT_CPU_USAGE].packets;
+    uint64_t vs_pbit_cnt   = vs->seen[VMC_REPORT_PBIT].packets;
+    uint64_t flcs_pbit_cnt = flcs->seen[VMC_REPORT_PBIT].packets;
+    uint64_t cbit_cnt      = 0;
+    for (int r = VMC_REPORT_BM_ENGINEERING; r < VMC_REPORT_COUNT; r++)
+        cbit_cnt += vs->seen[r].packets + flcs->seen[r].packets;
+    uint64_t unknown_vlid  = h->not_health;
+    uint64_t unknown_msg   = h->unknown_message;
+    uint64_t short_cnt     = h->too_short;
+    uint64_t empty_cnt     = h->empty;
+    printf("[HM] tick=%lu total=%lu vs_cpu=%lu flcs_cpu=%lu vs_pbit=%lu flcs_pbit=%lu cbit=%lu empty=%lu unk_vlid=%lu unk_msg=%lu short=%lu printed=%d\n",
+           (unsigned long)tick,
+           (unsigned long)total,
+           (unsigned long)vs_cnt,
+           (unsigned long)flcs_cnt,
+           (unsigned long)vs_pbit_cnt,
+           (unsigned long)flcs_pbit_cnt,
+           (unsigned long)cbit_cnt,
+           (unsigned long)empty_cnt,
+           (unsigned long)unknown_vlid,
+           (unsigned long)unknown_msg,
+           (unsigned long)short_cnt,
+           any ? 1 : 0);
+
+    // Sıcaklık limiti bir kez ihlal edildiyse kalıcı uyarı bas.
+    if (hm_temperature_failed()) {
+        printf("[HM] TEMPERATURE CHECK: FAILED — test durduruluyor (limit %.0f..%.0f degC)\n",
+               HM_TEMP_MIN_DEGC, HM_TEMP_MAX_DEGC);
+    }
+
+    fflush(stdout);
+    tick++;
+}
+
+/* ------------------------------------------------------------------ */
+/* The log. The dashboard is dpdk_vmc's, printed as it prints it; the log is
+ * ours, and says the same things in a form that reads back after a run. */
+
+/* Name the flag words that are not zero, so a run's log does not carry pages of
+ * "flag_7 0x0000". The words live in a packed struct, so they are read a copy
+ * at a time rather than through a pointer the compiler may assume is aligned. */
 static void flag_words(char *out, size_t cap, const char *prefix,
                        const void *block, size_t count)
 {
@@ -485,206 +585,6 @@ static void flag_words(char *out, size_t cap, const char *prefix,
             return;
         used += (size_t)n;
     }
-}
-
-static void cpu_line(const Pcs_profile_stats *c)
-{
-    printf("    CPU     samples %llu   exec last/avg/max %llu/%llu/%llu   "
-           "heap %llu/%llu   stack %llu/%llu\n",
-           (unsigned long long)c->sample_count,
-           (unsigned long long)c->cpu_exec_time.last_exec_time.usage,
-           (unsigned long long)c->cpu_exec_time.avg_exec_time.usage,
-           (unsigned long long)c->cpu_exec_time.max_exec_time.usage,
-           (unsigned long long)c->heap_mem.used_size,
-           (unsigned long long)c->heap_mem.total_size,
-           (unsigned long long)c->stack_mem.used_size,
-           (unsigned long long)c->stack_mem.total_size);
-}
-
-static void pbit_line(const vmc_pbit_data_t *p)
-{
-    const vmp_storage_and_status_t *st = &p->vmp_storage_and_status_st;
-
-    printf("    PBIT    serial %u   %u policy step(s), status %u   "
-           "FLCS 0x%04x  VS 0x%04x   CPU flcs/vs %s/%s  eMMC %s  MRAM %s\n",
-           p->vmc_serial_number, p->number_of_policy_step,
-           p->policy_steps_exec_status, p->flcs_cpu_pbit, p->vs_cpu_pbit,
-           st->flcs_cpu_status ? "FAIL" : "ok", st->vs_cpu_status ? "FAIL" : "ok",
-           st->eMMC_storage_status ? "FAIL" : "ok",
-           st->MRAM_storage_status ? "FAIL" : "ok");
-}
-
-static void board_line(const bm_engineering_cbit_report_t *b)
-{
-    const bm_vmc_board_status_data_t *v = &b->vmc_board_status_st;
-
-    printf("    board   PSM %.2fV/%.2fV %.3fA %.1fC   FPGA %.1fC   edge %.1fC   "
-           "12V %.3fA\n",
-           (double)v->PSM_PWR_PRI_VOLS, (double)v->PSM_PWR_SEC_VOLS,
-           (double)v->PSM_INPUT_CURS, (double)v->PSM_TEMP,
-           (double)v->BM_FPGA_temperature, (double)v->Board_edge_temperature,
-           (double)v->BRD_MNGR_12V_main_current);
-    printf("    CPUs    VS core %.1f/%.1fC RAM %.1fC flash %.1fC   "
-           "FLCS core %.1f/%.1fC RAM %.1fC flash %.1fC\n",
-           (double)b->vs_status_st.VSCPU_core_local_temperature,
-           (double)b->vs_status_st.VSCPU_core_remote_temperature,
-           (double)b->vs_status_st.VSCPU_RAM_temperature,
-           (double)b->vs_status_st.VSCPU_FLASH_temperature,
-           (double)b->flcs_status_st.FCCPU_core_local_temperature,
-           (double)b->flcs_status_st.FCCPU_core_remote_temperature,
-           (double)b->flcs_status_st.FCCPU_RAM_temperature,
-           (double)b->flcs_status_st.FCCPU_FLASH_temperature);
-}
-
-static void flag_lines(const bm_flag_cbit_report_t *f)
-{
-    char red[192], orange[192], yellow[192];
-
-    flag_words(red, sizeof red, "red", &f->event_red_bitmaps_st,
-               sizeof f->event_red_bitmaps_st / sizeof(uint16_t));
-    flag_words(orange, sizeof orange, "orange", &f->event_orange_bitmaps_st,
-               sizeof f->event_orange_bitmaps_st / sizeof(uint16_t));
-    flag_words(yellow, sizeof yellow, "yellow", &f->event_yellow_bitmaps_st,
-               sizeof f->event_yellow_bitmaps_st / sizeof(uint16_t));
-
-    printf("    flags   red %s\n", red[0] ? red : "none");
-    printf("            orange %s\n", orange[0] ? orange : "none");
-    printf("            yellow %s\n", yellow[0] ? yellow : "none");
-    printf("            power %s  ICS %s%s  PSM primary %s secondary %s "
-           "oring %s hold-up %s\n",
-           f->bm_power_status_st.bit_u16 ? "FLAGGED" : "ok",
-           f->ics_status_1_st.bit_u16 ? "1 FLAGGED " : "ok",
-           f->ics_status_2_st.bit_u16 ? "2 FLAGGED" : "",
-           f->psm_pwr_pri_flt_st.bit.psm_power_primary_fault ? "FAULT" : "ok",
-           f->psm_pwr_sec_flt_st.bit.psm_power_secondary_fault ? "FAULT" : "ok",
-           f->psm_oring_ch_st.bit.psm_oring_ch ? "FLAGGED" : "ok",
-           f->psm_hold_up_not_ok_st.bit.psm_hold_up_not_ok ? "NOT OK" : "ok");
-}
-
-static void dtn_es_lines(const dtn_es_cbit_report_t *e)
-{
-    const dtn_es_monitoring_t *m = &e->dtn_es_monitoring_st;
-
-    printf("    DTN ES  fw %u.%u.%u  device 0x%llx  mode %llu  config %llu  "
-           "BIT 0x%llx  config status %llu\n",
-           m->A664_ES_FW_VER.major, m->A664_ES_FW_VER.minor, m->A664_ES_FW_VER.bugfix,
-           (unsigned long long)m->A664_ES_DEV_ID,
-           (unsigned long long)m->A664_ES_MODE,
-           (unsigned long long)m->A664_ES_CONFIG_ID,
-           (unsigned long long)m->A664_ES_BIT_STATUS,
-           (unsigned long long)m->A664_ES_CONFIG_STATUS);
-    printf("            %.1fC  Vcc %.3fV  transceiver %.1fC   "
-           "port A 0x%llx  port B 0x%llx\n",
-           (double)m->A664_ES_HW_TEMP, (double)m->A664_ES_HW_VCC_INT,
-           (double)m->A664_ES_TRANSCEIVER_TEMP,
-           (unsigned long long)m->A664_ES_PORT_A_STATUS,
-           (unsigned long long)m->A664_ES_PORT_B_STATUS);
-    printf("            tx in %llu out A/B %llu/%llu   rx in A/B %llu/%llu out %llu\n",
-           (unsigned long long)m->A664_ES_TX_INCOMING_COUNT,
-           (unsigned long long)m->A664_ES_TX_A_OUTGOING_COUNT,
-           (unsigned long long)m->A664_ES_TX_B_OUTGOING_COUNT,
-           (unsigned long long)m->A664_ES_RX_A_INCOMING_COUNT,
-           (unsigned long long)m->A664_ES_RX_B_INCOMING_COUNT,
-           (unsigned long long)m->A664_ES_RX_OUTGOING_COUNT);
-
-    uint64_t tx_drop = m->A664_ES_TX_VLID_DROP_COUNT +
-                       m->A664_ES_TX_LMIN_LMAX_DROP_COUNT +
-                       m->A664_ES_TX_MAX_JITTER_DROP_COUNT;
-    uint64_t rx_bad = m->A664_ES_RX_A_VLID_DROP_COUNT + m->A664_ES_RX_B_VLID_DROP_COUNT +
-                      m->A664_ES_RX_A_LMIN_LMAX_DROP_COUNT +
-                      m->A664_ES_RX_B_LMIN_LMAX_DROP_COUNT +
-                      m->A664_ES_RX_A_SEQ_ERR_COUNT + m->A664_ES_RX_B_SEQ_ERR_COUNT +
-                      m->A664_ES_RX_A_NET_ERR_COUNT + m->A664_ES_RX_B_NET_ERR_COUNT +
-                      m->A664_ES_RX_A_CRC_ERROR_COUNT + m->A664_ES_RX_B_CRC_ERROR_COUNT +
-                      m->A664_ES_RX_A_IP_CHECKSUM_ERROR_COUNT +
-                      m->A664_ES_RX_B_IP_CHECKSUM_ERROR_COUNT;
-    printf("            tx dropped %llu   rx bad %llu   "
-           "(the log names which counter)\n",
-           (unsigned long long)tx_drop, (unsigned long long)rx_bad);
-}
-
-static void dtn_sw_lines(const dtn_sw_cbit_report_t *w)
-{
-    const dtn_sw_status_mon_t *s = &w->dtn_sw_monitoring_st.status;
-
-    printf("    DTN SW  device 0x%04x  config %u  %u port(s)   %.1fC  %.3fV   "
-           "transceiver %.1f/%.1fC\n",
-           s->A664_SW_DEV_ID, s->A664_SW_CONFIGURATION_ID, s->A664_SW_PORT_COUNT,
-           (double)s->A664_SW_TEMPERATURE, (double)s->A664_SW_VOLTAGE,
-           (double)s->A664_SW_TRANSCEIVER_TEMP,
-           (double)s->A664_SW_SHARED_TRANSCEIVER_TEMP);
-    printf("            tx %llu  rx %llu\n",
-           (unsigned long long)s->A664_SW_TX_TOTAL_COUNT,
-           (unsigned long long)s->A664_SW_RX_TOTAL_COUNT);
-
-    printf("            %4s  %11s  %11s  %s\n", "port", "rx", "tx", "errors");
-    for (int i = 0; i < 8; i++) {
-        const dtn_sw_port_mon_t *p = &w->dtn_sw_monitoring_st.port[i];
-        char errors[160];
-        size_t used = 0;
-
-        errors[0] = '\0';
-        #define NAME_IF(field, label)                                            \
-            if ((field) && used < sizeof errors) {                               \
-                int n = snprintf(errors + used, sizeof errors - used, "%s%s %llu",\
-                                 used ? ", " : "", (label), (unsigned long long)(field)); \
-                if (n > 0) used += (size_t)n;                                    \
-            }
-        NAME_IF(p->A664_SW_PORT_i_VLID_DROP_COUNT,            "undef-VL")
-        NAME_IF(p->A664_SW_PORT_i_VL_SOURCE_ERR_COUNT,        "wrong-src")
-        NAME_IF(p->A664_SW_PORT_i_MIN_VL_FRAME_ERR_COUNT,     "under-Lmin")
-        NAME_IF(p->A664_SW_PORT_i_MAX_VL_FRAME_ERR_COUNT,     "over-Lmax")
-        NAME_IF(p->A664_SW_PORT_i_CRC_ERR_COUNT,              "CRC")
-        NAME_IF(p->A664_SW_PORT_i_UNDEF_MAC_COUNT,            "undef-MAC")
-        NAME_IF(p->A664_SW_PORT_i_TRAFFIC_POLCY_DROP_COUNT,   "policy")
-        NAME_IF(p->A664_SW_PORT_i_MAX_DELAY_ERR_COUNT,        "max-delay")
-        NAME_IF(p->A664_SW_PORT_i_HIGH_PRTY_QUE_OVRFLW_COUNT, "queue-HP")
-        NAME_IF(p->A664_SW_PORT_i_LOW_PRTY_QUE_OVRFLW_COUNT,  "queue-LP")
-        #undef NAME_IF
-
-        printf("            %4u  %11llu  %11llu  %s\n",
-               p->A664_SW_PORT_ID,
-               (unsigned long long)p->A664_SW_PORT_i_RX_COUNT,
-               (unsigned long long)p->A664_SW_PORT_i_TX_COUNT,
-               errors[0] ? errors : "-");
-    }
-}
-
-void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
-{
-    printf("\033[H\033[J");
-    printf("VMC Health Monitor - %s        %llus elapsed\n",
-           h->config->iface, (unsigned long long)elapsed_s);
-    printf("frames %llu   reports %llu   other VLs %llu   short %llu   "
-           "unknown message %llu   empty %llu\n",
-           (unsigned long long)h->frames, (unsigned long long)h->accepted,
-           (unsigned long long)h->not_health, (unsigned long long)h->too_short,
-           (unsigned long long)h->unknown_message, (unsigned long long)h->empty);
-    if (h->not_health && h->last_unknown_vl)
-        printf("last VL that was not one of ours: %u\n", h->last_unknown_vl);
-    if (h->unknown_message)
-        printf("last message id we do not know: %u\n", h->last_unknown_msg);
-
-    arrival_table(h);
-
-    for (int s = 0; s < VMC_SIDE_COUNT; s++) {
-        const vmc_report_set_t *set = &h->side[s];
-
-        printf("\n  %s\n", vmc_side_name((vmc_side_t)s));
-        if (set->seen[VMC_REPORT_CPU_USAGE].packets)      cpu_line(&set->cpu_usage);
-        if (set->seen[VMC_REPORT_PBIT].packets)           pbit_line(&set->pbit);
-        if (set->seen[VMC_REPORT_BM_ENGINEERING].packets) board_line(&set->bm_engineering);
-        if (set->seen[VMC_REPORT_BM_FLAG].packets)        flag_lines(&set->bm_flag);
-        if (set->seen[VMC_REPORT_DTN_ES].packets)         dtn_es_lines(&set->dtn_es);
-        if (set->seen[VMC_REPORT_DTN_SW].packets)         dtn_sw_lines(&set->dtn_sw);
-
-        bool any = false;
-        for (int r = 0; r < VMC_REPORT_COUNT; r++)
-            any = any || set->seen[r].packets;
-        if (!any)
-            puts("    nothing yet");
-    }
-    fflush(stdout);
 }
 
 /* The log gets what the dashboard summarises: every DTN counter by name, not

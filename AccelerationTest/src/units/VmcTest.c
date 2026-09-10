@@ -20,6 +20,7 @@
 #include "RawSocket.h"
 #include "SafeShutdown.h"
 #include "VmcHealth.h"
+#include "VmcPrint.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,11 @@
 static uint8_t      g_rx[RX_BUFFER_SIZE];
 static raw_socket_t g_link;
 static vmc_health_t g_health;
+
+/* dpdk_vmc stops the test when a temperature stays outside its limits for ten
+ * consecutive reports. The check is copied along with the printers, so give it
+ * a flag to raise and end the run the same way. */
+static volatile bool g_temperature_abort;
 
 static void close_socket_action(void *ctx)
 {
@@ -89,7 +95,7 @@ static void monitor_run(const timing_config_t *timing)
     watch.alive = true;
     log_line("monitoring - press Ctrl+C to end the test");
 
-    while (!safe_shutdown_requested()) {
+    while (!safe_shutdown_requested() && !g_temperature_abort) {
         int n = raw_socket_recv(&g_link, g_rx, sizeof g_rx, 100);
         if (n > 0 && vmc_health_ingest(&g_health, g_rx, (size_t)n))
             hm_watch_saw_frame(&watch);
@@ -111,16 +117,21 @@ static void monitor_run(const timing_config_t *timing)
         if (now >= next_draw) {
             next_draw = now + timing->display_interval_ms;
             vmc_health_render(&g_health, (now - started) / 1000);
-            printf("\n%u interruption(s)   %s\n", interruptions,
-                   watch.alive ? "VMC ALIVE" : "VMC QUIET");
-            puts("Ctrl+C to end the test");
+            /* Ours, after the dashboard rather than inside it, so what the
+             * dashboard prints stays what dpdk_vmc prints. */
+            printf("[ATE] %llus elapsed, %u interruption(s), %s - Ctrl+C to end\n",
+                   (unsigned long long)((now - started) / 1000), interruptions,
+                   watch.alive ? "VMC alive" : "VMC QUIET");
             fflush(stdout);
         }
     }
 
     uint64_t elapsed = (hm_now_ms() - started) / 1000;
     printf("\n");
-    log_line("test stopped by the operator");
+    if (g_temperature_abort)
+        log_line("test stopped by the temperature check");
+    else
+        log_line("test stopped by the operator");
     log_line("elapsed %llus, %llu reports, %u interruption(s)",
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
              interruptions);
@@ -135,6 +146,8 @@ unit_result_t vmc_test_run(void)
     unit_result_t result = UNIT_RESULT_ERROR;
 
     g_link.fd = -1;
+    g_temperature_abort = false;
+    hm_set_abort_flag(&g_temperature_abort);
     vmc_health_init(&g_health, config);
 
     print_plan(config);

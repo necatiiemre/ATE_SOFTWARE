@@ -18,13 +18,18 @@ $(APP): $(OBJ)
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# VmcPrint.c is copied verbatim from dpdk_vmc and carries one helper that file
+# does not call either. Warning about it here would only invite editing the copy.
+$(BUILD)/VmcPrint.o: src/VmcPrint.c | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-unused-function -c $< -o $@
+
 $(BUILD):
 	mkdir -p $(BUILD) $(BUILD)/units
 
 # Rebuilds the 47 reference frames byte for byte, reproduces all three rounds
 # against the captured config1, then checks the profiles are self-consistent.
 test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles \
-      $(BUILD)/test_health $(BUILD)/test_vmc
+      $(BUILD)/test_health $(BUILD)/test_vmc $(BUILD)/test_vmc_print
 	./$(BUILD)/test_reference
 	@echo
 	./$(BUILD)/test_rounds
@@ -34,6 +39,8 @@ test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles \
 	./$(BUILD)/test_health
 	@echo
 	./$(BUILD)/test_vmc
+	@echo
+	./$(BUILD)/test_vmc_print
 
 $(BUILD)/test_reference: tests/test_reference.c $(LIB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -47,8 +54,12 @@ $(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)
 $(BUILD)/test_health: tests/test_health.c src/HealthDecode.c src/HealthMonitor.c src/Log.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_vmc: tests/test_vmc.c src/VmcHealth.c src/AppConfig.c src/HealthMonitor.c src/Log.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/test_vmc_print: tests/test_vmc_print.c src/VmcPrint.c | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
+
+$(BUILD)/test_vmc: tests/test_vmc.c src/VmcHealth.c src/VmcPrint.c src/AppConfig.c \
+                   src/HealthMonitor.c src/Log.c | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
 
 clean:
 	rm -rf $(BUILD)
