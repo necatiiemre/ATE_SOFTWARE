@@ -257,6 +257,7 @@ const char *vmc_report_name(vmc_report_t report)
     case VMC_REPORT_BM_ENGINEERING: return "CBIT board monitor";
     case VMC_REPORT_BM_FLAG:        return "CBIT board flags";
     case VMC_REPORT_DTN_ES:         return "CBIT DTN end system";
+    case VMC_REPORT_DTN_ES_SW:      return "CBIT DTN switch end system";
     case VMC_REPORT_DTN_SW:         return "CBIT DTN switch";
     case VMC_REPORT_COUNTERS:       return "PHY port counters";
     default:                        return "?";
@@ -359,8 +360,22 @@ static bool ingest_cbit(vmc_health_t *health, vmc_side_t side,
             health->empty++;
             return false;
         }
-        set->dtn_es = tmp;
-        note(health, side, VMC_REPORT_DTN_ES);
+
+        /* Two different things arrive here, on the same VL with the same
+         * message id, and only the network type tells them apart. Keeping one
+         * slot meant whichever came last overwrote the other and half the
+         * report was never seen. */
+        if (tmp.network_type == c->net_type_es) {
+            set->dtn_es = tmp;
+            note(health, side, VMC_REPORT_DTN_ES);
+        } else if (tmp.network_type == c->net_type_sw_es) {
+            set->dtn_es_sw = tmp;
+            note(health, side, VMC_REPORT_DTN_ES_SW);
+        } else {
+            health->unknown_net_type++;
+            health->last_unknown_net_type = tmp.network_type;
+            return false;
+        }
         return true;
     }
     if (msg == c->msg_dtn_sw) {
@@ -444,7 +459,12 @@ bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
             health->last_unknown_msg = payload[0];
             return false;
         }
-        parse_pbit(&health->side[side].pbit, payload);
+        /* Keep the first answer, as the starter does. PBIT is the power-on
+         * result and does not change while the VMC is up, so a later copy can
+         * only be the same thing - or, if it is not, the first one is the one
+         * that answered the request we sent. */
+        if (health->side[side].seen[VMC_REPORT_PBIT].packets == 0)
+            parse_pbit(&health->side[side].pbit, payload);
         note(health, side, VMC_REPORT_PBIT);
         stored = true;
     } else if (vl_id == c->flcs_counters || vl_id == c->vs_counters) {
@@ -525,12 +545,24 @@ static bool drain_and_print_bm_flag_slot(const vmc_report_set_t *set, const char
     return true;
 }
 
+/* Both kinds go through dpdk_vmc's printer; the name it stamps in the banner is
+ * what says which, and the Network Type line inside confirms it. */
 static bool drain_and_print_dtn_es_slot(const vmc_report_set_t *set, const char *device_name)
 {
     if (!set->seen[VMC_REPORT_DTN_ES].packets)
         return false;
     print_dtn_es_cbit_report(&set->dtn_es, device_name);
     hm_check_dtn_es_temps(&set->dtn_es, device_name);
+    return true;
+}
+
+static bool drain_and_print_dtn_es_sw_slot(const vmc_report_set_t *set,
+                                           const char *device_name)
+{
+    if (!set->seen[VMC_REPORT_DTN_ES_SW].packets)
+        return false;
+    print_dtn_es_cbit_report(&set->dtn_es_sw, device_name);
+    hm_check_dtn_es_temps(&set->dtn_es_sw, device_name);
     return true;
 }
 
@@ -619,8 +651,11 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
     any |= drain_and_print_bm_flag_slot(vs,   "VS");
     any |= drain_and_print_bm_flag_slot(flcs, "FLCS");
 
-    any |= drain_and_print_dtn_es_slot(vs,   "VS");
-    any |= drain_and_print_dtn_es_slot(flcs, "FLCS");
+    any |= drain_and_print_dtn_es_slot(vs,   "VS ES");
+    any |= drain_and_print_dtn_es_slot(flcs, "FLCS ES");
+
+    any |= drain_and_print_dtn_es_sw_slot(vs,   "VS SW-ES");
+    any |= drain_and_print_dtn_es_sw_slot(flcs, "FLCS SW-ES");
 
     any |= drain_and_print_dtn_sw_slot(vs,   "VS");
     any |= drain_and_print_dtn_sw_slot(flcs, "FLCS");
@@ -683,6 +718,11 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
         printf("[ATE] %llu report(s) carried the other side's VL id (last was VL %u) - "
                "are the two cables the right way round?\n",
                (unsigned long long)h->side_mismatch, h->last_mismatch_vl);
+    if (h->unknown_net_type)
+        printf("[ATE] %llu end-system report(s) with a network type that is neither "
+               "%u nor %u (last was %u)\n",
+               (unsigned long long)h->unknown_net_type, h->config->net_type_es,
+               h->config->net_type_sw_es, h->last_unknown_net_type);
 
     fflush(stdout);
     tick++;
@@ -826,11 +866,13 @@ void vmc_health_log_summary(const vmc_health_t *h)
     char flags[192];
 
     log_line("VMC health: %llu frames, %llu reports, %llu other VLs, %llu short, "
-             "%llu unknown message, %llu empty, %llu on the wrong side",
+             "%llu unknown message, %llu empty, %llu on the wrong side, "
+             "%llu with an unknown network type",
              (unsigned long long)h->frames, (unsigned long long)h->accepted,
              (unsigned long long)h->not_health, (unsigned long long)h->too_short,
              (unsigned long long)h->unknown_message, (unsigned long long)h->empty,
-             (unsigned long long)h->side_mismatch);
+             (unsigned long long)h->side_mismatch,
+             (unsigned long long)h->unknown_net_type);
     for (uint8_t l = 0; l < h->config->link_count; l++)
         log_line("  %s carries %s: %llu frame(s), %llu report(s)",
                  h->config->links[l].iface,
@@ -846,7 +888,7 @@ void vmc_health_log_summary(const vmc_health_t *h)
 
         log_line("  %s", vmc_side_name((vmc_side_t)s));
         for (int r = 0; r < VMC_REPORT_COUNT; r++)
-            log_line("    %-21s VL %-4u %llu packet(s)",
+            log_line("    %-26s VL %-4u %llu packet(s)",
                      vmc_report_name((vmc_report_t)r),
                      vmc_report_vl(h->config, (vmc_side_t)s, (vmc_report_t)r),
                      (unsigned long long)set->seen[r].packets);
@@ -921,8 +963,15 @@ void vmc_health_log_summary(const vmc_health_t *h)
                      f->psm_oring_ch_st.bit.psm_oring_ch,
                      f->psm_hold_up_not_ok_st.bit.psm_hold_up_not_ok);
         }
-        if (set->seen[VMC_REPORT_DTN_ES].packets)
+        if (set->seen[VMC_REPORT_DTN_ES].packets) {
+            log_line("    network type %u - the end system", h->config->net_type_es);
             log_dtn_es(&set->dtn_es);
+        }
+        if (set->seen[VMC_REPORT_DTN_ES_SW].packets) {
+            log_line("    network type %u - the switch's embedded end system",
+                     h->config->net_type_sw_es);
+            log_dtn_es(&set->dtn_es_sw);
+        }
         if (set->seen[VMC_REPORT_DTN_SW].packets)
             log_dtn_sw(&set->dtn_sw);
         if (set->seen[VMC_REPORT_COUNTERS].packets) {

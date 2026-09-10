@@ -16,7 +16,7 @@ uint8_t vmc_pbit_request_seq(uint64_t seq)
     return (uint8_t)(((seq - 1) % 255) + 1);
 }
 
-size_t vmc_pbit_request_build(uint8_t *out, const uint8_t src_mac[6], int vlan,
+size_t vmc_pbit_request_build(uint8_t *out, const uint8_t src_mac[6],
                               uint16_t vl_id, uint8_t msg_id, uint64_t seq)
 {
     const uint16_t udp_len = 8 + VMC_PBIT_REQ_PAYLOAD_LEN;
@@ -31,11 +31,6 @@ size_t vmc_pbit_request_build(uint8_t *out, const uint8_t src_mac[6], int vlan,
     out[n++] = (uint8_t)(vl_id & 0xFF);
     memcpy(out + n, src_mac, 6);
     n += 6;
-    if (vlan >= 0) {
-        out[n++] = 0x81; out[n++] = 0x00;
-        out[n++] = (uint8_t)((vlan >> 8) & 0x0F);
-        out[n++] = (uint8_t)(vlan & 0xFF);
-    }
     out[n++] = 0x08; out[n++] = 0x00;
 
     uint8_t *ip = out + n;
@@ -90,9 +85,8 @@ bool vmc_pbit_request_send(raw_socket_t *link, const vmc_config_t *config,
     uint8_t frame[VMC_PBIT_REQ_FRAME_LEN];
     bool vs = side != 0;
     uint16_t vl_id = vs ? config->vs_pbit_request : config->flcs_pbit_request;
-    int vlan = vs ? config->request_vlan_vs : config->request_vlan_flcs;
 
-    size_t len = vmc_pbit_request_build(frame, link->mac, vlan, vl_id,
+    size_t len = vmc_pbit_request_build(frame, link->mac, vl_id,
                                         config->msg_pbit_request, seq);
 
     if (!raw_socket_send(link, frame, len)) {
@@ -101,9 +95,8 @@ bool vmc_pbit_request_send(raw_socket_t *link, const vmc_config_t *config,
         return false;
     }
 
-    log_line("PBIT request for %s: VL %u, %s, message id %u, sequence byte %u, "
-             "%zu bytes on %s", vs ? "VS" : "FLCS", vl_id,
-             vlan >= 0 ? "tagged" : "untagged", config->msg_pbit_request,
-             vmc_pbit_request_seq(seq), len, link->name);
+    log_line("PBIT request %llu for %s: VL %u, message id %u, sequence byte %u, "
+             "%zu bytes on %s", (unsigned long long)seq, vs ? "VS" : "FLCS", vl_id,
+             config->msg_pbit_request, vmc_pbit_request_seq(seq), len, link->name);
     return true;
 }

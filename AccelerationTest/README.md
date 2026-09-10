@@ -328,7 +328,7 @@ The reports are the ones `dpdk_vmc` reads; `VmcMessages.h` is that project's
 `vmc_message_types.h` copied verbatim, and `VmcHealth.c` sorts and byte-swaps
 them the same way `dpdk_vmc/src/health_monitor/health_monitor.c` does.
 
-Seven reports arrive from each of the VMC's two sides, FLCS and VS:
+Eight reports arrive from each of the VMC's two sides, FLCS and VS:
 
 | report | how it is told apart |
 |---|---|
@@ -336,9 +336,18 @@ Seven reports arrive from each of the VMC's two sides, FLCS and VS:
 | PBIT | its own VL, guarded by a message id because other traffic shares it |
 | CBIT board monitor | one VL, message id |
 | CBIT board flags | the same VL, message id |
-| CBIT DTN end system | the same VL, message id |
+| CBIT DTN end system | the same VL, message id, **network type 0** |
+| CBIT DTN switch end system | the same VL, the same message id, **network type 1** |
 | CBIT DTN switch | the same VL, message id |
 | PHY port counters | its own VL, `REPORT_MSG` — no header at all |
+
+The end-system CBIT report arrives **twice** — once for the end system itself
+and once for the switch's embedded end system — on the same VL, with the same
+message id, and only the network type byte tells them apart. One slot meant
+whichever arrived last overwrote the other and half the report was never seen,
+so they are kept and printed as two: `[VS ES]` and `[VS SW-ES]`, with the
+`Network Type` line inside each confirming which. A third value is neither, and
+is counted and named rather than filed as one of them.
 
 The PHY counter report is the odd one: unlike every other report it carries no
 `vmp_cmsw_header_t`, so the payload is the struct and nothing else and the VL id
@@ -382,11 +391,13 @@ answered are left alone, because PBIT does not change while the VMC is up.
 
 That request is the only thing this test transmits.
 
-The request goes out **untagged**. The starter tags its requests — VS on 97,
-FLCS on 99 — because it reaches the VMC through the Mellanox switch and the tag
-is what steers them there; nothing steers a direct cable. Both VLANs are `-1` in
-`AppConfig.c`, and setting either to a VLAN id tags that side again if the path
-ever goes back through a switch.
+The request goes out **untagged** — there is no VLAN anywhere in it. The starter
+tags its requests because it reaches the VMC through the Mellanox switch and the
+tag is what steers them there; nothing steers a direct cable.
+
+Only the first answer from each side is kept, as the starter keeps it: PBIT is
+the power-on result, so a later copy can only be the same thing, and the first
+is the one that answered the request that was sent.
 
 A DTN report that is all zeros is skipped rather than stored: the VMC sends
 those before the DTN has answered it, and overwriting a good report with one

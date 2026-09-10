@@ -174,6 +174,15 @@ static void test_pbit(vmc_health_t *h, const vmc_config_t *c)
           "a long frame on the PBIT VL with another message id is refused");
     check(h->side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets == before,
           "and does not overwrite the report");
+    /* The starter keeps the first answer per side; a later copy of a power-on
+     * result can only be the same thing. */
+    p = frame_for(c->flcs_pbit_response, sizeof(vmc_pbit_data_t), &frame_len);
+    put_header(p, c->msg_pbit_response, 454, 1);
+    put_be32(p + 418, 11111111);
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "a second PBIT answer is still counted");
+    check(h->side[VMC_FLCS].pbit.vmc_serial_number == 20250909,
+          "but the first one is what is kept");
     printf("[ OK ] PBIT\n");
 }
 
@@ -206,9 +215,10 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     check(h->side[VMC_VS].bm_flag.event_yellow_bitmaps_st.yellow_event_flag_2 == 0x0100,
           "a yellow flag word");
 
-    /* DTN end system. */
+    /* DTN end system, network type 0. */
     p = frame_for(c->flcs_cbit, sizeof(dtn_es_cbit_report_t), &frame_len);
     put_header(p, c->msg_dtn_es, 352, 3);
+    p[13] = c->net_type_es;
     put_be64(p + 15 + 8,  0x2600);                      /* device id */
     put_be64(p + 15 + 24, 7);                           /* config id */
     check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
@@ -237,6 +247,39 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     check(sw->port[3].A664_SW_PORT_ID == 22 &&
           sw->port[3].A664_SW_PORT_i_RX_COUNT == 119006,
           "a port block at the right stride");
+
+    /* The same report again with the other network type. It shares the VL and
+     * the message id, so only that byte separates the two - and keeping one
+     * slot would have lost whichever arrived first. */
+    p = frame_for(c->flcs_cbit, sizeof(dtn_es_cbit_report_t), &frame_len);
+    put_header(p, c->msg_dtn_es, 352, 3);
+    p[13] = c->net_type_sw_es;
+    put_be64(p + 15 + 8,  0x1234);
+    put_be64(p + 15 + 24, 9);
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "the switch's embedded end system report is accepted");
+    check(h->side[VMC_FLCS].dtn_es_sw.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x1234 &&
+          h->side[VMC_FLCS].dtn_es_sw.dtn_es_monitoring_st.A664_ES_CONFIG_ID == 9,
+          "with its own contents");
+    check(h->side[VMC_FLCS].dtn_es.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x2600,
+          "and the end system's report is still there beside it");
+    check(h->side[VMC_FLCS].seen[VMC_REPORT_DTN_ES].packets == 1 &&
+          h->side[VMC_FLCS].seen[VMC_REPORT_DTN_ES_SW].packets == 1,
+          "counted as two reports, not one seen twice");
+
+    /* A third network type is neither, and is refused rather than filed as one. */
+    uint64_t net_before = h->unknown_net_type;
+    p = frame_for(c->flcs_cbit, sizeof(dtn_es_cbit_report_t), &frame_len);
+    put_header(p, c->msg_dtn_es, 352, 3);
+    p[13] = 7;
+    put_be64(p + 15 + 8, 0xBEEF);
+    check(!vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "an unknown network type is refused");
+    check(h->unknown_net_type == net_before + 1 && h->last_unknown_net_type == 7,
+          "and remembered, not just counted");
+    check(h->side[VMC_FLCS].dtn_es.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x2600 &&
+          h->side[VMC_FLCS].dtn_es_sw.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x1234,
+          "leaving both good reports alone");
 
     /* All four arrived on two VLs, sorted only by the message id. */
     check(h->side[VMC_VS].seen[VMC_REPORT_BM_ENGINEERING].packets == 1 &&

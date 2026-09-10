@@ -15,7 +15,9 @@
  *   PBIT        its own VL,  vmc_pbit_data_t, guarded by a message id because
  *                            other traffic shares the VL
  *   CBIT        one VL carrying four different reports, told apart by the
- *               message id in the first payload byte
+ *               message id in the first payload byte - and the end-system one
+ *               arrives twice, for the end system and for the switch's embedded
+ *               end system, told apart by its network type byte
  *   counters    its own VL,  REPORT_MSG - four counters for each of six PHY
  *               ports, with no header at all, so the VL id is the whole of
  *               what identifies it
@@ -49,7 +51,8 @@ typedef enum {
     VMC_REPORT_PBIT,
     VMC_REPORT_BM_ENGINEERING,
     VMC_REPORT_BM_FLAG,
-    VMC_REPORT_DTN_ES,
+    VMC_REPORT_DTN_ES,       /**< network type 0: the end system itself */
+    VMC_REPORT_DTN_ES_SW,    /**< network type 1: the switch's embedded end system */
     VMC_REPORT_DTN_SW,
     VMC_REPORT_COUNTERS,
     VMC_REPORT_COUNT
@@ -69,7 +72,8 @@ typedef struct {
     vmc_pbit_data_t              pbit;
     bm_engineering_cbit_report_t bm_engineering;
     bm_flag_cbit_report_t        bm_flag;
-    dtn_es_cbit_report_t         dtn_es;
+    dtn_es_cbit_report_t         dtn_es;      /**< network type 0 */
+    dtn_es_cbit_report_t         dtn_es_sw;   /**< network type 1 */
     dtn_sw_cbit_report_t         dtn_sw;
     REPORT_MSG                   counters;
 } vmc_report_set_t;
@@ -84,6 +88,9 @@ typedef struct {
     uint64_t too_short;          /**< the right VL, not enough bytes for the report */
     uint64_t unknown_message;    /**< the right VL, a message id we do not know */
     uint64_t empty;              /**< a DTN report with nothing in it, as dpdk_vmc skips */
+    uint64_t unknown_net_type;   /**< an end-system report that is neither kind */
+
+    uint8_t  last_unknown_net_type;
 
     uint64_t side_mismatch;      /**< the VL id named the side the interface did not */
 

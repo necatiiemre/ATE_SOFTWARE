@@ -115,15 +115,14 @@ typedef struct {
     uint8_t  msg_bm_flag;             /**< bm_flag_cbit_report_t */
     uint8_t  msg_pbit_response;       /**< guards the PBIT VLs, which carry other traffic */
     uint8_t  msg_pbit_request;        /**< identifier we put in the request we send */
+    unsigned pbit_resend_interval_s;  /**< keep asking until both sides answer */
 
-    /* PBIT is the one thing the VMC does not send unasked, so it has to be
-     * requested. -1 leaves the request untagged, which is what a cable straight
-     * to the VMC wants: the starter on the main rig tags its requests (VS 97,
-     * FLCS 99) because it reaches the VMC through the Mellanox switch and the
-     * tag is what steers them there. Nothing steers here. */
-    int      request_vlan_flcs;
-    int      request_vlan_vs;
-    unsigned pbit_resend_interval_s; /**< keep asking until both sides answer */
+    /* The DTN end-system CBIT report arrives twice, for two different things,
+     * and says which by its network type byte. Both come in on the same VL with
+     * the same message id, so a decoder that ignores this keeps whichever
+     * arrived last and loses the other one entirely. */
+    uint8_t  net_type_es;             /**< the end system itself */
+    uint8_t  net_type_sw_es;          /**< the switch's embedded end system */
 } vmc_config_t;
 
 const vmc_config_t *app_config_vmc(void);

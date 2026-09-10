@@ -57,10 +57,10 @@ static void print_plan(const vmc_config_t *c)
                vmc_side_name((vmc_side_t)c->links[l].side),
                l + 1 < c->link_count ? "," : "\n");
     printf("  reports     : %d per side, sorted by VL id\n\n", VMC_REPORT_COUNT);
-    printf("    %-21s  %6s  %6s\n", "report", "FLCS", "VS");
-    printf("    %-21s  %6s  %6s\n", "---------------------", "------", "------");
+    printf("    %-26s  %6s  %6s\n", "report", "FLCS", "VS");
+    printf("    %-26s  %6s  %6s\n", "--------------------------", "------", "------");
     for (int r = 0; r < VMC_REPORT_COUNT; r++)
-        printf("    %-21s  %6u  %6u\n", vmc_report_name((vmc_report_t)r),
+        printf("    %-26s  %6u  %6u\n", vmc_report_name((vmc_report_t)r),
                vmc_report_vl(c, VMC_FLCS, (vmc_report_t)r),
                vmc_report_vl(c, VMC_VS, (vmc_report_t)r));
     printf("\n  the four CBIT reports share a VL and are told apart by the "
@@ -72,16 +72,15 @@ static void print_plan(const vmc_config_t *c)
     printf("  The PHY counter report carries no header at all, so its VL id is "
            "all there is\n  to go on - %d ports, four counters each.\n",
            PHY_PORT_NUMBER);
+    printf("  The end-system CBIT report arrives twice - network type %u is the "
+           "end system,\n  %u is the switch's embedded one - so it is kept and "
+           "printed as two.\n", c->net_type_es, c->net_type_sw_es);
     printf("\n  PBIT is a power-on result the VMC holds until asked, so this test "
-           "asks:\n    request on VL %u (FLCS) and VL %u (VS), message id %u, "
-           "repeated every %u s\n    until each side answers, ",
+           "asks:\n    untagged request on VL %u (FLCS) and VL %u (VS), message "
+           "id %u,\n    with a sequence byte, repeated every %u s until each side "
+           "answers.\n",
            c->flcs_pbit_request, c->vs_pbit_request, c->msg_pbit_request,
            c->pbit_resend_interval_s);
-    if (c->request_vlan_flcs >= 0 || c->request_vlan_vs >= 0)
-        printf("tagged VLAN %d (FLCS) and %d (VS).\n",
-               c->request_vlan_flcs, c->request_vlan_vs);
-    else
-        printf("untagged.\n");
     printf("  Everything else the VMC sends on its own; this is all we transmit.\n");
     printf("\n  the side comes from the interface, not the VL id - a report whose\n");
     printf("  VL names the other side is still filed by its cable, and counted.\n");
@@ -192,8 +191,10 @@ static void monitor_run(const vmc_config_t *config, const timing_config_t *timin
                    (unsigned long long)((now - started) / 1000), interruptions,
                    watch.alive ? "VMC alive" : "VMC QUIET");
             if (!pbit_complete(config))
-                printf("[ATE] PBIT: still asking (%llu request(s) sent) - "
-                       "FLCS %s, VS %s\n", (unsigned long long)pbit_seq,
+                printf("[ATE] PBIT: still asking - %llu request(s) sent, last "
+                       "sequence byte %u; FLCS %s, VS %s\n",
+                       (unsigned long long)pbit_seq,
+                       vmc_pbit_request_seq(pbit_seq ? pbit_seq - 1 : 0),
                        g_health.side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets
                            ? "answered" : "waiting",
                        g_health.side[VMC_VS].seen[VMC_REPORT_PBIT].packets

@@ -9,14 +9,14 @@
  *
  * The request is Test_Starters/vmc/src/main.c's send_pbit_request: an 11-byte
  * cmsw header with message identifier 50, a length of 11, a zero timestamp and
- * the sequence number in the last byte, wrapped in Ethernet, an optional 802.1Q
- * tag, IPv4 and UDP, padded to the 64-byte Ethernet minimum. It goes out on the
- * PBIT request VL for that side and the answer comes back on that side's PBIT
- * response VL, where VmcHealth picks it up like any other report.
+ * the sequence number in the last byte, wrapped in Ethernet, IPv4 and UDP, and
+ * padded to the 64-byte Ethernet minimum. It goes out on the PBIT request VL
+ * for that side and the answer comes back on that side's PBIT response VL,
+ * where VmcHealth picks it up like any other report.
  *
- * Both the request VLs and the VLANs are in AppConfig.h, because that starter
- * runs through the Mellanox switch and tags its requests while this test is
- * cabled straight to the VMC and may not need to.
+ * Untagged. The starter tags its requests because it reaches the VMC through
+ * the Mellanox switch and the tag is what steers them there; this test is
+ * cabled straight to the VMC, so there is nothing to steer.
  */
 
 #ifndef VMC_PBIT_REQUEST_H
@@ -35,12 +35,11 @@
 /**
  * @brief Build one PBIT result request.
  *
- * @param out   at least VMC_PBIT_REQ_FRAME_LEN bytes
- * @param vlan  802.1Q id, or -1 to leave the frame untagged
- * @param seq   request counter; the byte on the wire is 0 once, then 1..255
+ * @param out  at least VMC_PBIT_REQ_FRAME_LEN bytes
+ * @param seq  request counter; the byte on the wire is 0 once, then 1..255
  * @return frame length
  */
-size_t vmc_pbit_request_build(uint8_t *out, const uint8_t src_mac[6], int vlan,
+size_t vmc_pbit_request_build(uint8_t *out, const uint8_t src_mac[6],
                               uint16_t vl_id, uint8_t msg_id, uint64_t seq);
 
 /** The sequence byte for a given request count: 0, then 1..255 cycling. */

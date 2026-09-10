@@ -10,6 +10,10 @@
  * The frame is checked field by field rather than against a captured blob,
  * because there is no capture - the starter's path is exercised on the main rig
  * and not here.
+ *
+ * It carries no VLAN tag. The starter tags its requests because it reaches the
+ * VMC through the Mellanox switch and the tag is what steers them there; this
+ * test is cabled straight to the VMC, so there is nothing to steer.
  */
 
 #include "VmcPbitRequest.h"
@@ -59,9 +63,9 @@ static void test_sequence(void)
     printf("[ OK ] the sequence byte\n");
 }
 
-static void test_untagged(const vmc_config_t *c)
+static void test_frame(const vmc_config_t *c)
 {
-    size_t len = vmc_pbit_request_build(g_frame, SRC_MAC, -1,
+    size_t len = vmc_pbit_request_build(g_frame, SRC_MAC,
                                         c->flcs_pbit_request, c->msg_pbit_request, 7);
 
     check(len == VMC_PBIT_REQ_FRAME_LEN, "padded to the Ethernet minimum");
@@ -69,7 +73,8 @@ static void test_untagged(const vmc_config_t *c)
           "the destination MAC prefix");
     check(be16(g_frame + 4) == c->flcs_pbit_request, "the VL id in the MAC");
     check(memcmp(g_frame + 6, SRC_MAC, 6) == 0, "our own address as the sender");
-    check(g_frame[12] == 0x08 && g_frame[13] == 0x00, "IPv4 straight after, untagged");
+    check(g_frame[12] == 0x08 && g_frame[13] == 0x00,
+          "IPv4 straight after the addresses - no VLAN tag");
 
     const uint8_t *ip = g_frame + 14;
     check(ip[0] == 0x45 && ip[8] == 1 && ip[9] == 17, "IPv4, TTL 1, UDP");
@@ -94,36 +99,29 @@ static void test_untagged(const vmc_config_t *c)
         check(payload[i] == 0, "the timestamp is left zero");
     for (size_t i = 14 + 20 + 8 + VMC_PBIT_REQ_PAYLOAD_LEN; i < len; i++)
         check(g_frame[i] == 0, "the padding is zero");
-    printf("[ OK ] the untagged request frame\n");
+    printf("[ OK ] the request frame\n");
 }
 
-/* The rig is cabled straight to the VMC and sends untagged, but the tagged form
- * is still built - the starter on the main rig needs it, and a move back to a
- * switched path is one edit. So it is tested with an explicit VLAN rather than
- * with whatever the configuration currently holds. */
-#define A_VLAN 97
-
-static void test_tagged(const vmc_config_t *c)
+/* The sequence byte is the only thing that changes between requests, so it is
+ * worth seeing that it does, and that nothing else moves with it. */
+static void test_sequence_on_the_wire(const vmc_config_t *c)
 {
-    size_t len = vmc_pbit_request_build(g_frame, SRC_MAC, A_VLAN,
-                                        c->vs_pbit_request, c->msg_pbit_request, 0);
+    uint8_t first[VMC_PBIT_REQ_FRAME_LEN];
+    const size_t seq_offset = 14 + 20 + 8 + VMC_PBIT_REQ_PAYLOAD_LEN - 1;
 
-    check(len == VMC_PBIT_REQ_FRAME_LEN, "the tag does not change the frame length");
-    check(g_frame[12] == 0x81 && g_frame[13] == 0x00, "an 802.1Q tag");
-    check((be16(g_frame + 14) & 0x0FFF) == A_VLAN, "carrying the VLAN id");
-    check(g_frame[16] == 0x08 && g_frame[17] == 0x00, "then IPv4");
+    vmc_pbit_request_build(first, SRC_MAC, c->vs_pbit_request, c->msg_pbit_request, 0);
+    check(first[seq_offset] == 0, "the first request carries 0 on the wire");
 
-    /* Everything after the tag shifts by four, and has to still be right. */
-    const uint8_t *ip = g_frame + 18;
-    check(ip[0] == 0x45 && ip_checksum(ip) == 0, "the IP header moved intact");
-    check(be16(ip + 18) == c->vs_pbit_request, "the VS request VL");
-    check(ip[16] == 224 && ip[17] == 224, "still the same destination prefix");
-
-    const uint8_t *payload = ip + 20 + 8;
-    check(payload[0] == c->msg_pbit_request &&
-          payload[VMC_PBIT_REQ_PAYLOAD_LEN - 1] == 0,
-          "the payload, with the first request's sequence byte of 0");
-    printf("[ OK ] the tagged request frame\n");
+    for (uint64_t n = 1; n < 5; n++) {
+        vmc_pbit_request_build(g_frame, SRC_MAC, c->vs_pbit_request,
+                               c->msg_pbit_request, n);
+        check(g_frame[seq_offset] == vmc_pbit_request_seq(n),
+              "each request carries its own sequence byte");
+        g_frame[seq_offset] = first[seq_offset];
+        check(memcmp(g_frame, first, VMC_PBIT_REQ_FRAME_LEN) == 0,
+              "and nothing else in the frame changes with it");
+    }
+    printf("[ OK ] the sequence byte is the only thing that moves\n");
 }
 
 static void test_config(const vmc_config_t *c)
@@ -136,9 +134,8 @@ static void test_config(const vmc_config_t *c)
     check(c->msg_pbit_request != c->msg_pbit_response,
           "the request and the answer carry different message identifiers");
     check(c->pbit_resend_interval_s > 0, "the request is repeated");
-    /* Straight cable to the VMC: nothing steers the frame, so nothing tags it. */
-    check(c->request_vlan_flcs < 0 && c->request_vlan_vs < 0,
-          "the requests go out untagged");
+    check(c->net_type_es != c->net_type_sw_es,
+          "the two end-system network types are distinguishable");
     printf("[ OK ] the request settings come from AppConfig\n");
 }
 
@@ -148,8 +145,8 @@ int main(void)
 
     test_sequence();
     test_config(c);
-    test_untagged(c);
-    test_tagged(c);
+    test_frame(c);
+    test_sequence_on_the_wire(c);
 
     if (failures) {
         printf("FAILED: %d check(s)\n", failures);

@@ -76,14 +76,10 @@ static const vmc_config_t g_vmc = {
     .msg_bm_flag        = 6,
     .msg_pbit_response  = 100,
     .msg_pbit_request   = 50,
-
-    /* Untagged. The starter tags its requests - VS on 97, FLCS on 99 - because
-     * it reaches the VMC through the Mellanox switch and the tag is what steers
-     * them. This test is cabled straight to the VMC, so there is nothing to
-     * steer and no tag: -1 on either side leaves that frame untagged. */
-    .request_vlan_flcs  = -1,
-    .request_vlan_vs    = -1,
     .pbit_resend_interval_s = 2,
+
+    .net_type_es        = 0,
+    .net_type_sw_es     = 1,
 };
 
 const vmc_config_t *app_config_vmc(void)
