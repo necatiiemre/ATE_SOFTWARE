@@ -322,7 +322,8 @@ every field decoded.
 ## The VMC test
 
 The VMC sends its health monitor unasked, so the test configures nothing: it
-opens one interface, sorts what arrives, and keeps a dashboard up until Ctrl+C.
+opens both interfaces, sorts what arrives, and keeps a dashboard up until
+Ctrl+C. One interface per side — the first carries FLCS, the second VS.
 The reports are the ones `dpdk_vmc` reads; `VmcMessages.h` is that project's
 `vmc_message_types.h` copied verbatim, and `VmcHealth.c` sorts and byte-swaps
 them the same way `dpdk_vmc/src/health_monitor/health_monitor.c` does.
@@ -362,11 +363,23 @@ A DTN report that is all zeros is skipped rather than stored: the VMC sends
 those before the DTN has answered it, and overwriting a good report with one
 would lose what the run is there to see.
 
-**Everything that could change with the rig is in `AppConfig.c`** — the
-interface name, all eight VL ids and all five message ids, in one struct. The
-ids are `dpdk_vmc`'s and have not been confirmed against this rig, which is why
-they are a table rather than constants spread through the decoder. Moving to a
-different environment is one edit there and nothing else.
+**The side comes from the interface, not the VL id.** That is how the rig is
+wired and it is the thing known for certain, while the ids are `dpdk_vmc`'s and
+unconfirmed here. A report whose VL id names the other side is still filed under
+its cable, and the disagreement is counted and shown — a swapped pair of cables
+looks exactly like that and nothing else does.
+
+Both links are polled in turn rather than in order, so two links carrying
+traffic at the same rate are read evenly instead of the first starving the
+second. Per-link frame and report counts appear under the dashboard, because one
+cable going quiet is the thing a two-link rig fails at.
+
+**Everything that could change with the rig is in `AppConfig.c`** — both
+interface names with the side each carries, all eight VL ids and all five
+message ids, in one struct. The ids are `dpdk_vmc`'s and have not been confirmed
+against this rig, which is why they are a table rather than constants spread
+through the decoder. Moving to a different environment is one edit there and
+nothing else.
 
 ## Not yet pinned down
 

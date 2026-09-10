@@ -47,6 +47,16 @@ int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeo
  * @param which set to the index of the link the frame came from
  * @return bytes received, 0 on timeout, -1 on error (including an interrupt)
  */
+/**
+ * @brief Receive from whichever of @p socks has something, in turn.
+ *
+ * Each call resumes the scan one past the socket it served last, so two links
+ * carrying traffic at the same rate are read evenly rather than the first one
+ * starving the rest.
+ *
+ * @param which set to the index the frame came from
+ * @return bytes received, 0 on timeout, -1 on error
+ */
 int raw_socket_recv_any(raw_socket_t *socks, size_t count, uint8_t *buf, size_t cap,
                         unsigned timeout_ms, size_t *which);
 

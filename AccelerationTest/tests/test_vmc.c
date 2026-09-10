@@ -3,8 +3,14 @@
  *
  * There is no capture to compare against, so what this pins is that a frame is
  * sorted to the right report and comes back the right way round: build a frame
- * for each of the six reports on each of the two sides, with a distinct value
- * in every field the decoder touches, and require those values back.
+ * for each of the six reports, feed it in on one of the two links, with a
+ * distinct value in every field the decoder touches, and require those values
+ * back.
+ *
+ * The side comes from the link a frame arrived on, not from the VL id, so the
+ * tests below feed the FLCS link and the VS link deliberately and check the
+ * report landed on the side the cable says - including when the VL id says
+ * otherwise.
  *
  * Byte order is the part most likely to be got wrong. Everything the VMC sends
  * is big-endian, so every field here is written big-endian and checked against
@@ -37,6 +43,10 @@ static void check(bool ok, const char *what)
 #define PAYLOAD_OFFSET (ETH + IP + UDP)
 
 static uint8_t g_frame[4096];
+
+/* The configuration wires the first link to FLCS and the second to VS. */
+#define LINK_FLCS 0
+#define LINK_VS   1
 
 static uint8_t *frame_for(uint16_t vl_id, size_t payload_len, size_t *frame_len)
 {
@@ -103,7 +113,8 @@ static void test_cpu_usage(vmc_health_t *h, const vmc_config_t *c)
     put_be64(p + 120, 3072);         /* stack used */
     put_be64(p + 128, 4096);         /* stack peak */
 
-    check(vmc_health_ingest(h, g_frame, frame_len), "the CPU usage frame is accepted");
+    check(vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "the CPU usage frame is accepted");
 
     const Pcs_profile_stats *cpu = &h->side[VMC_VS].cpu_usage;
     check(cpu->sample_count == 4102 && cpu->latest_read_time == 777000 &&
@@ -139,7 +150,8 @@ static void test_pbit(vmc_health_t *h, const vmc_config_t *c)
     put_be16(p + 450, 0xBEEF);        /* VS CPU PBIT */
     put_be16(p + 452, 0xCAFE);        /* FLCS CPU PBIT */
 
-    check(vmc_health_ingest(h, g_frame, frame_len), "the PBIT frame is accepted");
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "the PBIT frame is accepted");
 
     const vmc_pbit_data_t *pb = &h->side[VMC_FLCS].pbit;
     check(pb->header_st.message_len == 454 &&
@@ -158,7 +170,7 @@ static void test_pbit(vmc_health_t *h, const vmc_config_t *c)
     /* The same VL carries other traffic, so the message id has to guard it. */
     uint64_t before = h->side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets;
     p[0] = (uint8_t)(c->msg_pbit_response + 1);
-    check(!vmc_health_ingest(h, g_frame, frame_len),
+    check(!vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
           "a long frame on the PBIT VL with another message id is refused");
     check(h->side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets == before,
           "and does not overwrite the report");
@@ -175,7 +187,8 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     put_header(p, c->msg_bm_engineering, 397, 1);
     put_be_float(p + 13, 42.5f);                        /* first float */
     put_be_float(p + 13 + 95 * 4, -12.25f);             /* last float */
-    check(vmc_health_ingest(h, g_frame, frame_len), "the board monitor is accepted");
+    check(vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "the board monitor is accepted");
     check(h->side[VMC_VS].bm_engineering.vs_status_st.VSCPU_12V_current == 42.5f,
           "the first float");
     check(h->side[VMC_VS].bm_engineering.vmc_board_status_st.BRD_MNGR_12V_main_current
@@ -186,7 +199,8 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     put_header(p, c->msg_bm_flag, 105, 2);
     put_be16(p + 37, 0x0004);                           /* red flag 1, at 37 */
     put_be16(p + 81 + 2, 0x0100);                       /* yellow flag 2, at 83 */
-    check(vmc_health_ingest(h, g_frame, frame_len), "the board flags are accepted");
+    check(vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "the board flags are accepted");
     check(h->side[VMC_VS].bm_flag.event_red_bitmaps_st.red_event_flag_1 == 0x0004,
           "a red flag word");
     check(h->side[VMC_VS].bm_flag.event_yellow_bitmaps_st.yellow_event_flag_2 == 0x0100,
@@ -197,7 +211,8 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     put_header(p, c->msg_dtn_es, 352, 3);
     put_be64(p + 15 + 8,  0x2600);                      /* device id */
     put_be64(p + 15 + 24, 7);                           /* config id */
-    check(vmc_health_ingest(h, g_frame, frame_len), "the DTN end system report is accepted");
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "the DTN end system report is accepted");
     check(h->side[VMC_FLCS].dtn_es.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x2600 &&
           h->side[VMC_FLCS].dtn_es.dtn_es_monitoring_st.A664_ES_CONFIG_ID == 7,
           "its device and configuration ids");
@@ -212,7 +227,8 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
      * 124-byte blocks in. Its id is first and its receive count 52 bytes in. */
     put_be16(p + 15 + 57 + 3 * 124, 22);
     put_be64(p + 15 + 57 + 3 * 124 + 52, 119006);
-    check(vmc_health_ingest(h, g_frame, frame_len), "the DTN switch report is accepted");
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "the DTN switch report is accepted");
 
     const dtn_sw_monitoring_t *sw = &h->side[VMC_FLCS].dtn_sw.dtn_sw_monitoring_st;
     check(sw->status.A664_SW_TX_TOTAL_COUNT == 998110 &&
@@ -238,19 +254,22 @@ static void test_refusals(vmc_health_t *h, const vmc_config_t *c)
 
     uint64_t short_before = h->too_short;
     frame_for(c->vs_cpu_usage, sizeof(Pcs_profile_stats) - 1, &frame_len);
-    check(!vmc_health_ingest(h, g_frame, frame_len), "a short CPU usage frame is refused");
+    check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "a short CPU usage frame is refused");
     check(h->too_short == short_before + 1, "and counted as short");
 
     uint64_t unknown_before = h->unknown_message;
     p = frame_for(c->vs_cbit, sizeof(bm_engineering_cbit_report_t), &frame_len);
     put_header(p, 99, 397, 5);
-    check(!vmc_health_ingest(h, g_frame, frame_len), "an unknown message id is refused");
+    check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "an unknown message id is refused");
     check(h->unknown_message == unknown_before + 1 && h->last_unknown_msg == 99,
           "and the id is remembered, not just counted");
 
     uint64_t other_before = h->not_health;
     frame_for(0x4444, 200, &frame_len);
-    check(!vmc_health_ingest(h, g_frame, frame_len), "a VL that is not ours is refused");
+    check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "a VL that is not ours is refused");
     check(h->not_health == other_before + 1 && h->last_unknown_vl == 0x4444,
           "and that VL is remembered");
 
@@ -260,12 +279,49 @@ static void test_refusals(vmc_health_t *h, const vmc_config_t *c)
     uint64_t es_before = h->side[VMC_FLCS].seen[VMC_REPORT_DTN_ES].packets;
     p = frame_for(c->flcs_cbit, sizeof(dtn_es_cbit_report_t), &frame_len);
     put_header(p, c->msg_dtn_es, 352, 6);
-    check(!vmc_health_ingest(h, g_frame, frame_len), "an empty DTN report is skipped");
+    check(!vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "an empty DTN report is skipped");
     check(h->empty == empty_before + 1, "and counted as empty");
     check(h->side[VMC_FLCS].seen[VMC_REPORT_DTN_ES].packets == es_before &&
           h->side[VMC_FLCS].dtn_es.dtn_es_monitoring_st.A664_ES_DEV_ID == 0x2600,
           "leaving the last good report alone");
     printf("[ OK ] short frames, unknown ids and empty reports are refused\n");
+}
+
+/* The link decides the side. A report whose VL names the other side is filed by
+ * its cable and the disagreement counted - that is what a swapped pair looks
+ * like, and nothing else does. */
+static void test_side_comes_from_the_link(vmc_health_t *h, const vmc_config_t *c)
+{
+    size_t frame_len;
+    uint8_t *p = frame_for(c->vs_cpu_usage, sizeof(Pcs_profile_stats), &frame_len);
+    uint64_t mismatch_before = h->side_mismatch;
+    uint64_t flcs_before = h->side[VMC_FLCS].seen[VMC_REPORT_CPU_USAGE].packets;
+    uint64_t vs_before = h->side[VMC_VS].seen[VMC_REPORT_CPU_USAGE].packets;
+
+    put_be64(p + 0, 5150);            /* sample count, to tell it apart */
+
+    /* The VS CPU-usage VL, arriving on the FLCS cable. */
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "a report is stored even when its VL names the other side");
+    check(h->side[VMC_FLCS].seen[VMC_REPORT_CPU_USAGE].packets == flcs_before + 1,
+          "it is filed under the link it arrived on");
+    check(h->side[VMC_VS].seen[VMC_REPORT_CPU_USAGE].packets == vs_before,
+          "and not under the side its VL names");
+    check(h->side[VMC_FLCS].cpu_usage.sample_count == 5150, "with its contents");
+    check(h->side_mismatch == mismatch_before + 1 &&
+          h->last_mismatch_vl == c->vs_cpu_usage,
+          "the disagreement is counted and the VL remembered");
+
+    /* Per-link counters, so one cable going quiet is visible on its own. */
+    check(h->link[LINK_FLCS].frames > 0 && h->link[LINK_VS].frames > 0,
+          "both links have carried something");
+    check(h->link[LINK_FLCS].accepted > 0 && h->link[LINK_VS].accepted > 0,
+          "and both have produced reports");
+
+    check(!vmc_health_ingest(h, (uint8_t)c->link_count, g_frame, frame_len),
+          "a link index the configuration does not have is refused");
+    printf("[ OK ] the side comes from the cable, and a mismatch is counted\n");
 }
 
 static void test_vl_table(const vmc_config_t *c)
@@ -276,11 +332,16 @@ static void test_vl_table(const vmc_config_t *c)
           vmc_report_vl(c, VMC_FLCS, VMC_REPORT_PBIT) == c->flcs_pbit_response &&
           vmc_report_vl(c, VMC_VS, VMC_REPORT_PBIT) == c->vs_pbit_response,
           "the CPU usage and PBIT VLs come from the configuration");
+    check(c->link_count == 2 && c->links[0].side == VMC_FLCS &&
+          c->links[1].side == VMC_VS,
+          "two links, the first FLCS and the second VS");
     for (int r = VMC_REPORT_BM_ENGINEERING; r < VMC_REPORT_COUNT; r++)
         check(vmc_report_vl(c, VMC_FLCS, (vmc_report_t)r) == c->flcs_cbit &&
               vmc_report_vl(c, VMC_VS, (vmc_report_t)r) == c->vs_cbit,
               "the four CBIT reports share one VL per side");
-    check(c->iface != NULL && c->iface[0] != '\0', "the interface is named");
+    for (uint8_t l = 0; l < c->link_count; l++)
+        check(c->links[l].iface != NULL && c->links[l].iface[0] != '\0',
+              "each link names an interface");
     printf("[ OK ] every id the decoder uses comes from AppConfig\n");
 }
 
@@ -294,6 +355,7 @@ int main(void)
     test_cpu_usage(&health, c);
     test_pbit(&health, c);
     test_cbit_sorting(&health, c);
+    test_side_comes_from_the_link(&health, c);
     test_refusals(&health, c);
 
     if (failures) {

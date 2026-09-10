@@ -3,9 +3,9 @@
  * @brief The VMC's health-monitor reports, taken apart.
  *
  * The VMC sends these on its own; nothing has to ask for them. They arrive on
- * one interface, AFDX-framed the way the rest of this rig's traffic is - the VL
- * id in the low two bytes of the destination MAC, over UDP - and they are the
- * same reports dpdk_vmc reads. VmcMessages.h holds the wire format and this
+ * two interfaces, one per side of the VMC, AFDX-framed the way the rest of this
+ * rig's traffic is - the VL id in the low two bytes of the destination MAC,
+ * over UDP - and they are the same reports dpdk_vmc reads. VmcMessages.h holds the wire format and this
  * sorts, byte-swaps and stores them the way
  * dpdk_vmc/src/health_monitor/health_monitor.c does.
  *
@@ -17,8 +17,14 @@
  *   CBIT        one VL carrying four different reports, told apart by the
  *               message id in the first payload byte
  *
- * Which VL is which, and the interface they come in on, are in AppConfig.h -
- * one table, so a different rig is one edit.
+ * Which VL is which, and which interface carries which side, are in
+ * AppConfig.h - one table, so a different rig is one edit.
+ *
+ * The side comes from the interface, not the VL id: that is how the rig is
+ * wired and it is the thing known for certain, while the ids are dpdk_vmc's and
+ * unconfirmed here. A VL id that names the other side does not move the report;
+ * it is counted as a mismatch and shown, because a pair of swapped cables looks
+ * exactly like that and nothing else does.
  */
 
 #ifndef VMC_HEALTH_H
@@ -74,8 +80,18 @@ typedef struct {
     uint64_t unknown_message;    /**< the right VL, a message id we do not know */
     uint64_t empty;              /**< a DTN report with nothing in it, as dpdk_vmc skips */
 
+    uint64_t side_mismatch;      /**< the VL id named the side the interface did not */
+
     uint16_t last_unknown_vl;    /**< so an unexpected VL can be named, not just counted */
     uint8_t  last_unknown_msg;
+    uint16_t last_mismatch_vl;
+
+    /** Per interface, so a link that has gone quiet is visible on its own. */
+    struct {
+        uint64_t frames;
+        uint64_t accepted;
+        uint64_t last_ms;
+    } link[APP_MAX_VMC_LINKS];
 } vmc_health_t;
 
 void vmc_health_init(vmc_health_t *health, const vmc_config_t *config);
@@ -86,9 +102,12 @@ void vmc_health_init(vmc_health_t *health, const vmc_config_t *config);
  * Takes the whole frame: the VL id is in the destination MAC and the report
  * starts after the Ethernet, IP and UDP headers, tagged or not.
  *
+ * @param link which of the configured interfaces it arrived on; that is what
+ *             decides the side
  * @return true when a report was stored
  */
-bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len);
+bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
+                       const uint8_t *frame, size_t len);
 
 /** Redraw the dashboard in place. */
 void vmc_health_render(const vmc_health_t *health, uint64_t elapsed_s);

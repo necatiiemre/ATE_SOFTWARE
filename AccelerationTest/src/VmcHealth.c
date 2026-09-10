@@ -365,13 +365,32 @@ static bool ingest_cbit(vmc_health_t *health, vmc_side_t side,
     return false;
 }
 
-bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len)
+/* The VL id says which report this is. It also names a side, and when that is
+ * not the side the interface carries, the report is still filed where the
+ * cabling says and the disagreement is counted - see the note in AppConfig.h. */
+static void check_side(vmc_health_t *health, vmc_side_t wired, vmc_side_t named,
+                       uint16_t vl_id)
+{
+    if (wired == named)
+        return;
+    health->side_mismatch++;
+    health->last_mismatch_vl = vl_id;
+}
+
+bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
+                       const uint8_t *frame, size_t len)
 {
     const vmc_config_t *c = health->config;
     size_t payload_len;
     uint16_t vl_id;
 
+    if (link >= c->link_count)
+        return false;
+
+    vmc_side_t side = (vmc_side_t)c->links[link].side;
+
     health->frames++;
+    health->link[link].frames++;
 
     const uint8_t *payload = split(frame, len, &payload_len, &vl_id);
     if (!payload) {
@@ -379,8 +398,10 @@ bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len)
         return false;
     }
 
+    bool stored = false;
+
     if (vl_id == c->flcs_cpu_usage || vl_id == c->vs_cpu_usage) {
-        vmc_side_t side = vl_id == c->vs_cpu_usage ? VMC_VS : VMC_FLCS;
+        check_side(health, side, vl_id == c->vs_cpu_usage ? VMC_VS : VMC_FLCS, vl_id);
 
         if (payload_len < sizeof(Pcs_profile_stats)) {
             health->too_short++;
@@ -388,11 +409,9 @@ bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len)
         }
         parse_cpu_usage(&health->side[side].cpu_usage, payload);
         note(health, side, VMC_REPORT_CPU_USAGE);
-        return true;
-    }
-
-    if (vl_id == c->flcs_pbit_response || vl_id == c->vs_pbit_response) {
-        vmc_side_t side = vl_id == c->vs_pbit_response ? VMC_VS : VMC_FLCS;
+        stored = true;
+    } else if (vl_id == c->flcs_pbit_response || vl_id == c->vs_pbit_response) {
+        check_side(health, side, vl_id == c->vs_pbit_response ? VMC_VS : VMC_FLCS, vl_id);
 
         /* These VLs carry other traffic too, so the length alone is not enough
          * to tell a PBIT report from something that happens to be long. */
@@ -407,22 +426,28 @@ bool vmc_health_ingest(vmc_health_t *health, const uint8_t *frame, size_t len)
         }
         parse_pbit(&health->side[side].pbit, payload);
         note(health, side, VMC_REPORT_PBIT);
-        return true;
-    }
+        stored = true;
+    } else if (vl_id == c->flcs_cbit || vl_id == c->vs_cbit) {
+        check_side(health, side, vl_id == c->vs_cbit ? VMC_VS : VMC_FLCS, vl_id);
 
-    if (vl_id == c->flcs_cbit || vl_id == c->vs_cbit) {
         if (payload_len < sizeof(vmp_cmsw_header_t)) {
             health->too_short++;
             return false;
         }
-        return ingest_cbit(health, vl_id == c->vs_cbit ? VMC_VS : VMC_FLCS,
-                           payload, payload_len);
+        stored = ingest_cbit(health, side, payload, payload_len);
+    } else {
+        health->not_health++;
+        health->last_unknown_vl = vl_id;
+        return false;
     }
 
-    health->not_health++;
-    health->last_unknown_vl = vl_id;
-    return false;
+    if (stored) {
+        health->link[link].accepted++;
+        health->link[link].last_ms = hm_now_ms();
+    }
+    return stored;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* The dashboard. hm_print_dashboard() from
@@ -554,6 +579,28 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
         printf("[HM] TEMPERATURE CHECK: FAILED — test durduruluyor (limit %.0f..%.0f degC)\n",
                HM_TEMP_MIN_DEGC, HM_TEMP_MAX_DEGC);
     }
+
+    /* Ours, after the dashboard rather than inside it, so everything above this
+     * line stays what dpdk_vmc prints. Per interface, because one link going
+     * quiet is the thing a two-link rig fails at. */
+    for (uint8_t l = 0; l < h->config->link_count; l++) {
+        char last[16];
+
+        if (h->link[l].accepted)
+            snprintf(last, sizeof last, "%.1fs ago",
+                     (double)(hm_now_ms() - h->link[l].last_ms) / 1000.0);
+        else
+            snprintf(last, sizeof last, "%s", "nothing yet");
+        printf("[ATE] %-10s %-4s  %llu frame(s), %llu report(s), last %s\n",
+               h->config->links[l].iface,
+               vmc_side_name((vmc_side_t)h->config->links[l].side),
+               (unsigned long long)h->link[l].frames,
+               (unsigned long long)h->link[l].accepted, last);
+    }
+    if (h->side_mismatch)
+        printf("[ATE] %llu report(s) carried the other side's VL id (last was VL %u) - "
+               "are the two cables the right way round?\n",
+               (unsigned long long)h->side_mismatch, h->last_mismatch_vl);
 
     fflush(stdout);
     tick++;
@@ -696,12 +743,21 @@ void vmc_health_log_summary(const vmc_health_t *h)
 {
     char flags[192];
 
-    log_line("VMC health on %s: %llu frames, %llu reports, %llu other VLs, "
-             "%llu short, %llu unknown message, %llu empty",
-             h->config->iface, (unsigned long long)h->frames,
-             (unsigned long long)h->accepted, (unsigned long long)h->not_health,
-             (unsigned long long)h->too_short, (unsigned long long)h->unknown_message,
-             (unsigned long long)h->empty);
+    log_line("VMC health: %llu frames, %llu reports, %llu other VLs, %llu short, "
+             "%llu unknown message, %llu empty, %llu on the wrong side",
+             (unsigned long long)h->frames, (unsigned long long)h->accepted,
+             (unsigned long long)h->not_health, (unsigned long long)h->too_short,
+             (unsigned long long)h->unknown_message, (unsigned long long)h->empty,
+             (unsigned long long)h->side_mismatch);
+    for (uint8_t l = 0; l < h->config->link_count; l++)
+        log_line("  %s carries %s: %llu frame(s), %llu report(s)",
+                 h->config->links[l].iface,
+                 vmc_side_name((vmc_side_t)h->config->links[l].side),
+                 (unsigned long long)h->link[l].frames,
+                 (unsigned long long)h->link[l].accepted);
+    if (h->side_mismatch)
+        log_line("  %llu report(s) carried the other side's VL id, last VL %u",
+                 (unsigned long long)h->side_mismatch, h->last_mismatch_vl);
 
     for (int s = 0; s < VMC_SIDE_COUNT; s++) {
         const vmc_report_set_t *set = &h->side[s];

@@ -52,7 +52,12 @@ void app_config_set_all_ports(bool all) { g_all_ports = all; }
 /* The VMC rig. Interface name and every VL id in one place - see AppConfig.h.
  * The ids come from dpdk_vmc/include/health_monitor/health_monitor.h. */
 static const vmc_config_t g_vmc = {
-    .iface              = "eno12409",
+    /* First link is FLCS, second is VS - the rig is wired that way. */
+    .links = {
+        {"eno12399", 0},
+        {"eno12409", 1},
+    },
+    .link_count         = 2,
 
     .flcs_cpu_usage     = 0x0009,
     .vs_cpu_usage       = 0x0010,

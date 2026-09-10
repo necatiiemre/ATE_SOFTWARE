@@ -68,21 +68,35 @@ void app_config_set_management_vls(bool keep);
 bool app_config_all_ports(void);
 void app_config_set_all_ports(bool all);
 
+#define APP_MAX_VMC_LINKS 2
+
+/** One interface, and which side of the VMC it carries. */
+typedef struct {
+    const char *iface;
+    uint8_t     side;                 /**< 0 = FLCS, 1 = VS; see vmc_side_t */
+} vmc_link_t;
+
 /**
  * @brief Everything the VMC test needs to find its traffic.
  *
- * One struct, one place. The VMC's health monitor arrives on a single
- * interface and is sorted by the VL id in the low two bytes of the destination
- * MAC; the CBIT VLs carry four different reports, told apart by the message id
- * in the first payload byte. Both the interface name and every id live here so
- * that moving to a different rig is one edit in AppConfig.c and nothing else.
+ * One struct, one place. The VMC's health monitor arrives on two interfaces,
+ * one per side, and each report is sorted by the VL id in the low two bytes of
+ * the destination MAC; the CBIT VLs carry four different reports, told apart by
+ * the message id in the first payload byte.
+ *
+ * The interface says which side a report came from, because that is how the rig
+ * is wired and it is the thing known for certain. The VL id says which report
+ * it is. When the VL id belongs to the other side the report is still filed
+ * under its interface, and the disagreement is counted and shown - two swapped
+ * cables look exactly like that and nothing else does.
  *
  * The ids are the ones dpdk_vmc uses. They have not been confirmed against this
  * rig, which is exactly why they are a table rather than constants scattered
  * through the decoder.
  */
 typedef struct {
-    const char *iface;                /**< where the VMC's health monitor arrives */
+    vmc_link_t links[APP_MAX_VMC_LINKS];
+    uint8_t    link_count;
 
     uint16_t flcs_cpu_usage;          /**< Pcs_profile_stats */
     uint16_t vs_cpu_usage;

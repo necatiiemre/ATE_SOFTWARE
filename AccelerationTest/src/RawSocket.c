@@ -138,14 +138,25 @@ int raw_socket_recv_any(raw_socket_t *socks, size_t count, uint8_t *buf, size_t 
     if (ready < 0)
         return -1;
 
-    for (size_t i = 0; i < count; i++)
-        if (pfd[i].revents & POLLIN) {
-            ssize_t n = recv(socks[i].fd, buf, cap, 0);
-            if (n < 0)
-                return -1;
-            if (which)
-                *which = i;
-            return (int)n;
-        }
+    /* Start one past whoever was served last. Scanning from zero every time
+     * would let a busy first link starve the others: with both links carrying
+     * a health monitor at the same rate, the second would only ever be read
+     * when the first happened to be empty. */
+    static size_t next;
+
+    for (size_t step = 0; step < count; step++) {
+        size_t i = (next + step) % count;
+
+        if (!(pfd[i].revents & POLLIN))
+            continue;
+
+        ssize_t n = recv(socks[i].fd, buf, cap, 0);
+        if (n < 0)
+            return -1;
+        next = i + 1;
+        if (which)
+            *which = i;
+        return (int)n;
+    }
     return 0;
 }
