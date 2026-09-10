@@ -1,32 +1,50 @@
 # AccelerationTest
 
 Acceleration test rig for the ATE units. The operator picks a unit and the
-application runs that unit's acceleration test. Only the DTN test exists today;
-VMC and CMC are registered so their wiring is already in place.
+application runs that unit's acceleration test. The DTN and VMC tests are
+written; CMC is registered so its wiring is already in place.
 
-The DTN test configures the switch's VL routing table and reads its health
-monitor back. No DPDK, no fibre, no VLAN — the workstation only needs the two
-copper links to the DTN's end-system ports.
+Each unit keeps its own folder — its wire formats, its decoders, its test, its
+tests and its fixtures — so reading one means reading one directory. `common/`
+holds what they are all built from and knows about none of them; `app/` is the
+menu and the registry that says which units exist.
 
 ```
-src/main.c                 unit menu
-src/UnitManager.c          the unit registry
-src/units/DtnTest.c        DTN acceleration test
-src/units/VmcTest.c        placeholder
-src/units/CmcTest.c        placeholder
-src/VlProfile.c            the three DTN configuration rounds
-src/AppConfig.c            copper links, DTN port to interface map, timings
-src/VlWatch.c              what arrived on copper, by VL
-src/RawSocket.c            AF_PACKET access to a copper link
-src/HealthMonitor.c        recognising the DTN's health-monitor stream
-src/SafeShutdown.c         releases sockets on Ctrl-C or any error path
-src/Log.c                  timestamped run log, flushed line by line
-include/DtnConfig.h        wire format: VL records, config blocks, frame assembly
-src/DtnConfig.c            the encoder
-tests/test_reference.c     rebuilds the 47 reference frames byte for byte
-tests/fixtures/            those frames, extracted from RemoteConfigSender
-tools/                     analysis-side helpers (see below)
+app/main.c                 unit menu and command-line switches
+app/UnitManager.c          the unit registry: which units the program has
+
+common/include/Unit.h      what a unit's test looks like from the outside
+common/src/AppConfig.c     everything that changes with the rig, in one place
+common/src/RawSocket.c     AF_PACKET access to one link
+common/src/Heartbeat.c     a monotonic clock, and whether the unit is still talking
+common/src/SafeShutdown.c  releases sockets on Ctrl-C or any error path
+common/src/Log.c           timestamped run log, flushed line by line
+common/src/Prompt.c        terminal input
+
+dtn/src/DtnTest.c          the DTN acceleration test
+dtn/include/DtnConfig.h    wire format: VL records, config blocks, frame assembly
+dtn/src/DtnConfig.c        the encoder
+dtn/src/VlProfile.c        the three configuration rounds
+dtn/src/DtnHealthFrame.c   recognising the DTN's health-monitor stream
+dtn/src/HealthDecode.c     taking those packets apart
+dtn/src/VlWatch.c          what arrived on copper, by VL
+dtn/tests/                 four test programs
+dtn/fixtures/              the reference frames and the config1 capture
+dtn/tools/                 analysis-side helpers (see below)
+dtn/profiles/              the three rounds as JSON, for those helpers
+
+vmc/src/VmcTest.c          the VMC acceleration test
+vmc/include/VmcMessages.h  wire format, verbatim from dpdk_vmc
+vmc/src/VmcHealth.c        sorting and byte-swapping the reports
+vmc/src/VmcPrint.c         dpdk_vmc's printers, verbatim
+vmc/src/VmcPbitRequest.c   the one thing this application transmits
+vmc/tests/                 three test programs
+
+cmc/src/CmcTest.c          placeholder
 ```
+
+`make` builds the application; `make test` builds and runs every unit's tests
+from that unit's folder, so the fixtures they read are beside them.
 
 ## What the DTN test does
 
@@ -76,8 +94,9 @@ Raw sockets need root or `CAP_NET_RAW`.
 
 ## Adding a unit's test
 
-Write `src/units/<Unit>Test.c` exposing a `unit_result_t <unit>_test_run(void)`
-and flip its `implemented` flag in the table at the top of `src/UnitManager.c`.
+Add a `<unit>/` folder with `src/<Unit>Test.c` exposing a
+`unit_result_t <unit>_test_run(void)`, list it in `UNITS` in the Makefile, and
+flip its `implemented` flag in the table at the top of `app/UnitManager.c`.
 Nothing else in the application needs to change.
 
 ## Build and test
@@ -167,7 +186,7 @@ this one precede it.
 The 72 records are a broadcast from port 34 to all 32 fibre ports (VL 4419), a
 pair per fibre port (4420-4483), and both copper ports wired to port 34 in both
 directions (4484-4490). VL 4488 is the one status replies arrive on.
-`tests/test_profiles.c` checks the copy stays faithful.
+`dtn/tests/test_profiles.c` checks the copy stays faithful.
 
 ## The VL table is sparse, and not sorted
 
@@ -196,8 +215,8 @@ Two other things the capture settles:
 * the closing datagram goes `0x72` → `0x74` → `0x71`. There is no `0x73` port
   table.
 
-`tests/test_config1.c` rebuilds both datagrams and compares them with
-`tests/fixtures/config1_switch.bin` byte for byte. Record layout, record order,
+`dtn/tests/test_rounds.c` rebuilds both datagrams and compares them with
+`dtn/fixtures/config1_switch.bin` byte for byte. Record layout, record order,
 flag nibble, block chain, markers, the 104-record split and the sequence
 numbering all have to be right at once for it to pass.
 
@@ -439,7 +458,7 @@ nothing else.
   over the tagged fibre path. The device's `eth_wrong_op_cnt`,
   `eth_wrong_type_cnt` and `config_id` fields answer this in one round trip.
 
-## tools/
+## dtn/tools/
 
 Python helpers from the reverse-engineering work, kept until the C application
 covers the same ground:
@@ -448,4 +467,4 @@ covers the same ground:
   to diff the C encoder against. That cross-check has already caught a real bug,
   and confirms all three rounds still encode identically after refactoring.
 * `vl_xml.py` — vendor `<VL .../>` XML to VL records.
-* `dump_reference_fixture.py` — regenerates `tests/fixtures/reference_frames.bin`.
+* `dump_reference_fixture.py` — regenerates `dtn/fixtures/reference_frames.bin`.

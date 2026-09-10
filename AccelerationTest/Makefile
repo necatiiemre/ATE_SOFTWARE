@@ -1,72 +1,63 @@
-CC      ?= gcc
-CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic -Iinclude
 BUILD   := build
+CC      ?= gcc
 
-SRC     := $(wildcard src/*.c) $(wildcard src/units/*.c)
-OBJ     := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
-LIB_OBJ := $(filter-out $(BUILD)/main.o,$(OBJ))
+# Each unit under test keeps its own folder: its wire formats, its decoders, its
+# test and its tests. common/ holds what they are all built from and knows about
+# none of them; app/ is main and the registry that says which units exist.
+UNITS   := dtn vmc cmc
+INCLUDE := -Icommon/include -Iapp $(foreach u,$(UNITS),-I$(u)/include)
+CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic $(INCLUDE)
+
+COMMON_SRC := $(wildcard common/src/*.c)
+UNIT_SRC   := $(foreach u,$(UNITS),$(wildcard $(u)/src/*.c))
+APP_SRC    := $(wildcard app/*.c)
+SRC        := $(COMMON_SRC) $(UNIT_SRC) $(APP_SRC)
+OBJ        := $(patsubst %.c,$(BUILD)/%.o,$(SRC))
+
+# Everything except main, for the tests to link against.
+LIB_OBJ := $(filter-out $(BUILD)/app/main.o,$(OBJ))
 
 .PHONY: all test clean
 
-APP     := $(BUILD)/acceleration_test
+all: $(BUILD)/acceleration_test
 
-all: $(APP)
-
-$(APP): $(OBJ)
+$(BUILD)/acceleration_test: $(OBJ)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # VmcPrint.c is copied verbatim from dpdk_vmc and carries one helper that file
 # does not call either. Warning about it here would only invite editing the copy.
-$(BUILD)/VmcPrint.o: src/VmcPrint.c | $(BUILD)
+$(BUILD)/vmc/src/VmcPrint.o: vmc/src/VmcPrint.c
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-unused-function -c $< -o $@
 
-$(BUILD):
-	mkdir -p $(BUILD) $(BUILD)/units
+# ---------------------------------------------------------------------------
+# Tests. Each unit's tests live with it, and run from its folder so that the
+# fixtures they read are beside them.
 
-# Rebuilds the 47 reference frames byte for byte, reproduces all three rounds
-# against the captured config1, then checks the profiles are self-consistent.
-test: $(BUILD)/test_reference $(BUILD)/test_rounds $(BUILD)/test_profiles \
-      $(BUILD)/test_health $(BUILD)/test_vmc $(BUILD)/test_vmc_print \
-      $(BUILD)/test_vmc_pbit
-	./$(BUILD)/test_reference
-	@echo
-	./$(BUILD)/test_rounds
-	@echo
-	./$(BUILD)/test_profiles
-	@echo
-	./$(BUILD)/test_health
-	@echo
-	./$(BUILD)/test_vmc
-	@echo
-	./$(BUILD)/test_vmc_print
-	@echo
-	./$(BUILD)/test_vmc_pbit
+DTN_TESTS := test_reference test_rounds test_profiles test_health
+VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
 
-$(BUILD)/test_reference: tests/test_reference.c $(LIB_OBJ) | $(BUILD)
+test: $(foreach t,$(DTN_TESTS),$(BUILD)/dtn/$(t)) \
+      $(foreach t,$(VMC_TESTS),$(BUILD)/vmc/$(t))
+	@first=1; \
+	 for u in dtn vmc; do \
+	   case $$u in dtn) list="$(DTN_TESTS)";; vmc) list="$(VMC_TESTS)";; esac; \
+	   for t in $$list; do \
+	     [ $$first = 1 ] || echo; first=0; \
+	     (cd $$u && ../$(BUILD)/$$u/$$t) || exit 1; \
+	   done; \
+	 done
+
+$(BUILD)/dtn/%: dtn/tests/%.c $(LIB_OBJ)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_rounds: tests/test_rounds.c $(LIB_OBJ) | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
-
-$(BUILD)/test_profiles: tests/test_profiles.c $(LIB_OBJ) | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
-
-$(BUILD)/test_health: tests/test_health.c src/HealthDecode.c src/HealthMonitor.c src/Log.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
-
-$(BUILD)/test_vmc_pbit: tests/test_vmc_pbit.c src/VmcPbitRequest.c src/AppConfig.c \
-                        src/RawSocket.c src/Log.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
-
-$(BUILD)/test_vmc_print: tests/test_vmc_print.c src/VmcPrint.c src/VmcHealth.c \
-                         src/AppConfig.c src/HealthMonitor.c src/Log.c | $(BUILD)
-	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
-
-$(BUILD)/test_vmc: tests/test_vmc.c src/VmcHealth.c src/VmcPrint.c src/AppConfig.c \
-                   src/HealthMonitor.c src/Log.c | $(BUILD)
+$(BUILD)/vmc/%: vmc/tests/%.c $(LIB_OBJ)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
 
 clean:

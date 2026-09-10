@@ -18,10 +18,10 @@
  * edit and nothing here changes.
  */
 
-#include "units/VmcTest.h"
+#include "VmcTest.h"
 
 #include "AppConfig.h"
-#include "HealthMonitor.h"
+#include "Heartbeat.h"
 #include "Log.h"
 #include "Prompt.h"
 #include "RawSocket.h"

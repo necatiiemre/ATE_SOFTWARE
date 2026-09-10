@@ -1,7 +1,7 @@
 #include "VlWatch.h"
 
 #include "AppConfig.h"
-#include "HealthMonitor.h"
+#include "DtnHealthFrame.h"
 #include "Log.h"
 
 #include <stdio.h>

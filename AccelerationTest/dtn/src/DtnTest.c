@@ -13,12 +13,12 @@
  * test re-sends it and records both the loss and the recovery.
  */
 
-#include "units/DtnTest.h"
+#include "DtnTest.h"
 
 #include "AppConfig.h"
 #include "DtnConfig.h"
 #include "HealthDecode.h"
-#include "HealthMonitor.h"
+#include "DtnHealthFrame.h"
 #include "Log.h"
 #include "Prompt.h"
 #include "RawSocket.h"

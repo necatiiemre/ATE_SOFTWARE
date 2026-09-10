@@ -1,9 +1,13 @@
-#include "UnitManager.h"
-#include "Prompt.h"
+/* The registry lives with main rather than in common: common holds the pieces
+ * every unit is built from and knows nothing about any of them, while this is
+ * the one place that says which units the program has. */
 
-#include "units/CmcTest.h"
-#include "units/DtnTest.h"
-#include "units/VmcTest.h"
+#include "UnitManager.h"
+
+#include "CmcTest.h"
+#include "DtnTest.h"
+#include "Prompt.h"
+#include "VmcTest.h"
 
 #include <stdio.h>
 

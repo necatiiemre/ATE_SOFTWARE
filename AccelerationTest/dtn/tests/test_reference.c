@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FIXTURE "tests/fixtures/reference_frames.bin"
+#define FIXTURE "fixtures/reference_frames.bin"
 
 static uint8_t  g_blob[128 * 1024];
 static size_t   g_blob_len;

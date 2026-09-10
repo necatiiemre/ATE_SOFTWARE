@@ -1,5 +1,5 @@
 /**
- * @file HealthMonitor.h
+ * @file DtnHealthFrame.h
  * @brief Recognising the DTN's health-monitor stream on the copper link.
  *
  * Once 28 V is applied the FPGAs broadcast a six-packet cycle without being
@@ -7,12 +7,15 @@
  * manager, and 94 bytes from the MCU. Seeing that traffic is how we know the
  * device has booted, and losing it is how we know it has dropped.
  *
- * Field offsets and the full decode of those packets are still to come; this
- * covers recognition and the heartbeat.
+ * This covers recognising one frame; HealthDecode.h takes the contents apart,
+ * and the heartbeat those frames feed is in common/Heartbeat.h, which the VMC
+ * test uses too.
  */
 
-#ifndef HEALTH_MONITOR_H
-#define HEALTH_MONITOR_H
+#ifndef DTN_HEALTH_FRAME_H
+#define DTN_HEALTH_FRAME_H
+
+#include "Heartbeat.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -55,25 +58,4 @@ typedef struct {
  */
 bool hm_classify(const uint8_t *frame, size_t len, hm_frame_t *out);
 
-/** Tracks whether the device is still talking to us. */
-typedef struct {
-    uint64_t frames;
-    uint64_t last_seen_ms;
-    bool     alive;
-} hm_watch_t;
-
-/** Milliseconds on a monotonic clock, for the heartbeat. */
-uint64_t hm_now_ms(void);
-
-void hm_watch_init(hm_watch_t *watch);
-
-/** Record a frame; call for every device frame received. */
-void hm_watch_saw_frame(hm_watch_t *watch);
-
-/**
- * @brief Update aliveness against the silence threshold.
- * @return true when the state changed, so the caller can log the transition
- */
-bool hm_watch_update(hm_watch_t *watch, unsigned timeout_ms);
-
-#endif /* HEALTH_MONITOR_H */
+#endif /* DTN_HEALTH_FRAME_H */

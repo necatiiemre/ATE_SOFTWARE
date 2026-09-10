@@ -1,6 +1,6 @@
 #include "VmcHealth.h"
 
-#include "HealthMonitor.h"
+#include "Heartbeat.h"
 #include "Log.h"
 #include "VmcPrint.h"
 

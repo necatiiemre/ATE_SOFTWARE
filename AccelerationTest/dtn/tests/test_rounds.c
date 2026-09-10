@@ -29,7 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define FIXTURE "tests/fixtures/config1_switch.bin"
+#define FIXTURE "fixtures/config1_switch.bin"
 #define CAPTURE_RECORDS 122
 
 static uint8_t     g_blob[8 * 1024];

@@ -1,5 +1,5 @@
 """One-shot: extract the 47 reference frames from RemoteConfigSender/main.cpp
-into tests/fixtures/reference_frames.bin.
+into dtn/fixtures/reference_frames.bin.
 
 That configuration is known to be accepted by the DTN, so it is the only
 correctness oracle available without the hardware. tests/test_reference.c
@@ -11,8 +11,8 @@ frame itself. Kept in the repo so the test needs no Python at build time.
 import os, re, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC  = os.path.join(HERE, "..", "..", "RemoteConfigSender", "main.cpp")
-OUT  = os.path.join(HERE, "..", "tests", "fixtures", "reference_frames.bin")
+SRC  = os.path.join(HERE, "..", "..", "..", "RemoteConfigSender", "main.cpp")
+OUT  = os.path.join(HERE, "..", "fixtures", "reference_frames.bin")
 
 NAMES = ["end_system_conf", "ptp_conf_0"] + [f"switch_conf_{i}" for i in range(44)] + ["packet"]
 
