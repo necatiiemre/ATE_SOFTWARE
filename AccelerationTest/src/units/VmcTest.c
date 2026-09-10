@@ -1,10 +1,15 @@
 /*
  * VMC acceleration test.
  *
- * The VMC sends its health monitor without being asked, so this test does not
- * configure anything: it opens both interfaces, sorts what arrives into the
- * reports the VMC produces from each of its two sides, and keeps the dashboard
- * up until the operator stops it.
+ * The VMC sends its health monitor without being asked, so this test configures
+ * nothing: it opens both interfaces, sorts what arrives into the reports the
+ * VMC produces from each of its two sides, and keeps the dashboard up until the
+ * operator stops it.
+ *
+ * One exception. PBIT is a power-on result the VMC holds until asked, so the
+ * test asks - a request on each side's PBIT request VL, repeated until that
+ * side answers on its response VL. That is the only thing this test transmits,
+ * and it is the starter's request frame, byte for byte.
  *
  * One interface per side - the first carries FLCS, the second VS - so the link
  * a frame arrived on is what says which side it belongs to. Which interfaces,
@@ -22,6 +27,7 @@
 #include "RawSocket.h"
 #include "SafeShutdown.h"
 #include "VmcHealth.h"
+#include "VmcPbitRequest.h"
 #include "VmcPrint.h"
 
 #include <stdio.h>
@@ -66,6 +72,17 @@ static void print_plan(const vmc_config_t *c)
     printf("  The PHY counter report carries no header at all, so its VL id is "
            "all there is\n  to go on - %d ports, four counters each.\n",
            PHY_PORT_NUMBER);
+    printf("\n  PBIT is a power-on result the VMC holds until asked, so this test "
+           "asks:\n    request on VL %u (FLCS) and VL %u (VS), message id %u, "
+           "repeated every %u s\n    until each side answers, ",
+           c->flcs_pbit_request, c->vs_pbit_request, c->msg_pbit_request,
+           c->pbit_resend_interval_s);
+    if (c->request_vlan_flcs >= 0 || c->request_vlan_vs >= 0)
+        printf("tagged VLAN %d (FLCS) and %d (VS).\n",
+               c->request_vlan_flcs, c->request_vlan_vs);
+    else
+        printf("untagged.\n");
+    printf("  Everything else the VMC sends on its own; this is all we transmit.\n");
     printf("\n  the side comes from the interface, not the VL id - a report whose\n");
     printf("  VL names the other side is still filed by its cable, and counted.\n");
 }
@@ -100,11 +117,39 @@ static bool wait_for_unit(const vmc_config_t *config, unsigned timeout_s)
     return false;
 }
 
+/**
+ * @brief Ask each side for its PBIT result until it answers.
+ *
+ * The request goes out on the link that carries that side, so the answer comes
+ * back on the same one. Sides that have already answered are left alone: PBIT
+ * does not change while the VMC is up, so one answer is the whole of it.
+ */
+static void request_pbit(const vmc_config_t *config, uint64_t *seq)
+{
+    for (uint8_t l = 0; l < config->link_count; l++) {
+        uint8_t side = config->links[l].side;
+
+        if (g_health.side[side].seen[VMC_REPORT_PBIT].packets)
+            continue;
+        vmc_pbit_request_send(&g_links[l], config, side, (*seq)++);
+    }
+}
+
+static bool pbit_complete(const vmc_config_t *config)
+{
+    for (uint8_t l = 0; l < config->link_count; l++)
+        if (!g_health.side[config->links[l].side].seen[VMC_REPORT_PBIT].packets)
+            return false;
+    return true;
+}
+
 static void monitor_run(const vmc_config_t *config, const timing_config_t *timing)
 {
     hm_watch_t watch;
     uint64_t   started = hm_now_ms();
     uint64_t   next_draw = started;
+    uint64_t   next_request = started;
+    uint64_t   pbit_seq = 0;
     unsigned   interruptions = 0;
 
     hm_watch_init(&watch);
@@ -132,12 +177,27 @@ static void monitor_run(const vmc_config_t *config, const timing_config_t *timin
         }
 
         uint64_t now = hm_now_ms();
+
+        /* Keep asking until both sides have answered, then stop: the result is
+         * from power-on and does not change while the VMC is up. */
+        if (now >= next_request && !pbit_complete(config)) {
+            request_pbit(config, &pbit_seq);
+            next_request = now + (uint64_t)config->pbit_resend_interval_s * 1000u;
+        }
+
         if (now >= next_draw) {
             next_draw = now + timing->display_interval_ms;
             vmc_health_render(&g_health, (now - started) / 1000);
             printf("[ATE] %llus elapsed, %u interruption(s), %s - Ctrl+C to end\n",
                    (unsigned long long)((now - started) / 1000), interruptions,
                    watch.alive ? "VMC alive" : "VMC QUIET");
+            if (!pbit_complete(config))
+                printf("[ATE] PBIT: still asking (%llu request(s) sent) - "
+                       "FLCS %s, VS %s\n", (unsigned long long)pbit_seq,
+                       g_health.side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets
+                           ? "answered" : "waiting",
+                       g_health.side[VMC_VS].seen[VMC_REPORT_PBIT].packets
+                           ? "answered" : "waiting");
             fflush(stdout);
         }
     }
@@ -148,9 +208,15 @@ static void monitor_run(const vmc_config_t *config, const timing_config_t *timin
         log_line("test stopped by the temperature check");
     else
         log_line("test stopped by the operator");
-    log_line("elapsed %llus, %llu reports, %u interruption(s)",
+    log_line("elapsed %llus, %llu reports, %u interruption(s), %llu PBIT request(s)",
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
-             interruptions);
+             interruptions, (unsigned long long)pbit_seq);
+    if (!pbit_complete(config))
+        log_line("PBIT never answered on %s%s%s",
+                 g_health.side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets ? "" : "FLCS",
+                 (!g_health.side[VMC_FLCS].seen[VMC_REPORT_PBIT].packets &&
+                  !g_health.side[VMC_VS].seen[VMC_REPORT_PBIT].packets) ? " and " : "",
+                 g_health.side[VMC_VS].seen[VMC_REPORT_PBIT].packets ? "" : "VS");
     vmc_health_log_summary(&g_health);
 }
 

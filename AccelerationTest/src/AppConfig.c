@@ -75,6 +75,13 @@ static const vmc_config_t g_vmc = {
     .msg_bm_engineering = 5,
     .msg_bm_flag        = 6,
     .msg_pbit_response  = 100,
+    .msg_pbit_request   = 50,
+
+    /* Tagged as the starter tags them. Set either to -1 if the direct cable to
+     * the VMC wants the frame untagged. */
+    .request_vlan_flcs  = 99,
+    .request_vlan_vs    = 97,
+    .pbit_resend_interval_s = 2,
 };
 
 const vmc_config_t *app_config_vmc(void)

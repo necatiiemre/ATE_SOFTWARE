@@ -16,9 +16,10 @@
 #include <stdint.h>
 
 typedef struct {
-    int  fd;
-    int  ifindex;
-    char name[IFNAMSIZ];
+    int     fd;
+    int     ifindex;
+    char    name[IFNAMSIZ];
+    uint8_t mac[6];      /**< the interface's own address, for frames we source */
 } raw_socket_t;
 
 /** True if the interface exists and is administratively up with a carrier. */
@@ -42,11 +43,6 @@ bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len);
  */
 int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeout_ms);
 
-/**
- * @brief Wait for a frame on any of several links.
- * @param which set to the index of the link the frame came from
- * @return bytes received, 0 on timeout, -1 on error (including an interrupt)
- */
 /**
  * @brief Receive from whichever of @p socks has something, in turn.
  *

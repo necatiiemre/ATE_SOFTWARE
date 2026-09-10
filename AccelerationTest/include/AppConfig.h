@@ -114,6 +114,16 @@ typedef struct {
     uint8_t  msg_bm_engineering;      /**< bm_engineering_cbit_report_t */
     uint8_t  msg_bm_flag;             /**< bm_flag_cbit_report_t */
     uint8_t  msg_pbit_response;       /**< guards the PBIT VLs, which carry other traffic */
+    uint8_t  msg_pbit_request;        /**< identifier we put in the request we send */
+
+    /* PBIT is the one thing the VMC does not send unasked, so it has to be
+     * requested. The starter that does this on the main rig goes through the
+     * Mellanox switch and tags its requests - VS on 97, FLCS on 99, per the VMC
+     * spec. This test is cabled straight to the VMC, so -1 leaves the frame
+     * untagged. */
+    int      request_vlan_flcs;
+    int      request_vlan_vs;
+    unsigned pbit_resend_interval_s; /**< keep asking until both sides answer */
 } vmc_config_t;
 
 const vmc_config_t *app_config_vmc(void);

@@ -368,6 +368,25 @@ is copied in whole and then swapped field by field. `VmcMessages.h` ends in
 static assertions holding the sizes the comments claim — a compiler that lays
 one out differently fails the build rather than decoding quiet nonsense.
 
+**PBIT is the one thing that has to be asked for.** It is a power-on result the
+VMC holds until requested, so without a request the two PBIT slots stay empty
+for the whole run. The request is
+`Test_Starters/vmc/src/main.c`'s `send_pbit_request`: an 11-byte cmsw header
+with message identifier 50, a length of 11, a zero timestamp and the sequence
+byte last — 0 once, then 1..255 cycling, never 0 again — wrapped in Ethernet,
+an optional 802.1Q tag, IPv4 from 10.0.0.0 to 224.224.`<VL>` and UDP 100→100,
+padded to the 64-byte Ethernet minimum. It goes out on the link that carries
+that side and repeats every two seconds until that side answers on its response
+VL, where the decoder picks it up like any other report. Sides that have already
+answered are left alone, because PBIT does not change while the VMC is up.
+
+That request is the only thing this test transmits.
+
+The request VLANs are in `AppConfig.c` alongside everything else: 99 for FLCS
+and 97 for VS, as the starter tags them, because it goes through the Mellanox
+switch. This test is cabled straight to the VMC, so `-1` on either leaves that
+side's frame untagged.
+
 A DTN report that is all zeros is skipped rather than stored: the VMC sends
 those before the DTN has answered it, and overwriting a good report with one
 would lose what the run is there to see.

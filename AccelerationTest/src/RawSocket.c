@@ -60,6 +60,15 @@ bool raw_socket_open(raw_socket_t *sock, const char *iface, bool promiscuous)
     sll.sll_family   = AF_PACKET;
     sll.sll_protocol = htons(ETH_P_ALL);
     sll.sll_ifindex  = sock->ifindex;
+    /* Frames we source carry this as their sender. */
+    struct ifreq hw;
+    memset(&hw, 0, sizeof hw);
+    snprintf(hw.ifr_name, sizeof hw.ifr_name, "%s", iface);
+    if (ioctl(sock->fd, SIOCGIFHWADDR, &hw) == 0)
+        memcpy(sock->mac, hw.ifr_hwaddr.sa_data, sizeof sock->mac);
+    else
+        memset(sock->mac, 0, sizeof sock->mac);
+
     if (bind(sock->fd, (struct sockaddr *)&sll, sizeof sll) < 0) {
         fprintf(stderr, "[net] cannot bind to %s: %s\n", iface, strerror(errno));
         raw_socket_close(sock);
