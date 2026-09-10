@@ -382,10 +382,11 @@ answered are left alone, because PBIT does not change while the VMC is up.
 
 That request is the only thing this test transmits.
 
-The request VLANs are in `AppConfig.c` alongside everything else: 99 for FLCS
-and 97 for VS, as the starter tags them, because it goes through the Mellanox
-switch. This test is cabled straight to the VMC, so `-1` on either leaves that
-side's frame untagged.
+The request goes out **untagged**. The starter tags its requests — VS on 97,
+FLCS on 99 — because it reaches the VMC through the Mellanox switch and the tag
+is what steers them there; nothing steers a direct cable. Both VLANs are `-1` in
+`AppConfig.c`, and setting either to a VLAN id tags that side again if the path
+ever goes back through a switch.
 
 A DTN report that is all zeros is skipped rather than stored: the VMC sends
 those before the DTN has answered it, and overwriting a good report with one

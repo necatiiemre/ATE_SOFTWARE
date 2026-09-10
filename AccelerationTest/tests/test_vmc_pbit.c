@@ -97,14 +97,20 @@ static void test_untagged(const vmc_config_t *c)
     printf("[ OK ] the untagged request frame\n");
 }
 
+/* The rig is cabled straight to the VMC and sends untagged, but the tagged form
+ * is still built - the starter on the main rig needs it, and a move back to a
+ * switched path is one edit. So it is tested with an explicit VLAN rather than
+ * with whatever the configuration currently holds. */
+#define A_VLAN 97
+
 static void test_tagged(const vmc_config_t *c)
 {
-    size_t len = vmc_pbit_request_build(g_frame, SRC_MAC, c->request_vlan_vs,
+    size_t len = vmc_pbit_request_build(g_frame, SRC_MAC, A_VLAN,
                                         c->vs_pbit_request, c->msg_pbit_request, 0);
 
     check(len == VMC_PBIT_REQ_FRAME_LEN, "the tag does not change the frame length");
     check(g_frame[12] == 0x81 && g_frame[13] == 0x00, "an 802.1Q tag");
-    check((be16(g_frame + 14) & 0x0FFF) == c->request_vlan_vs, "carrying the VLAN id");
+    check((be16(g_frame + 14) & 0x0FFF) == A_VLAN, "carrying the VLAN id");
     check(g_frame[16] == 0x08 && g_frame[17] == 0x00, "then IPv4");
 
     /* Everything after the tag shifts by four, and has to still be right. */
@@ -130,6 +136,9 @@ static void test_config(const vmc_config_t *c)
     check(c->msg_pbit_request != c->msg_pbit_response,
           "the request and the answer carry different message identifiers");
     check(c->pbit_resend_interval_s > 0, "the request is repeated");
+    /* Straight cable to the VMC: nothing steers the frame, so nothing tags it. */
+    check(c->request_vlan_flcs < 0 && c->request_vlan_vs < 0,
+          "the requests go out untagged");
     printf("[ OK ] the request settings come from AppConfig\n");
 }
 

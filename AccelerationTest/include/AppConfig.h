@@ -117,10 +117,10 @@ typedef struct {
     uint8_t  msg_pbit_request;        /**< identifier we put in the request we send */
 
     /* PBIT is the one thing the VMC does not send unasked, so it has to be
-     * requested. The starter that does this on the main rig goes through the
-     * Mellanox switch and tags its requests - VS on 97, FLCS on 99, per the VMC
-     * spec. This test is cabled straight to the VMC, so -1 leaves the frame
-     * untagged. */
+     * requested. -1 leaves the request untagged, which is what a cable straight
+     * to the VMC wants: the starter on the main rig tags its requests (VS 97,
+     * FLCS 99) because it reaches the VMC through the Mellanox switch and the
+     * tag is what steers them there. Nothing steers here. */
     int      request_vlan_flcs;
     int      request_vlan_vs;
     unsigned pbit_resend_interval_s; /**< keep asking until both sides answer */
