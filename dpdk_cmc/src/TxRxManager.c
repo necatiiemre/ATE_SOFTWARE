@@ -141,8 +141,27 @@ uint8_t vlan_to_cmc_port[CMC_VLAN_LOOKUP_SIZE];
 
 // (port, queue) → CMC port lookup. Built by init_cmc_port_map() from the RX
 // side of cmc_port_map (tx_server_port / tx_server_queue). The hot path
-// keys on this rather than VL-ID because Net A and Net B share VL-ID range.
+// keys on this rather than VL-ID because DSM-A and DSM-B share a VL-ID range.
 uint16_t queue_to_cmc_port[MAX_PORTS][NUM_RX_QUEUES_PER_PORT];
+uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
+
+// Per-(CMC port, VL-ID) TX packet counters for the VL-to-VL report.
+uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
+
+void reset_vl_tx_counts(void)
+{
+    memset(vl_tx_counts, 0, sizeof(vl_tx_counts));
+}
+
+// Charge one packet to a line's per-VL TX counter. Out-of-range arguments are
+// dropped silently rather than clamped — a counter that quietly folds two
+// VL-IDs together would be worse than a missing row in the report.
+static inline void vl_tx_count_bump(uint16_t cmc_port, uint16_t vl_id)
+{
+    if (cmc_port < CMC_PORT_COUNT && vl_id <= MAX_VL_ID) {
+        vl_tx_counts[cmc_port][vl_id]++;
+    }
+}
 
 // VLAN flow rule handles (for cleanup). Sized to NUM_RX_QUEUES_PER_PORT so
 // the array grows with the queue count.
@@ -538,6 +557,8 @@ void init_rx_stats(void)
                 port_vl_trackers[i][cmc].vl_trackers[vl].min_seq = 0;
                 port_vl_trackers[i][cmc].vl_trackers[vl].pkt_count = 0;
                 port_vl_trackers[i][cmc].vl_trackers[vl].expected_seq = 0;
+                port_vl_trackers[i][cmc].vl_trackers[vl].first_seq = 0;
+                port_vl_trackers[i][cmc].vl_trackers[vl].last_seq = 0;
                 port_vl_trackers[i][cmc].vl_trackers[vl].initialized = 0;
             }
         }
@@ -560,6 +581,9 @@ void init_cmc_port_map(void)
     for (uint16_t p = 0; p < MAX_PORTS; p++) {
         for (uint16_t q = 0; q < NUM_RX_QUEUES_PER_PORT; q++) {
             queue_to_cmc_port[p][q] = CMC_QUEUE_INVALID;
+        }
+        for (uint16_t q = 0; q < NUM_TX_QUEUES_PER_PORT; q++) {
+            tx_queue_to_cmc_port[p][q] = CMC_QUEUE_INVALID;
         }
     }
 
@@ -585,6 +609,17 @@ void init_cmc_port_map(void)
         } else {
             printf("Warning: CMC %d tx_server (port %u queue %u) out of range\n",
                    i, e->tx_server_port, e->tx_server_queue);
+        }
+
+        // rx_server_{port,queue} is the server's TX side (Server TX → CMC RX),
+        // which is the side the tx_worker charges per-VL counters on.
+        if (e->rx_server_port < MAX_PORTS &&
+            e->rx_server_queue < NUM_TX_QUEUES_PER_PORT)
+        {
+            tx_queue_to_cmc_port[e->rx_server_port][e->rx_server_queue] = (uint16_t)i;
+        } else {
+            printf("Warning: CMC %d rx_server (port %u queue %u) out of range\n",
+                   i, e->rx_server_port, e->rx_server_queue);
         }
     }
 
@@ -625,6 +660,7 @@ void init_cmc_stats(void)
         rte_atomic64_init(&cmc_stats[i].short_pkts);
         rte_atomic64_init(&cmc_stats[i].total_rx_pkts);
     }
+    reset_vl_tx_counts();
     printf("CMC port statistics initialized for %d ports\n", CMC_PORT_COUNT);
 }
 
@@ -1356,6 +1392,20 @@ int tx_worker(void *arg)
     // port" meaning (rather than counting ticks).
     const uint16_t tick_packets = params->dual_net ? 2 : 1;
 
+#if STATS_MODE_CMC
+    // Which DSM line each of this worker's queues belongs to. Resolved once;
+    // used to charge the per-VL TX counters that back the VL-to-VL report.
+    const uint16_t tx_cmc_primary =
+        (params->port_id < MAX_PORTS && params->queue_id < NUM_TX_QUEUES_PER_PORT)
+            ? tx_queue_to_cmc_port[params->port_id][params->queue_id]
+            : (uint16_t)CMC_QUEUE_INVALID;
+    const uint16_t tx_cmc_alt =
+        (params->dual_net && params->port_id < MAX_PORTS &&
+         params->alt_queue_id < NUM_TX_QUEUES_PER_PORT)
+            ? tx_queue_to_cmc_port[params->port_id][params->alt_queue_id]
+            : (uint16_t)CMC_QUEUE_INVALID;
+#endif
+
     while (!(*params->stop_flag))
     {
         // MMMS handover: once the first SIGINT sets stop_normal_tx, the TX
@@ -1598,11 +1648,19 @@ int tx_worker(void *arg)
 
         if (likely(nb_tx > 0))
         {
+#if STATS_MODE_CMC
+            vl_tx_count_bump(tx_cmc_primary, curr_vl);
+#endif
             uint16_t nb_tx_b = 1;
             if (params->dual_net) {
                 nb_tx_b = rte_eth_tx_burst(params->port_id,
                                            params->alt_queue_id, &pkt_b, 1);
                 nb_tx_b_dbg = nb_tx_b;
+#if STATS_MODE_CMC
+                if (likely(nb_tx_b > 0)) {
+                    vl_tx_count_bump(tx_cmc_alt, curr_vl);
+                }
+#endif
                 if (unlikely(nb_tx_b == 0)) {
                     // Net A is already on the wire; commit so its seq advances
                     // monotonically. Net B will see a one-packet gap which the
@@ -1792,10 +1850,13 @@ int rx_worker(void *arg)
                 // finish-smmm chunks of the post-shutdown file dump. Their
                 // payload is 136 or 1467 bytes — well below min_len_vlan —
                 // so the dispatch has to run before the short-packet filter.
-                // MMMS is dormant until stop_normal_tx is set; bail out
-                // cheaply in the normal hot-path.
+                //
+                // Gated on the shutdown phase rather than stop_normal_tx: the
+                // handover only starts once the RX drain window has closed, so
+                // during the drain this stays as cheap as in normal running.
                 // ==========================================
-                if (unlikely(stop_normal_tx && m->pkt_len >= payload_off + 1)) {
+                if (unlikely(cmc_shutdown_phase >= CMC_PHASE_MMMS &&
+                             m->pkt_len >= payload_off + 1)) {
                     uint16_t vl_id_mmms = extract_vl_id_from_packet(pkt, l2_len_vlan);
                     if (unlikely(vl_id_mmms == MMMS_RESPONSE_VL_ID)) {
                         uint16_t vlan_tci_pre = rte_be_to_cpu_16(
@@ -1848,6 +1909,10 @@ int rx_worker(void *arg)
 #if TOKEN_BUCKET_TX_ENABLED
                             __atomic_store_n(&seq_tracker->min_seq, seq, __ATOMIC_RELEASE);
 #endif
+                            // first_seq is reported verbatim in the VL-to-VL
+                            // table: a non-zero value there means the opening
+                            // packets of that VL never arrived.
+                            __atomic_store_n(&seq_tracker->first_seq, seq, __ATOMIC_RELEASE);
                             __atomic_store_n(&seq_tracker->expected_seq, seq + 1, __ATOMIC_RELEASE);
                         }
                     }
@@ -1891,6 +1956,11 @@ int rx_worker(void *arg)
 
                     // Increment packet count
                     __atomic_fetch_add(&seq_tracker->pkt_count, 1, __ATOMIC_RELAXED);
+
+                    // Most recent sequence seen on this VL — unlike max_seq
+                    // this is not a watermark, so a reordered tail shows up as
+                    // last_seq < max_seq in the report.
+                    __atomic_store_n(&seq_tracker->last_seq, seq, __ATOMIC_RELAXED);
                 }
 
                 // ==========================================

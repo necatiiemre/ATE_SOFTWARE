@@ -74,6 +74,11 @@ extern "C" {
  */
 extern volatile bool stop_normal_tx;
 
+/* Same reason: the RX hot path gates MMMS dispatch on the shutdown phase, so
+ * it needs the phase symbol without dragging in Common.h (whose force_quit is
+ * a static definition and would land a spare copy in every includer). */
+#include "ShutdownPhase.h"
+
 /* Forward declarations (DPDK types kept opaque for header simplicity). */
 struct ports_config;
 

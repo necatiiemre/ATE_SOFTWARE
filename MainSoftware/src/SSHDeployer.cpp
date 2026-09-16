@@ -931,7 +931,8 @@ bool SSHDeployer::deployAndBuild(const std::string& local_source_dir,
     return true;
 }
 
-bool SSHDeployer::stopApplication(const std::string& app_name, bool use_sudo) {
+bool SSHDeployer::stopApplication(const std::string& app_name, bool use_sudo,
+                                  int max_wait_seconds) {
     DEBUG_LOG(getLogPrefix() << " Stopping application: " << app_name);
 
     // Step 1: Send SIGTERM for graceful shutdown
@@ -950,8 +951,10 @@ bool SSHDeployer::stopApplication(const std::string& app_name, bool use_sudo) {
     auto result = g_systemCommand.execute(ssh_cmd);
     DEBUG_LOG(getLogPrefix() << " SIGTERM result: " << result.output);
 
-    // Step 2: Wait for process to exit gracefully (up to 60 seconds)
-    const int max_wait_seconds = 60;
+    // Step 2: Wait for the process to exit gracefully
+    if (max_wait_seconds < 1) {
+        max_wait_seconds = 1;
+    }
     DEBUG_LOG(getLogPrefix() << " Waiting for graceful shutdown (max "
               << max_wait_seconds << "s)...");
 

@@ -53,9 +53,9 @@ void helper_reset_stats(const struct ports_config *ports_config,
 
 #if STATS_MODE_CMC
 // ==========================================
-// CMC PORT-BASED STATISTICS - 2-TABLE DISPLAY (Net A / Net B)
+// CMC PORT-BASED STATISTICS - 2-TABLE DISPLAY (DSM-A / DSM-B)
 // ==========================================
-// CMC has exactly two flows. Each gets its own table; layout & columns are
+// CMC has exactly two lines. Each gets its own table; layout & columns are
 // the same as the legacy CMC tables (Good / Bad / SplitMix64 Fail / CRC32
 // Fail / Loss / Bit Error / BER) so the operator sees a familiar shape.
 // CMC TX (CMC→Server) = Server RX = HW q_ipackets[queue]
@@ -229,13 +229,19 @@ static void helper_print_cmc_stats(const struct ports_config *ports_config,
         }
     }
 
-    // Table 1: Network A (VLAN 97 → 225, SRC MAC tail 0x20)
-    printf("\n  === Network A (VLAN 97 -> 225 | VL 10001..10104 -> 10521..10624 | SRC MAC tail 0x20) ===\n");
-    print_cmc_table_group(neta_cmc_indices, NETA_COUNT, port_hw_stats);
+    // Table 1: DSM-A line (VLAN 97 → 225, SRC MAC tail 0x20)
+    printf("\n  === DSM-A (VLAN 97 -> 225 | VL %u..%u -> %u..%u | SRC MAC tail 0x%02X) ===\n",
+           CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
+           CMC_RX_VL_ID_BASE, CMC_RX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
+           CMC_NET_A_SRC_MAC_TAIL);
+    print_cmc_table_group(dsma_cmc_indices, DSMA_COUNT, port_hw_stats);
 
-    // Table 2: Network B (VLAN 98 → 226, SRC MAC tail 0x40)
-    printf("\n  === Network B (VLAN 98 -> 226 | VL 10001..10104 -> 10521..10624 | SRC MAC tail 0x40) ===\n");
-    print_cmc_table_group(netb_cmc_indices, NETB_COUNT, port_hw_stats);
+    // Table 2: DSM-B line (VLAN 98 → 226, SRC MAC tail 0x40)
+    printf("\n  === DSM-B (VLAN 98 -> 226 | VL %u..%u -> %u..%u | SRC MAC tail 0x%02X) ===\n",
+           CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
+           CMC_RX_VL_ID_BASE, CMC_RX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
+           CMC_NET_B_SRC_MAC_TAIL);
+    print_cmc_table_group(dsmb_cmc_indices, DSMB_COUNT, port_hw_stats);
 
     // Warnings
     bool has_warning = false;

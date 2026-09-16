@@ -24,6 +24,9 @@
 #include "PsuTelemetry.h"          // wire format (shared with MainSoftware)
 #include "PsuTelemetryReceiver.h"  // receiver API for MainSoftware UDP pushes
 #include "MmmsHandler.h"           // MMMS file-fetch handover on Ctrl+C
+#include "ShutdownPhase.h"          // cmc_shutdown_phase / CMC_PHASE_*
+#include "VlFlowReport.h"           // per-VL-ID TX/RX report
+#include "FinalReport.h"            // end-of-run snapshot
 
 // Check if --daemon flag is present and remove it from argv
 // Returns true if --daemon was found, also updates argc
@@ -47,18 +50,20 @@ static bool check_and_remove_daemon_flag(int *argc, char const *argv[]) {
 }
 
 // Two-stage Ctrl+C handler:
-//   1st SIGINT/SIGTERM → request MMMS handover (stop_normal_tx = true).
-//                        The main loop notices the rising edge, halts TX,
-//                        sends the trigger packet and drains MMMS responses.
-//   2nd SIGINT/SIGTERM → immediate force_quit = true (escape hatch).
-static void mmms_aware_signal_handler(int signum)
+//   1st SIGINT/SIGTERM → stop transmitting and start the shutdown walk
+//                        (drain → snapshot → MMMS). See ShutdownPhase.h.
+//   2nd SIGINT/SIGTERM → immediate force_quit = true (escape hatch), which
+//                        skips whatever is left of the sequence.
+static void shutdown_signal_handler(int signum)
 {
     if (signum != SIGINT && signum != SIGTERM) {
         return;
     }
-    if (!stop_normal_tx) {
+    if (cmc_shutdown_phase == CMC_PHASE_RUNNING) {
         stop_normal_tx = true;
-        printf("\n\nSignal %d received → entering MMMS shutdown phase\n", signum);
+        cmc_shutdown_phase = CMC_PHASE_DRAINING;
+        printf("\n\nSignal %d received → TX stopped, draining RX for %u seconds\n",
+               signum, (unsigned)CMC_DRAIN_SECONDS);
     } else {
         force_quit = true;
         printf("\n\nSignal %d received again → forcing immediate exit\n", signum);
@@ -149,9 +154,9 @@ int main(int argc, char const *argv[])
     // Initialize DPDK EAL
     initialize_eal(argc, argv);
 
-    // Setup signal handlers — two-stage MMMS-aware handler (see top of file).
-    signal(SIGINT, mmms_aware_signal_handler);
-    signal(SIGTERM, mmms_aware_signal_handler);
+    // Setup signal handlers — two-stage shutdown handler (see top of file).
+    signal(SIGINT, shutdown_signal_handler);
+    signal(SIGTERM, shutdown_signal_handler);
 
     // Print basic EAL info
     print_eal_info();
@@ -334,35 +339,82 @@ int main(int argc, char const *argv[])
     bool warmup_complete = false;
     uint32_t test_time = 0;
     bool mmms_triggered = false;
+    uint32_t drain_elapsed = 0;
 
     while (!force_quit)
     {
         sleep(1);
         loop_count++;
 
-        // ============ MMMS HANDOVER (Ctrl+C path) ============
-        // First Ctrl+C set stop_normal_tx; emit the trigger packet exactly once
-        // (TX workers have already idled on the flag) and let mmms_handle_packet
-        // run on the RX worker side until DONE_OK or DONE_TIMEOUT.
-        if (stop_normal_tx && !mmms_triggered) {
-            mmms_triggered = true;
-            // Give the TX workers one tick to drain any in-flight burst.
-            usleep(2000);
-            if (mmms_send_trigger(&ports_config) != 0) {
-                printf("MMMS: trigger send failed, skipping handover\n");
-                force_quit = true;
-                break;
-            }
-        }
+        // ============ SHUTDOWN SEQUENCE (Ctrl+C path) ============
+        // Phases run in order within a single tick where possible, so the
+        // drain window is the only part that costs wall-clock time.
+        if (cmc_shutdown_phase != CMC_PHASE_RUNNING)
+        {
+            // ---- DRAIN: TX is halted, RX and the health monitor keep going
+            //      so in-flight packets land and the per-VL counters settle.
+            if (cmc_shutdown_phase == CMC_PHASE_DRAINING)
+            {
+                drain_elapsed++;
 
-        if (stop_normal_tx) {
+                helper_print_stats(&ports_config, prev_tx_bytes, prev_rx_bytes,
+                                   warmup_complete, loop_count, test_time);
+                printf("\n  *** TX STOPPED — RX DRAIN %u/%u s "
+                       "(health monitor still running) ***\n",
+                       drain_elapsed, (unsigned)CMC_DRAIN_SECONDS);
+                hm_print_dashboard();
+                psu_telem_print_table();
+                fflush(stdout);
+
+                for (uint16_t i = 0; i < (uint16_t)nb_ports; i++)
+                {
+                    uint16_t port_id = ports_config.ports[i].port_id;
+                    struct rte_eth_stats st;
+                    if (rte_eth_stats_get(port_id, &st) == 0)
+                    {
+                        prev_tx_bytes[port_id] = st.obytes;
+                        prev_rx_bytes[port_id] = st.ibytes;
+                    }
+                }
+
+                if (drain_elapsed < CMC_DRAIN_SECONDS) {
+                    continue;
+                }
+                cmc_shutdown_phase = CMC_PHASE_SNAPSHOT;
+            }
+
+            // ---- SNAPSHOT: counters are settled, write the reports.
+            if (cmc_shutdown_phase == CMC_PHASE_SNAPSHOT)
+            {
+                printf("\n=== Drain complete, writing reports ===\n");
+                vlflow_write_reports(CMC_VL_TABLE_LOG_PATH, CMC_VL_TABLE_CSV_PATH,
+                                     test_time);
+                final_report_write(CMC_FINAL_RESULT_PATH, &ports_config,
+                                   prev_tx_bytes, prev_rx_bytes,
+                                   test_time, warmup_complete);
+                fflush(stdout);
+                cmc_shutdown_phase = CMC_PHASE_MMMS;
+            }
+
+            // ---- MMMS: emit the trigger once, then poll until the peer
+            //      finishes streaming its files (or the timeout fires).
+            if (!mmms_triggered) {
+                mmms_triggered = true;
+                // Give the TX workers one tick to drain any in-flight burst.
+                usleep(2000);
+                if (mmms_send_trigger(&ports_config) != 0) {
+                    printf("MMMS: trigger send failed, skipping handover\n");
+                    force_quit = true;
+                    break;
+                }
+            }
+
             mmms_check_timeout();
             if (mmms_is_done()) {
                 printf("MMMS: handover complete, proceeding to shutdown\n");
                 force_quit = true;
                 break;
             }
-            // While in MMMS phase, skip warm-up / stats logic below.
             fflush(stdout);
             continue;
         }

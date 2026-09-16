@@ -1,2 +1,5 @@
 ChecksumTool/checksum_tool
 TimeReader/time_reader
+dpdk_cmc/dpdk_app
+dpdk_cmc/dpdk_app-debug
+dpdk_cmc/dpdk_app-static

@@ -153,8 +153,14 @@ void SafeShutdown::executeShutdown() {
     if (m_dpdk_running) {
         try {
             if (g_ssh_deployer_server.isApplicationRunning("dpdk_app")) {
+                // The log-fetch hook below collects the reports dpdk_cmc writes
+                // during its own shutdown sequence, so give it time to finish
+                // instead of SIGKILLing it after the default minute. PSU output
+                // and connections are already dealt with above, so nothing
+                // safety-critical is waiting on this.
                 ErrorPrinter::info("DPDK", "Stopping DPDK on server...");
-                g_ssh_deployer_server.stopApplication("dpdk_app", true);
+                g_ssh_deployer_server.stopApplication(
+                    "dpdk_app", true, SSHDeployer::kDpdkCmcShutdownWaitSeconds);
                 ErrorPrinter::info("DPDK", "DPDK stopped.");
             } else {
                 ErrorPrinter::info("DPDK", "DPDK already exited, skipping.");

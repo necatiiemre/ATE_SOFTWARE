@@ -670,6 +670,121 @@ void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len)
 // satırı basar. Stack'te 256 item × ~3.5 KB ≈ 900 KB; daha güvenli olsun diye
 // static.
 // ============================================================================
+// ============================================================================
+// Tek bir HM item'ını bas — hem canlı dashboard hem de kapanıştaki son-durum
+// snapshot'ı bu fonksiyonu kullanır, böylece iki çıktı hiç ayrışmaz.
+// ============================================================================
+static void hm_print_item(const hm_queue_item_t *it, unsigned packets)
+{
+    switch (it->kind) {
+        case HM_ITEM_PCS_PROFILE:
+            print_pcs_profile_stats(&it->payload.pcs, it->vl_id, packets);
+            break;
+        case HM_ITEM_COUNTERS_DPM:
+            print_counters_dpm(&it->payload.counters_dpm, it->vl_id, packets);
+            break;
+        case HM_ITEM_COUNTERS_INTER_DPM:
+            print_counters_inter_dpm(&it->payload.counters_inter_dpm, it->vl_id, packets);
+            break;
+        case HM_ITEM_COUNTERS_DSM:
+            print_counters_dsm(&it->payload.counters_dsm, it->vl_id, packets);
+            break;
+        case HM_ITEM_DTN_ES_MONITORING:
+            print_dtn_es_monitoring(&it->payload.es_mon, it->vl_id, packets);
+            break;
+        case HM_ITEM_DTN_SW_MONITORING:
+            print_dtn_sw_monitoring(&it->payload.sw_mon, it->vl_id, packets);
+            break;
+        case HM_ITEM_COUNTERS_DPM_VL:
+            // Biriktirme çağıran tarafta tüm item'lar için yapılır; burada
+            // sadece kümülatif toplam yazdırılır.
+            print_counters_dpm_vl(&it->payload.counters_dpm_vl, it->vl_id, packets);
+            break;
+        case HM_ITEM_CLCMSW:
+            print_clcmsw(&it->payload.clcmsw, it->vl_id, packets);
+            break;
+        case HM_ITEM_SMMM:
+            print_smmm(&it->payload.smmm, it->vl_id, packets);
+            break;
+        case HM_ITEM_NONE:
+        default:
+            break;
+    }
+}
+
+// ============================================================================
+// Son-durum cache'i
+// ----------------------------------------------------------------------------
+// Dashboard yalnızca O TICK'te ring'den çekilen item'ları basar. Kapanışta
+// alınan snapshot bunu kullanamaz: son saniyede paket gelmeyen her kaynak
+// tabloda hiç görünmezdi. Bu yüzden drain sırasında her (vl_id, kind) çifti
+// için en son item burada kalıcı olarak saklanır; hm_print_last_snapshot()
+// testin sonunda bu cache'ten basar.
+//
+// Tek thread (dashboard) yazar ve okur — kilit gerekmez.
+// IPMC ayrı tutulur (ipmc_temp_store zaten kalıcı), DPM VL kümülatifleri de
+// g_dpm_accum içinde birikir.
+// ============================================================================
+#define HM_LATEST_SLOTS 128
+
+static hm_queue_item_t g_hm_latest[HM_LATEST_SLOTS];
+static size_t          g_hm_latest_n = 0;
+
+static void hm_latest_store(const hm_queue_item_t *it)
+{
+    if (it->kind == HM_ITEM_NONE || it->kind == HM_ITEM_IPMC) {
+        return;
+    }
+    for (size_t i = 0; i < g_hm_latest_n; i++) {
+        if (g_hm_latest[i].vl_id == it->vl_id && g_hm_latest[i].kind == it->kind) {
+            g_hm_latest[i] = *it;
+            return;
+        }
+    }
+    if (g_hm_latest_n < HM_LATEST_SLOTS) {
+        g_hm_latest[g_hm_latest_n++] = *it;
+    }
+}
+
+void hm_print_last_snapshot(void)
+{
+    // VL-ID artan, ardından kind artan sıra — canlı dashboard ile aynı düzen.
+    static size_t order[HM_LATEST_SLOTS];
+    for (size_t i = 0; i < g_hm_latest_n; i++) order[i] = i;
+    for (size_t a = 1; a < g_hm_latest_n; a++) {
+        size_t tmp = order[a];
+        size_t b = a;
+        while (b > 0 &&
+               (g_hm_latest[order[b - 1]].vl_id > g_hm_latest[tmp].vl_id ||
+                (g_hm_latest[order[b - 1]].vl_id == g_hm_latest[tmp].vl_id &&
+                 g_hm_latest[order[b - 1]].kind  > g_hm_latest[tmp].kind))) {
+            order[b] = order[b - 1];
+            b--;
+        }
+        order[b] = tmp;
+    }
+
+    printf("\n\n");
+    printf("################################################################################\n");
+    printf("###  CMC HEALTH MONITOR — FINAL SNAPSHOT (last value seen per source)       ###\n");
+    printf("###  sources=%-3zu                                                            ###\n",
+           g_hm_latest_n);
+    printf("################################################################################\n");
+
+    if (g_hm_latest_n == 0) {
+        printf("\n  (no health-monitor packet was received during this run)\n");
+    }
+
+    for (size_t j = 0; j < g_hm_latest_n; j++) {
+        hm_print_item(&g_hm_latest[order[j]], 1);
+    }
+
+    print_dpm_vl_loss_table();
+    print_temperature_summary();
+    print_ipmc_temperatures();
+    fflush(stdout);
+}
+
 void hm_print_dashboard(void)
 {
     static uint64_t        tick = 0;
@@ -749,41 +864,8 @@ void hm_print_dashboard(void)
 
     for (size_t j = 0; j < dedup_n; j++) {
         const hm_queue_item_t *it = &drain_buf[dedup[j].last_idx];
-        unsigned cnt = dedup[j].count;
-        switch (it->kind) {
-            case HM_ITEM_PCS_PROFILE:
-                print_pcs_profile_stats(&it->payload.pcs, it->vl_id, cnt);
-                break;
-            case HM_ITEM_COUNTERS_DPM:
-                print_counters_dpm(&it->payload.counters_dpm, it->vl_id, cnt);
-                break;
-            case HM_ITEM_COUNTERS_INTER_DPM:
-                print_counters_inter_dpm(&it->payload.counters_inter_dpm, it->vl_id, cnt);
-                break;
-            case HM_ITEM_COUNTERS_DSM:
-                print_counters_dsm(&it->payload.counters_dsm, it->vl_id, cnt);
-                break;
-            case HM_ITEM_DTN_ES_MONITORING:
-                print_dtn_es_monitoring(&it->payload.es_mon, it->vl_id, cnt);
-                break;
-            case HM_ITEM_DTN_SW_MONITORING:
-                print_dtn_sw_monitoring(&it->payload.sw_mon, it->vl_id, cnt);
-                break;
-            case HM_ITEM_COUNTERS_DPM_VL:
-                // Biriktirme yukarıda tüm item'lar için yapıldı; burada sadece
-                // kümülatif toplamı yazdır.
-                print_counters_dpm_vl(&it->payload.counters_dpm_vl, it->vl_id, cnt);
-                break;
-            case HM_ITEM_CLCMSW:
-                print_clcmsw(&it->payload.clcmsw, it->vl_id, cnt);
-                break;
-            case HM_ITEM_SMMM:
-                print_smmm(&it->payload.smmm, it->vl_id, cnt);
-                break;
-            case HM_ITEM_NONE:
-            default:
-                break;
-        }
+        hm_latest_store(it);
+        hm_print_item(it, dedup[j].count);
     }
 
     // Per-DPM tablolar basıldı; komşu DPM'ler arası VL paket kaybı özeti.

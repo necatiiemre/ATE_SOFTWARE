@@ -133,6 +133,13 @@ void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len);
 void hm_print_dashboard(void);
 
 // ============================================================================
+// Kapanış snapshot'ı — her (vl_id, kind) için EN SON görülen item'ı basar.
+// Dashboard'dan farkı: o tick'te paket gelmiş olmasını beklemez, bu yüzden
+// testin sonunda tüm kaynakların son durumu tek seferde görünür.
+// ============================================================================
+void hm_print_last_snapshot(void);
+
+// ============================================================================
 // Print fonksiyonları — health_monitor_cmc.c içinde.
 // vl_id: paketin geldiği VL-ID, başlıkta gösterilir.
 // packets: bu tick'te aynı (vl_id, kind) çiftinden kaç paket dedup edildi

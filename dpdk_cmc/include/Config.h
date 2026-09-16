@@ -39,10 +39,10 @@
 #endif
 
 #if TOKEN_BUCKET_TX_ENABLED
-// CMC has 104 VL-IDs per VLAN on each TX queue — token-bucket bookkeeping
-// uses these counts directly.
-#define TB_VL_RANGE_SIZE_DEFAULT 104
-#define TB_VL_RANGE_SIZE_NO_EXT  104
+// CMC has 520 VL-IDs per VLAN on each TX queue (5 DPM blocks × 104) —
+// token-bucket bookkeeping uses these counts directly.
+#define TB_VL_RANGE_SIZE_DEFAULT CMC_TOTAL_VL_COUNT
+#define TB_VL_RANGE_SIZE_NO_EXT  CMC_TOTAL_VL_COUNT
 #define GET_TB_VL_RANGE_SIZE(port_id) TB_VL_RANGE_SIZE_DEFAULT
 
 // Token bucket window (ms) - can be fractional (e.g., 1.0, 1.4, 2.5)
@@ -90,21 +90,64 @@
 // VLAN & VL-ID MAPPING
 // ==========================================
 //
-// CMC layout (single server port, two networks):
-//   TX queue 0 → VLAN  97  / VL-IDX 10001..10104  (Network A, SRC MAC tail 0x20)
-//   TX queue 1 → VLAN  98  / VL-IDX 10001..10104  (Network B, SRC MAC tail 0x40)
-//   RX queue 0 → VLAN 225  / VL-IDX 10521..10624  (Network A return)
-//   RX queue 1 → VLAN 226  / VL-IDX 10521..10624  (Network B return)
+// CMC layout (single server port, two DSM lines):
+//   TX queue 0 → VLAN  97  / VL-IDX 10001..10520  (DSM-A, SRC MAC tail 0x20)
+//   TX queue 1 → VLAN  98  / VL-IDX 10001..10520  (DSM-B, SRC MAC tail 0x40)
+//   RX queue 0 → VLAN 225  / VL-IDX 10521..11040  (DSM-A return)
+//   RX queue 1 → VLAN 226  / VL-IDX 10521..11040  (DSM-B return)
 //
 // VL-ID is encoded in the last 2 bytes of DST MAC (03:00:00:00:VV:VV) and
-// in the last 2 bytes of DST IP (224.224.VV.VV). The "network type" is set
-// in the last byte of the SRC MAC (0x20 = Net A, 0x40 = Net B); the CMC is
-// expected to return packets on a network-specific RX VLAN, which is what
-// the server uses to classify Net A vs Net B in stats.
+// in the last 2 bytes of DST IP (224.224.VV.VV). The "line type" is set in
+// the last byte of the SRC MAC (0x20 = DSM-A, 0x40 = DSM-B); the CMC returns
+// packets on a line-specific RX VLAN, which is what the server uses to
+// classify DSM-A vs DSM-B in stats.
 //
-// VL-IDs are intentionally identical across the two networks — the RX
-// dispatcher keys on (port, queue) rather than VL-ID alone, so the overlap
-// is unambiguous on the server side.
+// VL-IDs are intentionally identical across the two lines — the RX dispatcher
+// keys on (port, queue) rather than VL-ID alone, so the overlap is
+// unambiguous on the server side. Every VL-ID is emitted on BOTH lines
+// within the same pacing tick (twin packets), so the full flow count is
+// 520 VL-IDs × 2 lines = 1040.
+//
+// The return VL-ID is always the TX VL-ID plus a fixed offset:
+//   RX VL-ID = TX VL-ID + CMC_VL_RX_OFFSET   (10001 → 10521, 10520 → 11040)
+
+// ==========================================
+// DPM BLOCK MAP (VL-to-VL reporting)
+// ==========================================
+// The 520-VL span is five contiguous 104-VL blocks, one per DPM. Block
+// boundaries match dpm_vl_bases() in health_monitor_cmc.c (HM VL 2021..2105),
+// so a VL-to-VL report row lines up directly against the DPM's own per-VL
+// counters (COUNTERS_DPM_VL carries exactly 104 RX + 104 TX entries).
+//
+//   DPM-1  HM VL 2021   TX 10001..10104   RX 10521..10624
+//   DPM-2  HM VL 2042   TX 10105..10208   RX 10625..10728
+//   DPM-3  HM VL 2063   TX 10209..10312   RX 10729..10832
+//   DPM-4  HM VL 2084   TX 10313..10416   RX 10833..10936
+//   DPM-5  HM VL 2105   TX 10417..10520   RX 10937..11040
+
+#define CMC_VLS_PER_DPM     104
+#define CMC_DPM_BLOCK_COUNT 5
+#define CMC_TOTAL_VL_COUNT  (CMC_VLS_PER_DPM * CMC_DPM_BLOCK_COUNT)   /* 520 */
+
+#define CMC_VL_RX_OFFSET    520
+#define CMC_TX_VL_ID_BASE   10001                                  /* 10001..10520 */
+#define CMC_RX_VL_ID_BASE   (CMC_TX_VL_ID_BASE + CMC_VL_RX_OFFSET) /* 10521..11040 */
+
+struct cmc_dpm_block {
+  const char *label;        /* "DPM-1" .. "DPM-5"                 */
+  uint16_t    hm_vl_id;     /* health-monitor VL for this DPM     */
+  uint16_t    tx_vl_start;  /* first ATE → CMC VL-ID in the block */
+  uint16_t    rx_vl_start;  /* first CMC → ATE VL-ID in the block */
+  uint16_t    vl_count;
+};
+
+#define CMC_DPM_BLOCKS_INIT {                                                     \
+  {"DPM-1", 2021, 10001, 10521, CMC_VLS_PER_DPM},                                 \
+  {"DPM-2", 2042, 10105, 10625, CMC_VLS_PER_DPM},                                 \
+  {"DPM-3", 2063, 10209, 10729, CMC_VLS_PER_DPM},                                 \
+  {"DPM-4", 2084, 10313, 10833, CMC_VLS_PER_DPM},                                 \
+  {"DPM-5", 2105, 10417, 10937, CMC_VLS_PER_DPM},                                 \
+}
 
 typedef struct
 {
@@ -143,9 +186,9 @@ struct port_vlan_config
      .tx_vlan_count = 2,                                                        \
      .rx_vlans      = {225, 226},                                               \
      .rx_vlan_count = 2,                                                        \
-     .tx_vl_ids     = {10001, 10001},                                           \
-     .rx_vl_ids     = {10521, 10521},                                           \
-     .tx_vl_counts  = {104, 104}},                                              \
+     .tx_vl_ids     = {CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE},                   \
+     .rx_vl_ids     = {CMC_RX_VL_ID_BASE, CMC_RX_VL_ID_BASE},                   \
+     .tx_vl_counts  = {CMC_TOTAL_VL_COUNT, CMC_TOTAL_VL_COUNT}},                \
   }
 
 // ==========================================
@@ -160,9 +203,9 @@ struct port_vlan_config
      .tx_vlan_count = 2,                                                        \
      .rx_vlans      = {225, 226},                                               \
      .rx_vlan_count = 2,                                                        \
-     .tx_vl_ids     = {10001, 10001},                                           \
-     .rx_vl_ids     = {10001, 10001},                                           \
-     .tx_vl_counts  = {104, 104}},                                              \
+     .tx_vl_ids     = {CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE},                   \
+     .rx_vl_ids     = {CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE},                   \
+     .tx_vl_counts  = {CMC_TOTAL_VL_COUNT, CMC_TOTAL_VL_COUNT}},                \
   }
 
 // ==========================================
@@ -257,18 +300,19 @@ struct port_vlan_config
 // ==========================================
 // CMC PORT MAPPING TABLE
 // ==========================================
-// One entry per directional flow. The CMC layout is two flows on a single
+// One entry per directional flow. The CMC layout is two DSM lines on a single
 // server port (DPDK port_id 0, EAL-allowlisted server port 2):
 //
-//   CMC 0  Net A  TX VLAN  97 / VL 10001..10104
-//                 RX VLAN 225 / VL 10521..10624  (SplitMix+CRC remap by CMC,
+//   CMC 0  DSM-A  TX VLAN  97 / VL 10001..10520
+//                 RX VLAN 225 / VL 10521..11040  (SplitMix+CRC remap by CMC,
 //                                                 VL-ID +520 shift)
-//   CMC 1  Net B  TX VLAN  98 / VL 10001..10104
-//                 RX VLAN 226 / VL 10521..10624  (same mode/shift)
+//   CMC 1  DSM-B  TX VLAN  98 / VL 10001..10520
+//                 RX VLAN 226 / VL 10521..11040  (same mode/shift)
 //
 // vl_id_start describes the range observed on the server RX side (what the
 // CMC writes into the returning packet). tx_vl_id_start is what the server
-// sends.
+// sends. Each line carries all five DPM blocks; see CMC_DPM_BLOCKS_INIT for
+// the per-DPM subdivision used by the VL-to-VL report.
 
 struct cmc_port_map_entry {
     uint16_t cmc_port_id;       // Logical CMC port index (0..CMC_PORT_COUNT-1)
@@ -293,15 +337,19 @@ struct cmc_port_map_entry {
 };
 
 #define CMC_PORT_MAP_INIT {                                                                       \
-    /* CMC 0: Network A — VLAN 97 ↔ 225, VL 10001..10104 ↔ 10521..10624 */                        \
+    /* CMC 0: DSM-A — VLAN 97 ↔ 225, VL 10001..10520 ↔ 10521..11040 */                            \
     {.cmc_port_id = 0,  .rx_vlan = 97,  .rx_server_port = 0, .rx_server_queue = 0,                \
                          .tx_vlan = 225, .tx_server_port = 0, .tx_server_queue = 0,               \
-                         .vl_id_start = 10521, .tx_vl_id_start = 10001, .vl_id_count = 104,       \
+                         .vl_id_start = CMC_RX_VL_ID_BASE,                                        \
+                         .tx_vl_id_start = CMC_TX_VL_ID_BASE,                                     \
+                         .vl_id_count = CMC_TOTAL_VL_COUNT,                                       \
                          .payload_mode = CMC_PAYLOAD_SPLITMIX_CRC},                               \
-    /* CMC 1: Network B — VLAN 98 ↔ 226, VL 10001..10104 ↔ 10521..10624 */                        \
+    /* CMC 1: DSM-B — VLAN 98 ↔ 226, VL 10001..10520 ↔ 10521..11040 */                            \
     {.cmc_port_id = 1,  .rx_vlan = 98,  .rx_server_port = 0, .rx_server_queue = 1,                \
                          .tx_vlan = 226, .tx_server_port = 0, .tx_server_queue = 1,               \
-                         .vl_id_start = 10521, .tx_vl_id_start = 10001, .vl_id_count = 104,       \
+                         .vl_id_start = CMC_RX_VL_ID_BASE,                                        \
+                         .tx_vl_id_start = CMC_TX_VL_ID_BASE,                                     \
+                         .vl_id_count = CMC_TOTAL_VL_COUNT,                                       \
                          .payload_mode = CMC_PAYLOAD_SPLITMIX_CRC},                               \
 }
 
@@ -313,21 +361,45 @@ struct cmc_port_map_entry {
 #define CMC_VL_ID_INVALID 0xFFFF
 
 // ==========================================
-// CMC PORT DISPLAY GROUPING (NETWORK A / NETWORK B)
+// CMC PORT DISPLAY GROUPING (DSM-A / DSM-B)
 // ==========================================
-// Two display tables, one per network. The grouping arrays live here so the
+// Two display tables, one per DSM line. The grouping arrays live here so the
 // stats layer (Helpers.c) can iterate without re-deriving them.
+//
+// NOTE: the DSM-A / DSM-B naming maps onto the VLAN pairs below and nowhere
+// else — the wire itself only distinguishes 97/225 (SRC tail 0x20) from
+// 98/226 (SRC tail 0x40). If the physical line assignment turns out to be
+// reversed, swapping the two strings in cmc_port_labels[] is the only edit
+// needed; nothing downstream keys on the name.
 
-#define NETA_COUNT 1
-#define NETB_COUNT 1
+#define DSMA_COUNT 1
+#define DSMB_COUNT 1
 
-static const uint16_t neta_cmc_indices[NETA_COUNT] = {0};
-static const uint16_t netb_cmc_indices[NETB_COUNT] = {1};
+static const uint16_t dsma_cmc_indices[DSMA_COUNT] = {0};
+static const uint16_t dsmb_cmc_indices[DSMB_COUNT] = {1};
 
 // Display label per CMC port (indexed by CMC port number)
 static const char * const cmc_port_labels[CMC_PORT_COUNT] = {
-    "NET-A",   /* CMC 0: Network A (VLAN 97 → 225) */
-    "NET-B",   /* CMC 1: Network B (VLAN 98 → 226) */
+    "DSM-A",   /* CMC 0: DSM-A line (VLAN 97 → 225) */
+    "DSM-B",   /* CMC 1: DSM-B line (VLAN 98 → 226) */
 };
+
+// ==========================================
+// SHUTDOWN SEQUENCE
+// ==========================================
+// On the first Ctrl+C the TX workers stop and the app spends CMC_DRAIN_SECONDS
+// in an RX-only drain so in-flight packets land and the per-VL counters settle.
+// Health-monitor traffic keeps flowing and printing throughout. Only then are
+// the VL-to-VL report and the final-result snapshot written, after which the
+// MMMS file handover runs.
+#ifndef CMC_DRAIN_SECONDS
+#define CMC_DRAIN_SECONDS 20
+#endif
+
+// Report output paths (server-side; MainSoftware fetches these next to the
+// DPDK log after the run).
+#define CMC_VL_TABLE_LOG_PATH   "/tmp/dpdk_vl_table.log"
+#define CMC_VL_TABLE_CSV_PATH   "/tmp/dpdk_vl_table.csv"
+#define CMC_FINAL_RESULT_PATH   "/tmp/dpdk_final_result.log"
 
 #endif /* CONFIG_H */

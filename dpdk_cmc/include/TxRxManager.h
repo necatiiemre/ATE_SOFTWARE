@@ -16,9 +16,12 @@
 #define BURST_SIZE 32
 
 // VL-ID range limits.
-// CMC unit-test flows now live in the 10001..10624 range (Net A/B), so
-// MAX_VL_ID is sized to comfortably cover them while leaving headroom.
-#define MAX_VL_ID 10700
+// CMC unit-test flows live in 10001..10520 (server TX) and 10521..11040
+// (CMC return), on both DSM lines, so MAX_VL_ID must cover the top of the
+// return range with a little headroom.
+#define MAX_VL_ID 11100
+_Static_assert(MAX_VL_ID >= CMC_RX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
+               "MAX_VL_ID must cover the whole CMC return VL-ID range");
 #define MIN_VL_ID 3
 #define VL_RANGE_SIZE_PER_QUEUE 128  // 128 VL-IDs per queue
 
@@ -98,6 +101,31 @@ extern uint8_t vlan_to_cmc_port[CMC_VLAN_LOOKUP_SIZE];
 #define CMC_QUEUE_INVALID 0xFFFF
 extern uint16_t queue_to_cmc_port[MAX_PORTS][NUM_RX_QUEUES_PER_PORT];
 
+// TX-side counterpart: (port, TX queue) → CMC port. Needed because the
+// dual-net TX worker drives two queues from one lcore and has to charge each
+// line's per-VL counter separately.
+extern uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
+
+// Per-(CMC port, VL-ID) TX packet counter for the VL-to-VL report.
+//
+// This is deliberately NOT the same thing as the TX sequence counter: the
+// sequence is committed once per pacing tick and shared by the DSM-A / DSM-B
+// twins, so it cannot tell the two lines apart. These counters are bumped
+// only when the corresponding rte_eth_tx_burst actually accepted the packet,
+// which is what makes "how many went out on this line" truthful when one
+// twin is dropped by a full queue.
+//
+// Written by the single TX worker lcore, read by the main thread at snapshot
+// time — plain stores are sufficient (no other writer), and a torn read at
+// snapshot time is not possible since TX has already stopped by then.
+extern uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
+
+/**
+ * Zero every per-VL TX counter. Called from init_cmc_stats() so the
+ * warm-up → test transition clears them along with everything else.
+ */
+void reset_vl_tx_counts(void);
+
 /**
  * Initialize CMC port mapping and VLAN lookup table
  */
@@ -131,6 +159,8 @@ struct vl_sequence_tracker {
     volatile uint64_t min_seq;       // Lowest sequence seen (first packet - for watermark calc)
     volatile uint64_t pkt_count;     // Total packets received for this VL-ID
     volatile uint64_t expected_seq;  // Expected next sequence for real-time gap detection
+    volatile uint64_t first_seq;     // Sequence carried by the first packet seen
+    volatile uint64_t last_seq;      // Sequence carried by the most recent packet
     volatile int initialized;        // Has this VL-ID been seen before? (0=false, 1=true)
 };
 

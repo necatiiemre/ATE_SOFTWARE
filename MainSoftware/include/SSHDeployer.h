@@ -298,7 +298,25 @@ public:
      * @param use_sudo Use sudo for killing the process
      * @return true on success
      */
-    bool stopApplication(const std::string& app_name, bool use_sudo = false);
+    /**
+     * How long to let dpdk_cmc finish shutting down. Its SIGTERM handler does
+     * not exit straight away: it stops TX, drains RX so the counters settle,
+     * writes the VL-to-VL and final-result reports, then runs the MMMS file
+     * handover (60 s first-packet timeout on its own). SIGKILLing it partway
+     * through loses every one of those artifacts.
+     */
+    static constexpr int kDpdkCmcShutdownWaitSeconds = 240;
+
+    /**
+     * @brief Stop a remote application: SIGTERM, wait, SIGKILL as last resort.
+     * @param max_wait_seconds how long to allow for a graceful exit. The
+     *        default suits apps that stop promptly; give a longer budget to
+     *        one that runs a shutdown sequence of its own (dpdk_cmc drains RX,
+     *        writes its reports and then runs the MMMS file handover, which
+     *        together can outlast a one-minute window).
+     */
+    bool stopApplication(const std::string& app_name, bool use_sudo = false,
+                         int max_wait_seconds = 60);
 
     /**
      * @brief Check if an application is running on remote server

@@ -17,6 +17,7 @@
 #include <csignal>
 #include <atomic>
 #include <limits>
+#include <utility>
 #include <termios.h>
 // 270V 9A
 
@@ -75,6 +76,34 @@ void Cmc::fetchDpdkAndMmmsLogs()
     else
     {
         ErrorPrinter::warn("SSH", "CMC: Failed to fetch DPDK CMC log (file may not exist)");
+    }
+
+    // Fetch the end-of-run reports DPDK writes during its shutdown sequence:
+    // the per-VL-ID flow table (both formats) and the final-result snapshot.
+    // They land next to the main log so a run's artifacts stay together.
+    // Missing files are a warning, not a failure — a run cut short by SIGKILL
+    // never gets to write them.
+    {
+        const std::string log_dir = g_ReportManager.getTestLogDir();
+        const std::pair<const char *, const char *> reports[] = {
+            {"/tmp/dpdk_vl_table.log",     "vl_to_vl_table.log"},
+            {"/tmp/dpdk_vl_table.csv",     "vl_to_vl_table.csv"},
+            {"/tmp/dpdk_final_result.log", "final_result.log"},
+        };
+
+        for (const auto &r : reports)
+        {
+            const std::string local_path = log_dir + "/" + r.second;
+            if (g_ssh_deployer_server.fetchFile(r.first, local_path))
+            {
+                std::cout << "CMC: " << r.second << " saved to: " << local_path << std::endl;
+            }
+            else
+            {
+                ErrorPrinter::warn("SSH", std::string("CMC: Failed to fetch ") + r.first +
+                                          " (DPDK may not have completed its shutdown sequence)");
+            }
+        }
     }
 
     // Fetch MMMS handover output directory (files dumped by peer during shutdown)
@@ -488,11 +517,20 @@ bool Cmc::configureSequence()
     std::cout << "CMC: Stopping FlickerDetection..." << std::endl;
     flicker.stop();
 
-    // Stop DPDK CMC on server
-    std::cout << "CMC: Stopping DPDK CMC on server..." << std::endl;
+    // Stop DPDK CMC on server.
+    //
+    // SIGTERM does not end the app immediately any more: it stops TX, drains
+    // RX for ~20 s so the counters settle, writes the VL-to-VL and
+    // final-result reports, then runs the MMMS file handover (whose
+    // first-packet timeout alone is 60 s). The default one-minute grace period
+    // would SIGKILL it mid-sequence and lose every report, so give it room.
+    const int shutdown_budget_s = SSHDeployer::kDpdkCmcShutdownWaitSeconds;
+    std::cout << "CMC: Stopping DPDK CMC on server "
+              << "(allowing up to " << shutdown_budget_s
+              << "s for drain + reports + MMMS handover)..." << std::endl;
     if (g_ssh_deployer_server.isApplicationRunning("dpdk_app"))
     {
-        g_ssh_deployer_server.stopApplication("dpdk_app", true);
+        g_ssh_deployer_server.stopApplication("dpdk_app", true, shutdown_budget_s);
         std::cout << "CMC: DPDK CMC stopped." << std::endl;
     }
     else
