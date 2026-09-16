@@ -198,6 +198,184 @@ static void print_cmc_table_group(const uint16_t *indices, uint16_t count,
     printf("  └─────────┴────────┴─────────────────────┴─────────────────────┴─────────────────────────┴─────────────────────┴─────────────────────┴─────────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────┘\n");
 }
 
+// ==========================================
+// PRBS-ONLY SUMMARY (final report)
+// ==========================================
+// The live table above reports the hardware per-queue counters, which is the
+// right thing for watching the wire: they show everything that actually moved,
+// PRBS and health-monitor traffic alike. It is the wrong thing for the
+// end-of-run verdict, where "how much PRBS did I send and get back" should not
+// have health-monitor packets folded into it.
+//
+// So this table is built entirely from the software counters, which are
+// incremented after classification and therefore know what each packet was:
+//
+//   TX packets = sum of the per-VL TX counters over the line's VL range. Taken
+//                from the same counters that back the VL-to-VL table, so the
+//                two reports agree by construction rather than by luck.
+//   TX bytes   = per-line byte total accumulated in the TX worker.
+//   RX packets/bytes = PRBS packets that reached payload verification.
+//
+// Health-monitor traffic gets its own table, and a third one reconciles both
+// against the hardware counter so anything unaccounted for is visible.
+
+static uint64_t prbs_tx_pkts_for_line(uint16_t cmc)
+{
+    const struct cmc_port_map_entry *e = &cmc_port_map[cmc];
+    uint64_t sum = 0;
+    for (uint16_t i = 0; i < e->vl_id_count; i++) {
+        uint16_t vl = (uint16_t)(e->tx_vl_id_start + i);
+        if (vl <= MAX_VL_ID) {
+            sum += vl_tx_counts[cmc][vl];
+        }
+    }
+    return sum;
+}
+
+#define PRBS_RULE \
+    "  +--------+--------------+----------------+--------------+----------------+--------------+--------------+------------+------------+------------+--------------+----------------+-------------+\n"
+
+void helper_print_prbs_summary(const struct ports_config *ports_config,
+                               uint32_t test_seconds)
+{
+    // Zeroed up front: the loop only fills entries for configured ports, and
+    // the accounting table below indexes by the port recorded in the CMC map.
+    struct rte_eth_stats hw[MAX_PORTS];
+    memset(hw, 0, sizeof(hw));
+
+    for (uint16_t i = 0; i < ports_config->nb_ports; i++) {
+        uint16_t port_id = ports_config->ports[i].port_id;
+        if (rte_eth_stats_get(port_id, &hw[port_id]) != 0) {
+            memset(&hw[port_id], 0, sizeof(struct rte_eth_stats));
+        }
+    }
+
+    printf("\n");
+    printf("================================================================================\n");
+    printf("  PRBS TRAFFIC — FINAL TOTALS (health-monitor traffic excluded)\n");
+    printf("  Test duration: %u s after warm-up\n", test_seconds);
+    printf("================================================================================\n");
+
+    fputs(PRBS_RULE, stdout);
+    printf("  | %-6s | %12s | %14s | %12s | %14s | %12s | %12s | %10s | %10s | %10s | %12s | %14s | %11s |\n",
+           "Line", "TX pkts", "TX bytes", "RX pkts", "RX bytes", "Good", "Bad",
+           "SM fail", "CRC fail", "XOR fail", "Loss", "Bit errors", "BER");
+    fputs(PRBS_RULE, stdout);
+
+    uint64_t t_tx_p = 0, t_tx_b = 0, t_rx_p = 0, t_rx_b = 0;
+    uint64_t t_good = 0, t_bad = 0, t_sm = 0, t_crc = 0, t_xor = 0;
+    uint64_t t_lost = 0, t_bits = 0;
+
+    for (uint16_t cmc = 0; cmc < CMC_PORT_COUNT; cmc++) {
+        uint64_t tx_p = prbs_tx_pkts_for_line(cmc);
+        uint64_t tx_b = cmc_tx_bytes_total[cmc];
+        uint64_t rx_p = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].total_rx_pkts);
+        uint64_t rx_b = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].rx_bytes);
+        uint64_t good = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].good_pkts);
+        uint64_t bad  = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].bad_pkts);
+        uint64_t sm   = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].splitmix_fail);
+        uint64_t crc  = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].crc32_fail);
+        uint64_t xr   = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].xor_fail);
+        uint64_t lost = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].lost_pkts);
+        uint64_t braw = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].bit_errors);
+
+#if IMIX_ENABLED
+        uint64_t lost_bits = lost * (uint64_t)IMIX_AVG_PACKET_SIZE * 8;
+#else
+        uint64_t lost_bits = lost * (uint64_t)PACKET_SIZE * 8;
+#endif
+        uint64_t bit_errors = braw + lost_bits;
+        uint64_t total_bits = rx_b * 8 + lost_bits;
+        double ber = (total_bits > 0) ? ((double)bit_errors / (double)total_bits) : 0.0;
+
+        printf("  | %-6s | %12lu | %14lu | %12lu | %14lu | %12lu | %12lu | %10lu | %10lu | %10lu | %12lu | %14lu | %11.2e |\n",
+               cmc_port_labels[cmc], tx_p, tx_b, rx_p, rx_b, good, bad,
+               sm, crc, xr, lost, bit_errors, ber);
+
+        t_tx_p += tx_p; t_tx_b += tx_b; t_rx_p += rx_p; t_rx_b += rx_b;
+        t_good += good; t_bad += bad; t_sm += sm; t_crc += crc; t_xor += xr;
+        t_lost += lost; t_bits += bit_errors;
+    }
+
+    fputs(PRBS_RULE, stdout);
+    {
+#if IMIX_ENABLED
+        uint64_t t_lost_bits = t_lost * (uint64_t)IMIX_AVG_PACKET_SIZE * 8;
+#else
+        uint64_t t_lost_bits = t_lost * (uint64_t)PACKET_SIZE * 8;
+#endif
+        uint64_t t_total_bits = t_rx_b * 8 + t_lost_bits;
+        double t_ber = (t_total_bits > 0) ? ((double)t_bits / (double)t_total_bits) : 0.0;
+        printf("  | %-6s | %12lu | %14lu | %12lu | %14lu | %12lu | %12lu | %10lu | %10lu | %10lu | %12lu | %14lu | %11.2e |\n",
+               "TOTAL", t_tx_p, t_tx_b, t_rx_p, t_rx_b, t_good, t_bad,
+               t_sm, t_crc, t_xor, t_lost, t_bits, t_ber);
+        fputs(PRBS_RULE, stdout);
+    }
+
+    printf("\n  PRBS delivery: %lu of %lu packets returned", t_rx_p, t_tx_p);
+    if (t_tx_p > 0) {
+        printf("  (%.6f%% missing)",
+               (double)(t_tx_p > t_rx_p ? t_tx_p - t_rx_p : 0) * 100.0 / (double)t_tx_p);
+    }
+    printf("\n");
+
+    // ---- Health monitor, counted separately ----
+    printf("\n");
+    printf("  === HEALTH MONITOR TRAFFIC (not included in the PRBS totals above) ===\n");
+    printf("  +--------+--------------+----------------+\n");
+    printf("  | %-6s | %12s | %14s |\n", "Line", "HM RX pkts", "HM RX bytes");
+    printf("  +--------+--------------+----------------+\n");
+
+    uint64_t t_hm_p = 0, t_hm_b = 0;
+    for (uint16_t cmc = 0; cmc < CMC_PORT_COUNT; cmc++) {
+        uint64_t hp = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].hm_rx_pkts);
+        uint64_t hb = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].hm_rx_bytes);
+        printf("  | %-6s | %12lu | %14lu |\n", cmc_port_labels[cmc], hp, hb);
+        t_hm_p += hp; t_hm_b += hb;
+    }
+    printf("  +--------+--------------+----------------+\n");
+    printf("  | %-6s | %12lu | %14lu |\n", "TOTAL", t_hm_p, t_hm_b);
+    printf("  +--------+--------------+----------------+\n");
+
+    // ---- Reconciliation against the hardware counter ----
+    // If this does not add up, one of the software counters is missing a path;
+    // showing the difference is better than quietly presenting totals that do
+    // not match the NIC.
+    printf("\n");
+    printf("  === RX ACCOUNTING (hardware queue counter vs. classified traffic) ===\n");
+    printf("  +--------+--------------+--------------+--------------+--------------+--------------+\n");
+    printf("  | %-6s | %12s | %12s | %12s | %12s | %12s |\n",
+           "Line", "HW RX pkts", "PRBS", "Health mon", "Other/short", "Unaccounted");
+    printf("  +--------+--------------+--------------+--------------+--------------+--------------+\n");
+
+    for (uint16_t cmc = 0; cmc < CMC_PORT_COUNT; cmc++) {
+        const struct cmc_port_map_entry *e = &cmc_port_map[cmc];
+        uint64_t hw_p = 0;
+        if (e->tx_server_port < MAX_PORTS &&
+            e->tx_server_queue < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
+            hw_p = hw[e->tx_server_port].q_ipackets[e->tx_server_queue];
+        }
+        uint64_t prbs_p  = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].total_rx_pkts);
+        uint64_t hm_p    = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].hm_rx_pkts);
+        uint64_t other_p = (uint64_t)rte_atomic64_read(&cmc_stats[cmc].other_rx_pkts);
+        uint64_t seen    = prbs_p + hm_p + other_p;
+
+        char unacc[24];
+        if (hw_p >= seen) {
+            snprintf(unacc, sizeof(unacc), "%lu", hw_p - seen);
+        } else {
+            snprintf(unacc, sizeof(unacc), "-%lu", seen - hw_p);
+        }
+
+        printf("  | %-6s | %12lu | %12lu | %12lu | %12lu | %12s |\n",
+               cmc_port_labels[cmc], hw_p, prbs_p, hm_p, other_p, unacc);
+    }
+    printf("  +--------+--------------+--------------+--------------+--------------+--------------+\n");
+    printf("  Unaccounted counts packets the NIC delivered that no classifier claimed.\n");
+    printf("  A small positive value right after shutdown is normal (a burst can land\n");
+    printf("  between the last software flush and this snapshot).\n");
+}
+
 static void helper_print_cmc_stats(const struct ports_config *ports_config,
                                    bool warmup_complete, unsigned loop_count,
                                    unsigned test_time)

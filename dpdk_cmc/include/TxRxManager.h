@@ -68,8 +68,21 @@ extern struct rx_stats rx_stats_per_port[MAX_PORTS];
 // ==========================================
 #if STATS_MODE_CMC
 
-// CMC per-port payload verification statistics
-// CMC TX (CMC→Server) quality metrics: measured on Server RX side
+// CMC per-line statistics.
+//
+// Everything here is counted in software at the point the packet is
+// classified, which is what makes it possible to report PRBS traffic on its
+// own. The hardware per-queue counters cannot: every packet steered to a
+// queue lands in q_ipackets, so PRBS, health-monitor and MMMS traffic are
+// summed together there with no way to separate them afterwards.
+//
+// The three RX groups below partition the classified traffic:
+//   total_rx_pkts / rx_bytes    PRBS packets that reached payload verification
+//   hm_rx_pkts    / hm_rx_bytes health-monitor packets (branched off earlier)
+//   other_rx_pkts / other_rx_bytes  everything else — currently packets
+//                                   rejected by the minimum-length filter
+// Their sum should equal the hardware queue counter; the final report prints
+// the comparison so a mismatch is visible rather than silently absorbed.
 struct cmc_port_stats {
     rte_atomic64_t good_pkts;
     rte_atomic64_t bad_pkts;
@@ -82,7 +95,14 @@ struct cmc_port_stats {
     rte_atomic64_t out_of_order_pkts;
     rte_atomic64_t duplicate_pkts;
     rte_atomic64_t short_pkts;
-    rte_atomic64_t total_rx_pkts;     // Server RX = CMC TX packet count
+    rte_atomic64_t total_rx_pkts;     // Server RX = CMC TX packet count (PRBS)
+    rte_atomic64_t rx_bytes;          // PRBS bytes received (on-wire lengths)
+
+    // Non-PRBS traffic on the same queue, kept out of the totals above.
+    rte_atomic64_t hm_rx_pkts;
+    rte_atomic64_t hm_rx_bytes;
+    rte_atomic64_t other_rx_pkts;     // failed the minimum-length filter
+    rte_atomic64_t other_rx_bytes;
 };
 
 extern struct cmc_port_stats cmc_stats[CMC_PORT_COUNT];
@@ -120,9 +140,17 @@ extern uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
 // snapshot time is not possible since TX has already stopped by then.
 extern uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
 
+// Per-line TX byte total, accumulated from the on-wire length of each packet
+// the NIC accepted. The packet count is deliberately not duplicated here: it
+// is the sum of vl_tx_counts over the line's VL range, so the final report and
+// the VL-to-VL table cannot drift apart. Same single-writer reasoning as
+// vl_tx_counts.
+extern uint64_t cmc_tx_bytes_total[CMC_PORT_COUNT];
+
 /**
- * Zero every per-VL TX counter. Called from init_cmc_stats() so the
- * warm-up → test transition clears them along with everything else.
+ * Zero the per-VL TX counters and the per-line TX byte totals. Called from
+ * init_cmc_stats() so the warm-up → test transition clears them along with
+ * everything else.
  */
 void reset_vl_tx_counts(void);
 

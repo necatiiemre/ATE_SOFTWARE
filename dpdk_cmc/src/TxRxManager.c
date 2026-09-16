@@ -147,19 +147,23 @@ uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
 
 // Per-(CMC port, VL-ID) TX packet counters for the VL-to-VL report.
 uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
+uint64_t cmc_tx_bytes_total[CMC_PORT_COUNT];
 
 void reset_vl_tx_counts(void)
 {
     memset(vl_tx_counts, 0, sizeof(vl_tx_counts));
+    memset(cmc_tx_bytes_total, 0, sizeof(cmc_tx_bytes_total));
 }
 
 // Charge one packet to a line's per-VL TX counter. Out-of-range arguments are
 // dropped silently rather than clamped — a counter that quietly folds two
 // VL-IDs together would be worse than a missing row in the report.
-static inline void vl_tx_count_bump(uint16_t cmc_port, uint16_t vl_id)
+static inline void vl_tx_count_bump(uint16_t cmc_port, uint16_t vl_id,
+                                    uint16_t pkt_len)
 {
     if (cmc_port < CMC_PORT_COUNT && vl_id <= MAX_VL_ID) {
         vl_tx_counts[cmc_port][vl_id]++;
+        cmc_tx_bytes_total[cmc_port] += pkt_len;
     }
 }
 
@@ -659,6 +663,11 @@ void init_cmc_stats(void)
         rte_atomic64_init(&cmc_stats[i].duplicate_pkts);
         rte_atomic64_init(&cmc_stats[i].short_pkts);
         rte_atomic64_init(&cmc_stats[i].total_rx_pkts);
+        rte_atomic64_init(&cmc_stats[i].rx_bytes);
+        rte_atomic64_init(&cmc_stats[i].hm_rx_pkts);
+        rte_atomic64_init(&cmc_stats[i].hm_rx_bytes);
+        rte_atomic64_init(&cmc_stats[i].other_rx_pkts);
+        rte_atomic64_init(&cmc_stats[i].other_rx_bytes);
     }
     reset_vl_tx_counts();
     printf("CMC port statistics initialized for %d ports\n", CMC_PORT_COUNT);
@@ -1584,10 +1593,13 @@ int tx_worker(void *arg)
         const uint8_t dtn_seq = (seq == 0)
                                     ? 0u
                                     : (uint8_t)(((seq - 1u) % 255u) + 1u);
+        // On-wire length of this tick's packet. The Net B twin is built from
+        // the same config so it comes out the same size; both per-line byte
+        // counters use this value.
+        const uint16_t tx_pkt_len = rte_pktmbuf_data_len(pkt);
         {
             uint8_t *pkt_data_a = rte_pktmbuf_mtod(pkt, uint8_t *);
-            uint16_t pkt_len_a  = rte_pktmbuf_data_len(pkt);
-            pkt_data_a[pkt_len_a - 1] = dtn_seq;
+            pkt_data_a[tx_pkt_len - 1] = dtn_seq;
         }
 
         // ==========================================
@@ -1625,6 +1637,7 @@ int tx_worker(void *arg)
             uint8_t *pkt_data_b = rte_pktmbuf_mtod(pkt_b, uint8_t *);
             uint16_t pkt_len_b  = rte_pktmbuf_data_len(pkt_b);
             pkt_data_b[pkt_len_b - 1] = dtn_seq;
+            (void)pkt_len_b;
         }
 
         // Send Net A first; if its queue is full we drop the twin too and
@@ -1649,7 +1662,7 @@ int tx_worker(void *arg)
         if (likely(nb_tx > 0))
         {
 #if STATS_MODE_CMC
-            vl_tx_count_bump(tx_cmc_primary, curr_vl);
+            vl_tx_count_bump(tx_cmc_primary, curr_vl, tx_pkt_len);
 #endif
             uint16_t nb_tx_b = 1;
             if (params->dual_net) {
@@ -1658,7 +1671,7 @@ int tx_worker(void *arg)
                 nb_tx_b_dbg = nb_tx_b;
 #if STATS_MODE_CMC
                 if (likely(nb_tx_b > 0)) {
-                    vl_tx_count_bump(tx_cmc_alt, curr_vl);
+                    vl_tx_count_bump(tx_cmc_alt, curr_vl, tx_pkt_len);
                 }
 #endif
                 if (unlikely(nb_tx_b == 0)) {
@@ -1762,6 +1775,7 @@ int rx_worker(void *arg)
     // loopback + pure-PRBS cross return traffic).
     struct cmc_local_accum {
         uint64_t rx;
+        uint64_t rx_bytes;
         uint64_t good;
         uint64_t bad;
         uint64_t sm_fail;
@@ -1769,6 +1783,10 @@ int rx_worker(void *arg)
         uint64_t xor_fail;
         uint64_t bit_errors;
         uint64_t lost;
+        uint64_t hm_pkts;
+        uint64_t hm_bytes;
+        uint64_t other_pkts;
+        uint64_t other_bytes;
     };
     struct cmc_local_accum local_cmc[CMC_PORT_COUNT];
     memset(local_cmc, 0, sizeof(local_cmc));
@@ -1826,12 +1844,15 @@ int rx_worker(void *arg)
                 const uint32_t payload_off = l2_len_vlan + 20 + 8;
 
                 // ==========================================
-                // HEALTH MONITOR EARLY BRANCH (DISABLED IN CMC)
-                // CMC'den miras kalan HM dispatch'i — VL-ID 0x09..0x10
-                // aralığını yakalayıp hm_handle_packet'e veriyordu. CMC kendi
-                // HM'sini ekleyene kadar yorum satırında. Aktive ederken
-                // <health_monitor.h> include'ını da TxRxManager.c üstünde
-                // geri açmak gerekir.
+                // HEALTH MONITOR EARLY BRANCH
+                // HM trafiği ayrı bir arayüz değil, aynı data-plane portu
+                // üzerinde taşınıyor; VL-ID set'ine giren paketler burada
+                // yakalanıp hm_handle_packet'e veriliyor ve PRBS doğrulama
+                // yolundan çıkıyor.
+                //
+                // Bu paketler donanımın q_ipackets sayacına da giriyor, bu
+                // yüzden burada AYRI sayılıyorlar: final rapordaki TX/RX
+                // toplamları yalnız PRBS trafiğini göstersin diye.
                 // ==========================================
                 if (likely(m->pkt_len >= payload_off))
                 {
@@ -1840,6 +1861,12 @@ int rx_worker(void *arg)
                     {
                         uint16_t hm_len = (uint16_t)(m->pkt_len - payload_off);
                         hm_handle_packet(vl_id_hm, pkt + payload_off, hm_len);
+#if STATS_MODE_CMC
+                        if (worker_cmc_port < CMC_PORT_COUNT) {
+                            local_cmc[worker_cmc_port].hm_pkts++;
+                            local_cmc[worker_cmc_port].hm_bytes += m->pkt_len;
+                        }
+#endif
                         continue;
                     }
                 }
@@ -1878,6 +1905,12 @@ int rx_worker(void *arg)
 #endif
                 {
                     local_short++;
+#if STATS_MODE_CMC
+                    if (worker_cmc_port < CMC_PORT_COUNT) {
+                        local_cmc[worker_cmc_port].other_pkts++;
+                        local_cmc[worker_cmc_port].other_bytes += m->pkt_len;
+                    }
+#endif
                     continue;
                 }
 
@@ -2044,6 +2077,7 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
                         if (pkt_cmc_port != CMC_QUEUE_INVALID) {
                             local_cmc[pkt_cmc_port].rx++;
+                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
                             local_cmc[pkt_cmc_port].good++;
                         }
 #endif
@@ -2103,6 +2137,7 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
                         if (pkt_cmc_port != CMC_QUEUE_INVALID) {
                             local_cmc[pkt_cmc_port].rx++;
+                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
                             local_cmc[pkt_cmc_port].bad++;
                             if (!sm_ok)  local_cmc[pkt_cmc_port].sm_fail++;
                             if (!crc_ok) local_cmc[pkt_cmc_port].crc_fail++;
@@ -2131,6 +2166,7 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
                         if (pkt_cmc_port != CMC_QUEUE_INVALID) {
                             local_cmc[pkt_cmc_port].rx++;
+                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
                             local_cmc[pkt_cmc_port].good++;
                         }
 #endif
@@ -2163,6 +2199,7 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
                         if (pkt_cmc_port != CMC_QUEUE_INVALID) {
                             local_cmc[pkt_cmc_port].rx++;
+                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
                             local_cmc[pkt_cmc_port].bad++;
                             local_cmc[pkt_cmc_port].bit_errors += berr;
                         }
@@ -2193,8 +2230,10 @@ int rx_worker(void *arg)
                 // CMC per-port payload verification stats (per-VL-ID dispatch)
                 for (uint16_t vi = 0; vi < CMC_PORT_COUNT; vi++) {
                     struct cmc_local_accum *a = &local_cmc[vi];
-                    if (a->rx == 0 && a->lost == 0) continue;
+                    if (a->rx == 0 && a->lost == 0 &&
+                        a->hm_pkts == 0 && a->other_pkts == 0) continue;
                     rte_atomic64_add(&cmc_stats[vi].total_rx_pkts, a->rx);
+                    rte_atomic64_add(&cmc_stats[vi].rx_bytes, a->rx_bytes);
                     rte_atomic64_add(&cmc_stats[vi].good_pkts, a->good);
                     rte_atomic64_add(&cmc_stats[vi].bad_pkts, a->bad);
                     rte_atomic64_add(&cmc_stats[vi].splitmix_fail, a->sm_fail);
@@ -2202,6 +2241,10 @@ int rx_worker(void *arg)
                     rte_atomic64_add(&cmc_stats[vi].xor_fail, a->xor_fail);
                     rte_atomic64_add(&cmc_stats[vi].bit_errors, a->bit_errors);
                     rte_atomic64_add(&cmc_stats[vi].lost_pkts, a->lost);
+                    rte_atomic64_add(&cmc_stats[vi].hm_rx_pkts, a->hm_pkts);
+                    rte_atomic64_add(&cmc_stats[vi].hm_rx_bytes, a->hm_bytes);
+                    rte_atomic64_add(&cmc_stats[vi].other_rx_pkts, a->other_pkts);
+                    rte_atomic64_add(&cmc_stats[vi].other_rx_bytes, a->other_bytes);
                     memset(a, 0, sizeof(*a));
                 }
 #endif
@@ -2228,8 +2271,10 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
         for (uint16_t vi = 0; vi < CMC_PORT_COUNT; vi++) {
             struct cmc_local_accum *a = &local_cmc[vi];
-            if (a->rx == 0 && a->lost == 0) continue;
+            if (a->rx == 0 && a->lost == 0 &&
+                a->hm_pkts == 0 && a->other_pkts == 0) continue;
             rte_atomic64_add(&cmc_stats[vi].total_rx_pkts, a->rx);
+            rte_atomic64_add(&cmc_stats[vi].rx_bytes, a->rx_bytes);
             rte_atomic64_add(&cmc_stats[vi].good_pkts, a->good);
             rte_atomic64_add(&cmc_stats[vi].bad_pkts, a->bad);
             rte_atomic64_add(&cmc_stats[vi].splitmix_fail, a->sm_fail);
@@ -2237,6 +2282,10 @@ int rx_worker(void *arg)
             rte_atomic64_add(&cmc_stats[vi].xor_fail, a->xor_fail);
             rte_atomic64_add(&cmc_stats[vi].bit_errors, a->bit_errors);
             rte_atomic64_add(&cmc_stats[vi].lost_pkts, a->lost);
+            rte_atomic64_add(&cmc_stats[vi].hm_rx_pkts, a->hm_pkts);
+            rte_atomic64_add(&cmc_stats[vi].hm_rx_bytes, a->hm_bytes);
+            rte_atomic64_add(&cmc_stats[vi].other_rx_pkts, a->other_pkts);
+            rte_atomic64_add(&cmc_stats[vi].other_rx_bytes, a->other_bytes);
         }
 #endif
     }

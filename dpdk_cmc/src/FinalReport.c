@@ -62,6 +62,12 @@ int final_report_write(const char *path,
         return -1;
     }
 
+    /* Kept in the signature so the caller does not have to care whether the
+     * snapshot happens to need the rate baselines; the PRBS table works off
+     * cumulative software counters and does not. */
+    (void)prev_tx_bytes;
+    (void)prev_rx_bytes;
+
     int saved = stdout_redirect_to(path);
     if (saved < 0) {
         printf("FINAL: cannot open '%s' for writing, skipping snapshot\n", path);
@@ -95,9 +101,15 @@ int final_report_write(const char *path,
            CMC_VL_TABLE_LOG_PATH, CMC_VL_TABLE_CSV_PATH);
     printf("================================================================================\n");
 
-    /* 1. Final per-line TX/RX table — identical layout to the live one. */
-    helper_print_stats(ports_config, prev_tx_bytes, prev_rx_bytes,
-                       warmup_complete, 0, test_seconds);
+    /* 1. Final per-line TX/RX totals, PRBS traffic only.
+     *
+     * Deliberately not helper_print_stats(): that one reports the hardware
+     * per-queue counters, which lump health-monitor packets in with PRBS and
+     * cannot be separated after the fact. The verdict at the end of a run
+     * should be about the PRBS stream alone, so this table is built from the
+     * software counters and the health-monitor traffic is reported next to it
+     * on its own. */
+    helper_print_prbs_summary(ports_config, test_seconds);
 
     /* 2. VL-to-VL roll-up per DSM line and DPM block. */
     vlflow_print_summary(test_seconds);
