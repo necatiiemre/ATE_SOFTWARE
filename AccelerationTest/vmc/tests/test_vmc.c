@@ -341,53 +341,96 @@ static void put_le64(uint8_t *p, uint64_t v)
 }
 
 /* The counter report has no header: the VL id is the whole of what says what it
- * is, so there is no message id to get wrong and nothing to guard with. It also
- * came with no byte order, so which way it is read is a setting - and the test
- * writes whichever way the setting says, because the point is that the two
- * agree, not that either is right. Reading it the wrong way round gives counts
- * around 10^19, which is why the decoder dumps the first report both ways. */
-static void test_counters(vmc_health_t *h, const vmc_config_t *c)
+ * is, so there is no message id to guard it with - and it came with no byte
+ * order either. The decoder takes both readings and keeps the plausible one,
+ * because the same bytes cannot be small both ways round, so the test sends one
+ * side big-endian and the other little-endian and expects the same numbers
+ * back from both. Its length is then the only thing that says a frame on this
+ * VL is a counter report at all, which is why a longer one is refused rather
+ * than read: that is how a good report used to get replaced by nonsense. */
+static void fill_counters(uint8_t *p, void (*put)(uint8_t *, uint64_t))
 {
-    size_t frame_len;
-    uint8_t *p = frame_for(c->flcs_counters, sizeof(REPORT_MSG), &frame_len);
-    void (*put)(uint8_t *, uint64_t) = c->counters_big_endian ? put_be64 : put_le64;
-
     for (int i = 0; i < PHY_PORT_NUMBER; i++) {
         put(p + (0 * PHY_PORT_NUMBER + i) * 8, 100000ull + i);   /* sent */
         put(p + (1 * PHY_PORT_NUMBER + i) * 8, 200000ull + i);   /* received */
         put(p + (2 * PHY_PORT_NUMBER + i) * 8,      7ull + i);   /* PRBS failed */
         put(p + (3 * PHY_PORT_NUMBER + i) * 8,     11ull + i);   /* missed */
     }
+}
 
-    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
-          "the PHY counter frame is accepted");
-
-    const REPORT_MSG *m = &h->side[VMC_FLCS].counters;
+static void check_counters(const REPORT_MSG *m, const char *what)
+{
     for (int i = 0; i < PHY_PORT_NUMBER; i++)
         check(m->total_sended_package[i] == 100000ull + i &&
               m->total_received_package[i] == 200000ull + i &&
               m->prbs_failed_package[i] == 7ull + i &&
-              m->missed_package[i] == 11ull + i,
-              "every counter of every port, in the configured byte order");
+              m->missed_package[i] == 11ull + i, what);
+}
 
-    /* And that the other way round is what produces the nonsense: a count of
-     * 100000 read the wrong way is over 10^18, not a plausible packet count. */
-    uint8_t other[8];
-    (c->counters_big_endian ? put_le64 : put_be64)(other, 100000ull);
-    uint64_t misread = 0;
-    for (int i = 0; i < 8; i++)
-        misread = c->counters_big_endian ? (misread << 8) | other[i]
-                                         : (misread << 8) | other[7 - i];
-    check(misread > 1000000000000000000ull,
-          "the wrong byte order gives an implausible count, as it did on the rig");
+static void test_counters(vmc_health_t *h, const vmc_config_t *c)
+{
+    size_t frame_len;
+    uint8_t *p;
+
+    check(c->counters_order == VMC_COUNTERS_AUTO,
+          "the rig reads the counters whichever way round they arrive");
+
+    p = frame_for(c->flcs_counters, sizeof(REPORT_MSG), &frame_len);
+    fill_counters(p, put_be64);
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "a big-endian PHY counter frame is accepted");
     check(h->side[VMC_VS].seen[VMC_REPORT_COUNTERS].packets == 0,
           "and nothing landed on the other side");
+    check_counters(&h->side[VMC_FLCS].counters,
+                   "every counter of every port, read big-endian");
+    check(h->side[VMC_FLCS].counters_big_endian,
+          "and the report says which way it was read");
+
+    p = frame_for(c->vs_counters, sizeof(REPORT_MSG), &frame_len);
+    fill_counters(p, put_le64);
+    check(vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "a little-endian PHY counter frame is accepted too");
+    check_counters(&h->side[VMC_VS].counters,
+                   "every counter of every port, read little-endian");
+    check(!h->side[VMC_VS].counters_big_endian,
+          "and that one says little-endian");
+
+    /* The choice is not a coin toss: read the wrong way round, a count of
+     * 100000 is over 10^18, which is the nonsense the rig showed. */
+    uint8_t other[8];
+    put_le64(other, 100000ull);
+    uint64_t misread = 0;
+    for (int i = 0; i < 8; i++)
+        misread = (misread << 8) | other[i];
+    check(misread > 1000000000000000000ull,
+          "the wrong byte order gives an implausible count, as it did on the rig");
+
+    /* The AFDX sequence number rides outside the IP length, so one byte of
+     * slack is a counter report and anything beyond that is a different
+     * message that would otherwise be read as one. */
+    p = frame_for(c->flcs_counters, sizeof(REPORT_MSG) + 1, &frame_len);
+    fill_counters(p, put_be64);
+    p[sizeof(REPORT_MSG)] = 0x5a;
+    check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "a counter frame with its AFDX sequence byte is still a counter frame");
+    check_counters(&h->side[VMC_FLCS].counters, "and decodes the same");
 
     uint64_t short_before = h->too_short;
     frame_for(c->vs_counters, sizeof(REPORT_MSG) - 1, &frame_len);
     check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
           "a short counter frame is refused");
     check(h->too_short == short_before + 1, "and counted as short");
+
+    uint64_t wrong_before = h->wrong_size;
+    p = frame_for(c->flcs_counters, sizeof(REPORT_MSG) + 2, &frame_len);
+    memset(p, 0x77, sizeof(REPORT_MSG) + 2);
+    check(!vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
+          "something longer on the counter VL is not read as counters");
+    check(h->wrong_size == wrong_before + 1 &&
+          h->last_wrong_size == sizeof(REPORT_MSG) + 2,
+          "and its size is remembered, not just counted");
+    check_counters(&h->side[VMC_FLCS].counters,
+                   "leaving the last good counter report alone");
     printf("[ OK ] PHY port counters\n");
 }
 

@@ -400,14 +400,26 @@ carries no `vmp_cmsw_header_t`, so the payload is the struct and nothing else
 and the VL id is the whole of what identifies it — and it came with no byte
 order either. Every other VMC report is big-endian and says so; this one is a
 bare packed C struct, which is what a sender that copies its own memory onto the
-wire produces, and that is host order. It reads **little-endian**
-(`counters_big_endian` in `common/src/AppConfig.c`); reading it the other way
-round turns a count of ten million into 8×10¹⁸, which is how the mistake showed
-itself on the rig.
+wire produces, and that is host order, whichever the VMC's is.
 
-Because that was got wrong once, the first report from each side goes into the
-log raw — payload length, the first 32 bytes, and the first three counters read
-both ways — so the next person can settle it by looking instead of guessing. It is also the one report `dpdk_vmc` has no
+So it is not guessed. Both readings are taken and the plausible one kept: a
+packet counter needs a century at line rate to reach 2⁴⁸, and the same bytes
+cannot be small both ways round, so of the two readings at most one is a count
+and that is the one the device meant. The table says which way it was read, and
+so does the log. `counters_order` in `common/src/AppConfig.c` forces one
+(`VMC_COUNTERS_BIG` or `VMC_COUNTERS_LITTLE`) if a rig ever needs it;
+`VMC_COUNTERS_AUTO` is the default.
+
+Two more things guard it, both because a good report was seen being replaced by
+nonsense. Its length must be the struct's, give or take the AFDX sequence byte:
+without a message id the length is the whole of what says a frame on this VL is
+a counter report, and anything longer is a different message that used to get
+read as one — those are counted and named on the dashboard instead. And if
+neither reading is plausible the table says so in a line under the totals,
+rather than letting the numbers stand. The first report from each side also goes
+into the log whole — the payload length, all 192 bytes, and the largest counter
+each way round — so a byte order or a moved field can be settled from the run's
+own transcript rather than a screenshot. It is also the one report `dpdk_vmc` has no
 printer for — it is newer than that code — so that printer is ours, laid out
 like the ones beside it and marked `(ATE)` so nobody looks for it over there. It
 prints the four counters for each of the six ports, then the totals, because six

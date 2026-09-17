@@ -19,8 +19,9 @@
  *               arrives twice, for the end system and for the switch's embedded
  *               end system, told apart by its network type byte
  *   counters    its own VL,  REPORT_MSG - four counters for each of six PHY
- *               ports, with no header at all, so the VL id is the whole of
- *               what identifies it
+ *               ports, with no header at all, so the VL id and the payload's
+ *               length are the whole of what identifies it, and nothing in it
+ *               says which way round to read its sixty-fours
  *
  * Which VL is which, and which interface carries which side, are in
  * AppConfig.h - one table, so a different rig is one edit.
@@ -76,6 +77,8 @@ typedef struct {
     dtn_es_cbit_report_t         dtn_es_sw;   /**< network type 1 */
     dtn_sw_cbit_report_t         dtn_sw;
     REPORT_MSG                   counters;
+    /** Which way round the stored counters were read; see counters_order. */
+    bool                         counters_big_endian;
 } vmc_report_set_t;
 
 typedef struct {
@@ -86,6 +89,8 @@ typedef struct {
     uint64_t accepted;           /**< frames that became a report */
     uint64_t not_health;         /**< a VL that is not one of ours */
     uint64_t too_short;          /**< the right VL, not enough bytes for the report */
+    uint64_t wrong_size;         /**< the counter VL, a payload that is not a counter report */
+    size_t   last_wrong_size;
     uint64_t unknown_message;    /**< the right VL, a message id we do not know */
     uint64_t empty;              /**< a DTN report with nothing in it, as dpdk_vmc skips */
     uint64_t unknown_net_type;   /**< an end-system report that is neither kind */
@@ -127,7 +132,8 @@ bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
  * The one report dpdk_vmc has no printer for - it is newer than that code - so
  * this one is ours, laid out like the printers beside it.
  */
-void print_phy_counter_report(const REPORT_MSG *data, const char *device_name);
+void print_phy_counter_report(const REPORT_MSG *data, const char *device_name,
+                              bool big_endian);
 
 /** Redraw the dashboard in place. */
 void vmc_health_render(const vmc_health_t *health, uint64_t elapsed_s);

@@ -94,6 +94,18 @@ typedef struct {
  * rig, which is exactly why they are a table rather than constants scattered
  * through the decoder.
  */
+/**
+ * How to read the PHY counter report's sixty-fours.
+ *
+ * It arrived without a byte order, so this says which end to read from -
+ * or, by default, that the decoder should work it out from the numbers.
+ */
+typedef enum {
+    VMC_COUNTERS_AUTO = 0,   /**< keep whichever reading is plausible */
+    VMC_COUNTERS_BIG,        /**< always big-endian, like the other reports */
+    VMC_COUNTERS_LITTLE      /**< always little-endian, as a copied struct is */
+} vmc_counter_order_t;
+
 typedef struct {
     vmc_link_t links[APP_MAX_VMC_LINKS];
     uint8_t    link_count;
@@ -131,10 +143,16 @@ typedef struct {
      * This one arrived as a bare packed C struct with neither - which is what a
      * sender that copies its own memory onto the wire produces, and that is
      * host order, whichever the VMC's is. Reading it the wrong way round gives
-     * counts around 10^19 rather than something plausible, so the first report
-     * from each side is dumped to the log with both readings side by side.
+     * counts around 10^19 rather than something plausible.
+     *
+     * Rather than pick one and be wrong on a rig that changes, the default is
+     * VMC_COUNTERS_AUTO: both readings are taken and the plausible one is kept,
+     * per report. A packet counter needs a hundred years at line rate to reach
+     * 2^48, so of the two readings of the same bytes at most one can be small -
+     * and that is the one the device meant. Force it either way if a rig ever
+     * needs it; the choice is named on the dashboard and in the log either way.
      */
-    bool     counters_big_endian;
+    vmc_counter_order_t counters_order;
 } vmc_config_t;
 
 const vmc_config_t *app_config_vmc(void);

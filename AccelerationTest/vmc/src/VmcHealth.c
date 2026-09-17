@@ -212,36 +212,24 @@ static void parse_pbit(vmc_pbit_data_t *dst, const uint8_t *payload)
     dst->flcs_cpu_pbit = be16(dst->flcs_cpu_pbit);
 }
 
-/* Every counter is a big-endian uint64 and there is nothing else in the payload
- * - no header, no message id, no padding. The struct is packed, so the counters
- * are read and written a copy at a time rather than through a uint64_t pointer
- * the compiler is entitled to assume is aligned. */
 /* The counters are twenty-four uint64s and nothing else - no header, no message
- * id, no padding. Whether they need swapping is a setting rather than a
- * constant: see counters_big_endian in AppConfig.h. The struct is packed, so
- * they are read and written a copy at a time rather than through a uint64_t
- * pointer the compiler is entitled to assume is aligned. */
+ * id, no padding - so nothing inside the payload says which end to read them
+ * from. Every other VMC report is big-endian; this one arrived as a bare packed
+ * C struct, which is what a sender copying its own memory onto the wire
+ * produces, and that is host order, whichever the VMC's is.
+ *
+ * So both readings are taken and the plausible one kept. A packet counter needs
+ * a century at line rate to reach 2^48, while the same bytes read the wrong way
+ * round land far above it, so of the two readings at most one is small - and
+ * that is the one the device meant. counters_order in AppConfig.h forces one
+ * instead, if a rig ever needs it.
+ *
+ * The struct is packed, so the counters are written a copy at a time rather
+ * than through a uint64_t pointer the compiler is entitled to assume is
+ * aligned; the payload is not aligned to anything either, so both readings go
+ * byte by byte. */
 #define COUNTERS_PER_REPORT (sizeof(REPORT_MSG) / sizeof(uint64_t))
 
-static void parse_counters(REPORT_MSG *dst, const uint8_t *payload, bool big_endian)
-{
-    uint8_t *bytes = (uint8_t *)dst;
-
-    memcpy(dst, payload, sizeof *dst);
-    if (!big_endian)
-        return;                 /* already in host order */
-
-    for (size_t i = 0; i < COUNTERS_PER_REPORT; i++) {
-        uint64_t v;
-
-        memcpy(&v, bytes + i * sizeof v, sizeof v);
-        v = be64(v);
-        memcpy(bytes + i * sizeof v, &v, sizeof v);
-    }
-}
-
-/* Read one counter out of the payload each way round. The payload is not
- * aligned to anything, so both go byte by byte. */
 static uint64_t read_be64(const uint8_t *p)
 {
     uint64_t v = 0;
@@ -260,27 +248,70 @@ static uint64_t read_le64(const uint8_t *p)
     return v;
 }
 
-/* The first counter report from each side goes into the log raw, with the first
- * few counters read both ways beside it. The struct was handed over without a
- * byte order and reading it the wrong way round gives numbers around 10^19, so
- * one look at this settles which way is right - and leaves the evidence in the
- * run's log rather than in somebody's terminal scrollback. */
-static void log_first_counters(vmc_side_t side, const uint8_t *payload, size_t len)
+static uint64_t counters_max(const uint8_t *payload, bool big_endian)
 {
-    char hex[3 * 32 + 1];
-    size_t shown = len < 32 ? len : 32;
+    uint64_t max = 0;
 
-    for (size_t i = 0; i < shown; i++)
-        snprintf(hex + i * 3, 4, "%02x ", payload[i]);
-    hex[shown ? shown * 3 - 1 : 0] = '\0';
+    for (size_t i = 0; i < COUNTERS_PER_REPORT; i++) {
+        uint64_t v = big_endian ? read_be64(payload + i * 8)
+                                : read_le64(payload + i * 8);
+        if (v > max)
+            max = v;
+    }
+    return max;
+}
 
-    log_line("%s PHY counters, first report: %zu byte payload (the struct is %zu)",
-             vmc_side_name(side), len, sizeof(REPORT_MSG));
-    log_line("  first %zu bytes: %s", shown, hex);
-    for (int i = 0; i < 3 && (size_t)(i + 1) * 8 <= len; i++)
-        log_line("  counter %d: big-endian %llu, little-endian %llu", i,
-                 (unsigned long long)read_be64(payload + i * 8),
-                 (unsigned long long)read_le64(payload + i * 8));
+/* A tie means every counter reads the same both ways - all zeros, in practice,
+ * which is what an idle port sends - and then the order does not matter, so
+ * big-endian wins, as the rest of the VMC's traffic is big-endian. */
+static bool counters_are_big_endian(const uint8_t *payload, vmc_counter_order_t order)
+{
+    if (order == VMC_COUNTERS_BIG)
+        return true;
+    if (order == VMC_COUNTERS_LITTLE)
+        return false;
+    return counters_max(payload, true) <= counters_max(payload, false);
+}
+
+static void parse_counters(REPORT_MSG *dst, const uint8_t *payload, bool big_endian)
+{
+    uint8_t *bytes = (uint8_t *)dst;
+
+    for (size_t i = 0; i < COUNTERS_PER_REPORT; i++) {
+        uint64_t v = big_endian ? read_be64(payload + i * 8)
+                                : read_le64(payload + i * 8);
+        memcpy(bytes + i * sizeof v, &v, sizeof v);
+    }
+}
+
+/* The first counter report from each side goes into the log whole, byte for
+ * byte, with both readings of it named beside it. Twelve lines once per side is
+ * nothing, and it is the difference between settling a byte order from the
+ * program's own transcript and squinting at a screenshot of somebody else's
+ * hex pane. */
+static void log_first_counters(vmc_side_t side, const uint8_t *payload, size_t len,
+                               bool big_endian, vmc_counter_order_t order)
+{
+    size_t shown = len < sizeof(REPORT_MSG) ? len : sizeof(REPORT_MSG);
+
+    log_line("%s PHY counters, first report: %zu byte payload (the struct is %zu); "
+             "largest counter reads %llu big-endian, %llu little-endian; "
+             "taking it as %s (%s)",
+             vmc_side_name(side), len, sizeof(REPORT_MSG),
+             (unsigned long long)counters_max(payload, true),
+             (unsigned long long)counters_max(payload, false),
+             big_endian ? "big-endian" : "little-endian",
+             order == VMC_COUNTERS_AUTO ? "chosen by the numbers" : "set in AppConfig.h");
+
+    for (size_t off = 0; off < shown; off += 16) {
+        char hex[16 * 3 + 1];
+        size_t n = shown - off < 16 ? shown - off : 16;
+
+        for (size_t i = 0; i < n; i++)
+            snprintf(hex + i * 3, 4, "%02x ", payload[off + i]);
+        hex[n * 3 - 1] = '\0';
+        log_line("  %3zu: %s", off, hex);
+    }
 }
 
 /* dpdk_vmc drops a DTN report that is all zeros rather than storing it over a
@@ -523,13 +554,30 @@ bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
     } else if (vl_id == c->flcs_counters || vl_id == c->vs_counters) {
         check_side(health, side, vl_id == c->vs_counters ? VMC_VS : VMC_FLCS, vl_id);
 
+        /* This report is the whole payload and nothing else, so its length is
+         * the whole of what says it is one: there is no message id to check.
+         * Anything longer on this VL is a different message, not a counter
+         * report with something after it, and parsing its first 192 bytes as
+         * counters would quietly replace a good report with nonsense - so the
+         * size is required to match rather than merely to be enough. The one
+         * byte of slack is the AFDX sequence number, which rides outside the
+         * IP length and so is counted here. */
         if (payload_len < sizeof(REPORT_MSG)) {
             health->too_short++;
             return false;
         }
+        if (payload_len > sizeof(REPORT_MSG) + 1) {
+            health->wrong_size++;
+            health->last_wrong_size = payload_len;
+            return false;
+        }
+
+        bool big = counters_are_big_endian(payload, c->counters_order);
+
         if (health->side[side].seen[VMC_REPORT_COUNTERS].packets == 0)
-            log_first_counters(side, payload, payload_len);
-        parse_counters(&health->side[side].counters, payload, c->counters_big_endian);
+            log_first_counters(side, payload, payload_len, big, c->counters_order);
+        parse_counters(&health->side[side].counters, payload, big);
+        health->side[side].counters_big_endian = big;
         note(health, side, VMC_REPORT_COUNTERS);
         stored = true;
     } else if (vl_id == c->flcs_cbit || vl_id == c->vs_cbit) {
@@ -624,7 +672,8 @@ static bool drain_and_print_dtn_es_sw_slot(const vmc_report_set_t *set,
 /* The one report dpdk_vmc has no printer for - it is newer than that code - so
  * this one is ours. Laid out like the printers next to it so the dashboard
  * reads as one thing, and marked as ours so nobody looks for it over there. */
-void print_phy_counter_report(const REPORT_MSG *data, const char *device_name)
+void print_phy_counter_report(const REPORT_MSG *data, const char *device_name,
+                              bool big_endian)
 {
     if (!data) return;
 
@@ -633,6 +682,8 @@ void print_phy_counter_report(const REPORT_MSG *data, const char *device_name)
     printf("\n");
     printf("========================================================================================\n");
     printf("                        [%s] PHY PORT COUNTERS  (ATE)                                   \n", prefix);
+    printf("                        read %s-endian                                                   \n",
+           big_endian ? "big" : "little");
     printf("========================================================================================\n");
     printf(" PORT | TOTAL SENT           | TOTAL RECEIVED       | PRBS FAILED          | MISSED              \n");
     printf("------|----------------------|----------------------|----------------------|---------------------\n");
@@ -658,6 +709,22 @@ void print_phy_counter_report(const REPORT_MSG *data, const char *device_name)
     if (failed || missed)
         printf(" %llu PRBS failure(s) and %llu missed packet(s) across %d port(s)\n",
                failed, missed, PHY_PORT_NUMBER);
+
+    /* Neither reading was plausible, so the table above is not counts. A port
+     * would need a century at line rate to get here, and both ways round
+     * cannot be small, so what arrived is not the struct this reads - a
+     * different message on the VL, or a layout that has moved. The raw payload
+     * is in the log; say so rather than let the numbers stand. */
+    unsigned long long largest = 0;
+    for (int i = 0; i < PHY_PORT_NUMBER; i++) {
+        if (data->total_sended_package[i] > largest)   largest = data->total_sended_package[i];
+        if (data->total_received_package[i] > largest) largest = data->total_received_package[i];
+        if (data->prbs_failed_package[i] > largest)    largest = data->prbs_failed_package[i];
+        if (data->missed_package[i] > largest)         largest = data->missed_package[i];
+    }
+    if (largest > (1ull << 48))
+        printf(" these are not packet counts either way round - the payload is in "
+               "the log, first report of each side\n");
     printf("========================================================================================\n");
 }
 
@@ -665,7 +732,7 @@ static bool drain_and_print_counters_slot(const vmc_report_set_t *set, const cha
 {
     if (!set->seen[VMC_REPORT_COUNTERS].packets)
         return false;
-    print_phy_counter_report(&set->counters, device_name);
+    print_phy_counter_report(&set->counters, device_name, set->counters_big_endian);
     return true;
 }
 
@@ -778,6 +845,12 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
                "%u nor %u (last was %u)\n",
                (unsigned long long)h->unknown_net_type, h->config->net_type_es,
                h->config->net_type_sw_es, h->last_unknown_net_type);
+    if (h->wrong_size)
+        printf("[ATE] %llu frame(s) on the PHY counter VLs were not counter reports "
+               "(last was %zu bytes, a report is %zu) - they were left out rather "
+               "than read as counters\n",
+               (unsigned long long)h->wrong_size, h->last_wrong_size,
+               sizeof(REPORT_MSG));
 
     fflush(stdout);
     tick++;
@@ -922,12 +995,13 @@ void vmc_health_log_summary(const vmc_health_t *h)
 
     log_line("VMC health: %llu frames, %llu reports, %llu other VLs, %llu short, "
              "%llu unknown message, %llu empty, %llu on the wrong side, "
-             "%llu with an unknown network type",
+             "%llu with an unknown network type, %llu not a counter report",
              (unsigned long long)h->frames, (unsigned long long)h->accepted,
              (unsigned long long)h->not_health, (unsigned long long)h->too_short,
              (unsigned long long)h->unknown_message, (unsigned long long)h->empty,
              (unsigned long long)h->side_mismatch,
-             (unsigned long long)h->unknown_net_type);
+             (unsigned long long)h->unknown_net_type,
+             (unsigned long long)h->wrong_size);
     for (uint8_t l = 0; l < h->config->link_count; l++)
         log_line("  %s carries %s: %llu frame(s), %llu report(s)",
                  h->config->links[l].iface,
@@ -1032,6 +1106,8 @@ void vmc_health_log_summary(const vmc_health_t *h)
         if (set->seen[VMC_REPORT_COUNTERS].packets) {
             const REPORT_MSG *m = &set->counters;
 
+            log_line("    PHY port counters, read %s-endian",
+                     set->counters_big_endian ? "big" : "little");
             for (int i = 0; i < PHY_PORT_NUMBER; i++)
                 log_line("    PHY port %d: sent %llu, received %llu, "
                          "PRBS failed %llu, missed %llu", i,
