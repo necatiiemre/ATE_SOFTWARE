@@ -395,9 +395,19 @@ so they are kept and printed as two: `[VS ES]` and `[VS SW-ES]`, with the
 `Network Type` line inside each confirming which. A third value is neither, and
 is counted and named rather than filed as one of them.
 
-The PHY counter report is the odd one: unlike every other report it carries no
-`vmp_cmsw_header_t`, so the payload is the struct and nothing else and the VL id
-is the whole of what identifies it. It is also the one report `dpdk_vmc` has no
+The PHY counter report is the odd one twice over. Unlike every other report it
+carries no `vmp_cmsw_header_t`, so the payload is the struct and nothing else
+and the VL id is the whole of what identifies it — and it came with no byte
+order either. Every other VMC report is big-endian and says so; this one is a
+bare packed C struct, which is what a sender that copies its own memory onto the
+wire produces, and that is host order. It reads **little-endian**
+(`counters_big_endian` in `common/src/AppConfig.c`); reading it the other way
+round turns a count of ten million into 8×10¹⁸, which is how the mistake showed
+itself on the rig.
+
+Because that was got wrong once, the first report from each side goes into the
+log raw — payload length, the first 32 bytes, and the first three counters read
+both ways — so the next person can settle it by looking instead of guessing. It is also the one report `dpdk_vmc` has no
 printer for — it is newer than that code — so that printer is ours, laid out
 like the ones beside it and marked `(ATE)` so nobody looks for it over there. It
 prints the four counters for each of the six ports, then the totals, because six

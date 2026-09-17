@@ -216,18 +216,71 @@ static void parse_pbit(vmc_pbit_data_t *dst, const uint8_t *payload)
  * - no header, no message id, no padding. The struct is packed, so the counters
  * are read and written a copy at a time rather than through a uint64_t pointer
  * the compiler is entitled to assume is aligned. */
-static void parse_counters(REPORT_MSG *dst, const uint8_t *payload)
+/* The counters are twenty-four uint64s and nothing else - no header, no message
+ * id, no padding. Whether they need swapping is a setting rather than a
+ * constant: see counters_big_endian in AppConfig.h. The struct is packed, so
+ * they are read and written a copy at a time rather than through a uint64_t
+ * pointer the compiler is entitled to assume is aligned. */
+#define COUNTERS_PER_REPORT (sizeof(REPORT_MSG) / sizeof(uint64_t))
+
+static void parse_counters(REPORT_MSG *dst, const uint8_t *payload, bool big_endian)
 {
     uint8_t *bytes = (uint8_t *)dst;
 
     memcpy(dst, payload, sizeof *dst);
-    for (size_t i = 0; i < sizeof *dst / sizeof(uint64_t); i++) {
+    if (!big_endian)
+        return;                 /* already in host order */
+
+    for (size_t i = 0; i < COUNTERS_PER_REPORT; i++) {
         uint64_t v;
 
         memcpy(&v, bytes + i * sizeof v, sizeof v);
         v = be64(v);
         memcpy(bytes + i * sizeof v, &v, sizeof v);
     }
+}
+
+/* Read one counter out of the payload each way round. The payload is not
+ * aligned to anything, so both go byte by byte. */
+static uint64_t read_be64(const uint8_t *p)
+{
+    uint64_t v = 0;
+
+    for (int i = 0; i < 8; i++)
+        v = (v << 8) | p[i];
+    return v;
+}
+
+static uint64_t read_le64(const uint8_t *p)
+{
+    uint64_t v = 0;
+
+    for (int i = 7; i >= 0; i--)
+        v = (v << 8) | p[i];
+    return v;
+}
+
+/* The first counter report from each side goes into the log raw, with the first
+ * few counters read both ways beside it. The struct was handed over without a
+ * byte order and reading it the wrong way round gives numbers around 10^19, so
+ * one look at this settles which way is right - and leaves the evidence in the
+ * run's log rather than in somebody's terminal scrollback. */
+static void log_first_counters(vmc_side_t side, const uint8_t *payload, size_t len)
+{
+    char hex[3 * 32 + 1];
+    size_t shown = len < 32 ? len : 32;
+
+    for (size_t i = 0; i < shown; i++)
+        snprintf(hex + i * 3, 4, "%02x ", payload[i]);
+    hex[shown ? shown * 3 - 1 : 0] = '\0';
+
+    log_line("%s PHY counters, first report: %zu byte payload (the struct is %zu)",
+             vmc_side_name(side), len, sizeof(REPORT_MSG));
+    log_line("  first %zu bytes: %s", shown, hex);
+    for (int i = 0; i < 3 && (size_t)(i + 1) * 8 <= len; i++)
+        log_line("  counter %d: big-endian %llu, little-endian %llu", i,
+                 (unsigned long long)read_be64(payload + i * 8),
+                 (unsigned long long)read_le64(payload + i * 8));
 }
 
 /* dpdk_vmc drops a DTN report that is all zeros rather than storing it over a
@@ -474,7 +527,9 @@ bool vmc_health_ingest(vmc_health_t *health, uint8_t link,
             health->too_short++;
             return false;
         }
-        parse_counters(&health->side[side].counters, payload);
+        if (health->side[side].seen[VMC_REPORT_COUNTERS].packets == 0)
+            log_first_counters(side, payload, payload_len);
+        parse_counters(&health->side[side].counters, payload, c->counters_big_endian);
         note(health, side, VMC_REPORT_COUNTERS);
         stored = true;
     } else if (vl_id == c->flcs_cbit || vl_id == c->vs_cbit) {

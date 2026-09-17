@@ -80,6 +80,8 @@ static const vmc_config_t g_vmc = {
 
     .net_type_es        = 0,
     .net_type_sw_es     = 1,
+
+    .counters_big_endian = false,
 };
 
 const vmc_config_t *app_config_vmc(void)

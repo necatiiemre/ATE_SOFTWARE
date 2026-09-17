@@ -334,18 +334,29 @@ static void test_refusals(vmc_health_t *h, const vmc_config_t *c)
 /* The link decides the side. A report whose VL names the other side is filed by
  * its cable and the disagreement counted - that is what a swapped pair looks
  * like, and nothing else does. */
+static void put_le64(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
 /* The counter report has no header: the VL id is the whole of what says what it
- * is, so there is no message id to get wrong and nothing to guard with. */
+ * is, so there is no message id to get wrong and nothing to guard with. It also
+ * came with no byte order, so which way it is read is a setting - and the test
+ * writes whichever way the setting says, because the point is that the two
+ * agree, not that either is right. Reading it the wrong way round gives counts
+ * around 10^19, which is why the decoder dumps the first report both ways. */
 static void test_counters(vmc_health_t *h, const vmc_config_t *c)
 {
     size_t frame_len;
     uint8_t *p = frame_for(c->flcs_counters, sizeof(REPORT_MSG), &frame_len);
+    void (*put)(uint8_t *, uint64_t) = c->counters_big_endian ? put_be64 : put_le64;
 
     for (int i = 0; i < PHY_PORT_NUMBER; i++) {
-        put_be64(p + (0 * PHY_PORT_NUMBER + i) * 8, 100000ull + i);   /* sent */
-        put_be64(p + (1 * PHY_PORT_NUMBER + i) * 8, 200000ull + i);   /* received */
-        put_be64(p + (2 * PHY_PORT_NUMBER + i) * 8,      7ull + i);   /* PRBS failed */
-        put_be64(p + (3 * PHY_PORT_NUMBER + i) * 8,     11ull + i);   /* missed */
+        put(p + (0 * PHY_PORT_NUMBER + i) * 8, 100000ull + i);   /* sent */
+        put(p + (1 * PHY_PORT_NUMBER + i) * 8, 200000ull + i);   /* received */
+        put(p + (2 * PHY_PORT_NUMBER + i) * 8,      7ull + i);   /* PRBS failed */
+        put(p + (3 * PHY_PORT_NUMBER + i) * 8,     11ull + i);   /* missed */
     }
 
     check(vmc_health_ingest(h, LINK_FLCS, g_frame, frame_len),
@@ -357,7 +368,18 @@ static void test_counters(vmc_health_t *h, const vmc_config_t *c)
               m->total_received_package[i] == 200000ull + i &&
               m->prbs_failed_package[i] == 7ull + i &&
               m->missed_package[i] == 11ull + i,
-              "every counter of every port, swapped");
+              "every counter of every port, in the configured byte order");
+
+    /* And that the other way round is what produces the nonsense: a count of
+     * 100000 read the wrong way is over 10^18, not a plausible packet count. */
+    uint8_t other[8];
+    (c->counters_big_endian ? put_le64 : put_be64)(other, 100000ull);
+    uint64_t misread = 0;
+    for (int i = 0; i < 8; i++)
+        misread = c->counters_big_endian ? (misread << 8) | other[i]
+                                         : (misread << 8) | other[7 - i];
+    check(misread > 1000000000000000000ull,
+          "the wrong byte order gives an implausible count, as it did on the rig");
     check(h->side[VMC_VS].seen[VMC_REPORT_COUNTERS].packets == 0,
           "and nothing landed on the other side");
 

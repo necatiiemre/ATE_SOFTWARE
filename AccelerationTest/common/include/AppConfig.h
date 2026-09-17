@@ -123,6 +123,18 @@ typedef struct {
      * arrived last and loses the other one entirely. */
     uint8_t  net_type_es;             /**< the end system itself */
     uint8_t  net_type_sw_es;          /**< the switch's embedded end system */
+
+    /**
+     * Byte order of the PHY counter report.
+     *
+     * Every other VMC report is big-endian and carries a header that says so.
+     * This one arrived as a bare packed C struct with neither - which is what a
+     * sender that copies its own memory onto the wire produces, and that is
+     * host order, whichever the VMC's is. Reading it the wrong way round gives
+     * counts around 10^19 rather than something plausible, so the first report
+     * from each side is dumped to the log with both readings side by side.
+     */
+    bool     counters_big_endian;
 } vmc_config_t;
 
 const vmc_config_t *app_config_vmc(void);
