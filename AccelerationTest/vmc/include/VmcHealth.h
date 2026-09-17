@@ -59,6 +59,20 @@ typedef enum {
     VMC_REPORT_COUNT
 } vmc_report_t;
 
+/**
+ * How many different comm_status values one side's DTN SW report may be
+ * remembered under. Two arrive; four leaves room for a rig that does something
+ * else without the census quietly dropping what it saw.
+ */
+#define VMC_SW_COMM_STATUS_SLOTS 4
+
+/** One comm_status value seen on the DTN SW report, and what came with it. */
+typedef struct {
+    uint8_t  value;
+    uint64_t packets;      /**< how many arrived carrying it */
+    uint64_t with_data;    /**< how many of those had anything in the body */
+} vmc_comm_status_seen_t;
+
 /** How much of a given report has been seen, and when. */
 typedef struct {
     uint64_t packets;
@@ -77,6 +91,14 @@ typedef struct {
     dtn_es_cbit_report_t         dtn_es_sw;   /**< network type 1 */
     dtn_sw_cbit_report_t         dtn_sw;
     REPORT_MSG                   counters;
+
+    /** Every comm_status the DTN SW report arrived with, and how many of each
+     *  had a body that was not all zeros. This is what the filter is set
+     *  from, so it counts what arrived rather than what was kept. */
+    vmc_comm_status_seen_t       sw_comm_status[VMC_SW_COMM_STATUS_SLOTS];
+    uint8_t                      sw_comm_status_count;
+    uint64_t                     sw_filtered;   /**< left out by the filter */
+
     /** Which way round the stored counters were read; see counters_order. */
     bool                         counters_big_endian;
 } vmc_report_set_t;

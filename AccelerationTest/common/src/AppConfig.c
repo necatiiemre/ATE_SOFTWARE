@@ -81,6 +81,14 @@ static const vmc_config_t g_vmc = {
     .net_type_es        = 0,
     .net_type_sw_es     = 1,
 
+    /* Two DTN SW reports arrive at once per side and one of them is empty;
+     * comm_status is the only thing that tells them apart. 1 is the link that
+     * is talking. If a rig numbers them the other way round the dashboard
+     * says so - it lists every comm_status that arrived and how many of them
+     * carried data - and this is the one line to change. */
+    .sw_filter_by_comm_status = true,
+    .sw_comm_status_live      = 1,
+
     .counters_order     = VMC_COUNTERS_AUTO,
 };
 

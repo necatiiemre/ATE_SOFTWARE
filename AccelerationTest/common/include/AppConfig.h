@@ -137,6 +137,29 @@ typedef struct {
     uint8_t  net_type_sw_es;          /**< the switch's embedded end system */
 
     /**
+     * Which DTN switch CBIT report to keep when two arrive together.
+     *
+     * Both sides send two of these at once, on the same VL with the same
+     * message id, and one of them is empty - a report for a link that is not
+     * carrying anything. Nothing in the header separates them; comm_status
+     * does. So the filled one is the one whose comm_status is
+     * sw_comm_status_live, and the other is left out rather than printed over
+     * it.
+     *
+     * The value is here because it is a property of the rig, not of the
+     * decoder: change it and nothing else. The dashboard lists every
+     * comm_status that actually arrived on each side, with how many of them
+     * carried data, so the right value is read off a run rather than guessed -
+     * and if the filter keeps nothing at all it says so, loudly, instead of
+     * showing an empty panel.
+     *
+     * Set sw_filter_by_comm_status to false to go back to keeping whichever
+     * arrived last.
+     */
+    bool     sw_filter_by_comm_status;
+    uint8_t  sw_comm_status_live;
+
+    /**
      * Byte order of the PHY counter report.
      *
      * Every other VMC report is big-endian and carries a header that says so.

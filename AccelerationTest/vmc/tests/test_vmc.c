@@ -230,6 +230,7 @@ static void test_cbit_sorting(vmc_health_t *h, const vmc_config_t *c)
     /* DTN switch: status then eight ports. */
     p = frame_for(c->flcs_cbit, sizeof(dtn_sw_cbit_report_t), &frame_len);
     put_header(p, c->msg_dtn_sw, 1064, 4);
+    p[14] = c->sw_comm_status_live;                     /* the link that talks */
     put_be64(p + 15, 998110);                           /* tx total */
     put_be64(p + 15 + 8, 1002233);                      /* rx total */
     put_be16(p + 15 + 24, 0x2600);                      /* device id */
@@ -434,6 +435,65 @@ static void test_counters(vmc_health_t *h, const vmc_config_t *c)
     printf("[ OK ] PHY port counters\n");
 }
 
+/* Two DTN switch reports arrive at once on a side and one of them is for a link
+ * that is carrying nothing. Same VL, same message id, same length: comm_status
+ * is the only thing that separates them, so the empty one must not be able to
+ * land on top of the filled one - which is what it did, half the time, before
+ * the filter. The census has to show both, because that is what the value in
+ * AppConfig.c gets chosen from. */
+static void test_sw_comm_status(vmc_health_t *h, const vmc_config_t *c)
+{
+    size_t frame_len;
+    uint8_t *p;
+    uint8_t quiet = (uint8_t)(c->sw_comm_status_live + 1);
+
+    check(c->sw_filter_by_comm_status,
+          "the rig keeps only the DTN switch report whose link is talking");
+
+    /* The filled one, so there is something for the empty one to overwrite. */
+    p = frame_for(c->vs_cbit, sizeof(dtn_sw_cbit_report_t), &frame_len);
+    put_header(p, c->msg_dtn_sw, 1064, 4);
+    p[14] = c->sw_comm_status_live;
+    put_be64(p + 15, 4242);
+    check(vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "the report from the talking link is kept");
+
+    /* Its twin: a full-length report, a plausible header, and a body that is
+     * all zeros - and it arrives after, which is the case that used to lose
+     * the good one. */
+    uint64_t filtered_before = h->side[VMC_VS].sw_filtered;
+    uint64_t kept_before = h->side[VMC_VS].seen[VMC_REPORT_DTN_SW].packets;
+    p = frame_for(c->vs_cbit, sizeof(dtn_sw_cbit_report_t), &frame_len);
+    put_header(p, c->msg_dtn_sw, 1064, 5);
+    p[14] = quiet;
+    check(!vmc_health_ingest(h, LINK_VS, g_frame, frame_len),
+          "its empty twin is left out");
+    check(h->side[VMC_VS].sw_filtered == filtered_before + 1,
+          "and counted as left out rather than as an empty report");
+    check(h->side[VMC_VS].seen[VMC_REPORT_DTN_SW].packets == kept_before,
+          "so the panel still shows the report that had something in it");
+    check(h->side[VMC_VS].dtn_sw.dtn_sw_monitoring_st.status.A664_SW_TX_TOTAL_COUNT == 4242,
+          "field for field");
+
+    /* The census counts what arrived, not what was kept: both values, and how
+     * many of each had a body. Reading that off the dashboard is how the right
+     * value gets into AppConfig.c on a rig that numbers them the other way. */
+    const vmc_report_set_t *set = &h->side[VMC_VS];
+    const vmc_comm_status_seen_t *live = NULL, *idle = NULL;
+    for (uint8_t i = 0; i < set->sw_comm_status_count; i++) {
+        if (set->sw_comm_status[i].value == c->sw_comm_status_live)
+            live = &set->sw_comm_status[i];
+        else if (set->sw_comm_status[i].value == quiet)
+            idle = &set->sw_comm_status[i];
+    }
+    check(live && idle, "both comm_status values are remembered");
+    check(live && live->packets == 1 && live->with_data == 1,
+          "the kept one is counted as carrying data");
+    check(idle && idle->packets == 1 && idle->with_data == 0,
+          "and the other as carrying none");
+    printf("[ OK ] the empty DTN switch twin is told apart by comm_status\n");
+}
+
 static void test_side_comes_from_the_link(vmc_health_t *h, const vmc_config_t *c)
 {
     size_t frame_len;
@@ -502,6 +562,7 @@ int main(void)
     test_pbit(&health, c);
     test_cbit_sorting(&health, c);
     test_counters(&health, c);
+    test_sw_comm_status(&health, c);
     test_side_comes_from_the_link(&health, c);
     test_refusals(&health, c);
 

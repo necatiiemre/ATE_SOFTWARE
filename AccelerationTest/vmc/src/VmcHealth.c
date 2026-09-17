@@ -314,6 +314,31 @@ static void log_first_counters(vmc_side_t side, const uint8_t *payload, size_t l
     }
 }
 
+/* Remember a comm_status the DTN SW report arrived with. The census is what
+ * sw_comm_status_live is chosen from, so it records every value that came in,
+ * whether the filter went on to keep it or not, and how many of each carried
+ * anything - which is the whole of what makes one of the two the right one.
+ * Running out of slots is not worth a diagnostic of its own: two values arrive
+ * and there is room for four. */
+static void note_comm_status(vmc_report_set_t *set, uint8_t value, bool with_data)
+{
+    for (uint8_t i = 0; i < set->sw_comm_status_count; i++) {
+        if (set->sw_comm_status[i].value == value) {
+            set->sw_comm_status[i].packets++;
+            set->sw_comm_status[i].with_data += with_data ? 1 : 0;
+            return;
+        }
+    }
+    if (set->sw_comm_status_count == VMC_SW_COMM_STATUS_SLOTS)
+        return;
+
+    vmc_comm_status_seen_t *slot = &set->sw_comm_status[set->sw_comm_status_count++];
+
+    slot->value     = value;
+    slot->packets   = 1;
+    slot->with_data = with_data ? 1 : 0;
+}
+
 /* dpdk_vmc drops a DTN report that is all zeros rather than storing it over a
  * good one; the VMC sends those before the DTN has answered it. */
 static bool all_zero(const void *data, size_t len)
@@ -470,7 +495,26 @@ static bool ingest_cbit(vmc_health_t *health, vmc_side_t side,
             return false;
         }
         parse_dtn_sw(&tmp, payload);
-        if (all_zero(&tmp.dtn_sw_monitoring_st, sizeof tmp.dtn_sw_monitoring_st)) {
+
+        bool has_data = !all_zero(&tmp.dtn_sw_monitoring_st,
+                                  sizeof tmp.dtn_sw_monitoring_st);
+
+        /* Counted before it is judged, because the census is what the filter's
+         * value gets chosen from: it has to show the reports the filter throws
+         * away as much as the ones it keeps. */
+        note_comm_status(set, tmp.comm_status, has_data);
+
+        /* Two of these arrive at once on each side, and one of them is for a
+         * link that is not carrying anything. Same VL, same message id, same
+         * length - comm_status is the only thing that separates them, so
+         * without this the empty one lands last as often as not and prints
+         * over the report that had something in it. */
+        if (c->sw_filter_by_comm_status &&
+            tmp.comm_status != c->sw_comm_status_live) {
+            set->sw_filtered++;
+            return false;
+        }
+        if (!has_data) {
             health->empty++;
             return false;
         }
@@ -745,6 +789,49 @@ static bool drain_and_print_dtn_sw_slot(const vmc_report_set_t *set, const char 
     return true;
 }
 
+/* What the DTN SW filter saw, in one line per side. Two reports arrive on this
+ * VL at once and comm_status is the only thing that separates them, so the one
+ * thing anybody setting sw_comm_status_live needs is the list of values that
+ * actually turned up and which of them carried data. Printed rather than
+ * logged: it is set once, on the rig, while watching this. */
+static void sw_comm_status_line(const vmc_health_t *h, vmc_side_t side)
+{
+    const vmc_report_set_t *set = &h->side[side];
+    char seen[160];
+    size_t used = 0;
+
+    if (set->sw_comm_status_count == 0)
+        return;
+
+    seen[0] = '\0';
+    for (uint8_t i = 0; i < set->sw_comm_status_count && used < sizeof seen - 1; i++) {
+        int n = snprintf(seen + used, sizeof seen - used, "%s%u (%llu, %llu with data)",
+                         i ? ", " : "", set->sw_comm_status[i].value,
+                         (unsigned long long)set->sw_comm_status[i].packets,
+                         (unsigned long long)set->sw_comm_status[i].with_data);
+        if (n < 0)
+            break;
+        used += (size_t)n < sizeof seen - used ? (size_t)n : sizeof seen - used - 1;
+    }
+
+    if (!h->config->sw_filter_by_comm_status) {
+        printf("[ATE] %-4s DTN SW comm_status: %s - filter off, keeping whichever arrives last\n",
+               vmc_side_name(side), seen);
+        return;
+    }
+    printf("[ATE] %-4s DTN SW comm_status: %s - keeping %u, left out %llu\n",
+           vmc_side_name(side), seen, h->config->sw_comm_status_live,
+           (unsigned long long)set->sw_filtered);
+
+    /* The one way this setting fails is silently: a rig that numbers the two
+     * the other way round leaves the panel empty and nothing says why. */
+    if (set->seen[VMC_REPORT_DTN_SW].packets == 0 && set->sw_filtered)
+        printf("[ATE] %s DTN SW: every report was left out - none carried comm_status %u. "
+               "Set sw_comm_status_live in common/src/AppConfig.c to whichever value "
+               "above has data.\n",
+               vmc_side_name(side), h->config->sw_comm_status_live);
+}
+
 void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
 {
     static uint64_t tick = 0;
@@ -836,6 +923,8 @@ void vmc_health_render(const vmc_health_t *h, uint64_t elapsed_s)
                (unsigned long long)h->link[l].frames,
                (unsigned long long)h->link[l].accepted, last);
     }
+    for (int side = 0; side < VMC_SIDE_COUNT; side++)
+        sw_comm_status_line(h, (vmc_side_t)side);
     if (h->side_mismatch)
         printf("[ATE] %llu report(s) carried the other side's VL id (last was VL %u) - "
                "are the two cables the right way round?\n",
@@ -1008,6 +1097,23 @@ void vmc_health_log_summary(const vmc_health_t *h)
                  vmc_side_name((vmc_side_t)h->config->links[l].side),
                  (unsigned long long)h->link[l].frames,
                  (unsigned long long)h->link[l].accepted);
+    for (int side = 0; side < VMC_SIDE_COUNT; side++) {
+        const vmc_report_set_t *set = &h->side[side];
+
+        for (uint8_t i = 0; i < set->sw_comm_status_count; i++)
+            log_line("  %s DTN SW comm_status %u: %llu report(s), %llu with data%s",
+                     vmc_side_name((vmc_side_t)side), set->sw_comm_status[i].value,
+                     (unsigned long long)set->sw_comm_status[i].packets,
+                     (unsigned long long)set->sw_comm_status[i].with_data,
+                     h->config->sw_filter_by_comm_status &&
+                     set->sw_comm_status[i].value == h->config->sw_comm_status_live
+                         ? " (the one kept)" : "");
+        if (set->sw_filtered)
+            log_line("  %s left out %llu DTN SW report(s) that did not carry "
+                     "comm_status %u", vmc_side_name((vmc_side_t)side),
+                     (unsigned long long)set->sw_filtered,
+                     h->config->sw_comm_status_live);
+    }
     if (h->side_mismatch)
         log_line("  %llu report(s) carried the other side's VL id, last VL %u",
                  (unsigned long long)h->side_mismatch, h->last_mismatch_vl);

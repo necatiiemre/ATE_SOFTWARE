@@ -395,6 +395,36 @@ so they are kept and printed as two: `[VS ES]` and `[VS SW-ES]`, with the
 `Network Type` line inside each confirming which. A third value is neither, and
 is counted and named rather than filed as one of them.
 
+The DTN switch CBIT report arrives twice as well, but for a different reason:
+each side sends two of them at once and one is for a link that is carrying
+nothing. Same VL, same message id, same length — `comm_status` is the only thing
+that separates them, so whichever landed last won, and half the time that was
+the empty one. Now only the report whose `comm_status` matches
+`sw_comm_status_live` is kept; the other is counted and left out rather than
+printed over the one that had something in it.
+
+That value is a property of the rig, so it is one line in
+`common/src/AppConfig.c`:
+
+```c
+    .sw_filter_by_comm_status = true,
+    .sw_comm_status_live      = 1,
+```
+
+It is not guessed either. Every `comm_status` that actually arrives is counted
+per side, together with how many of them carried data, and the dashboard prints
+the census next to the value in use:
+
+```
+[ATE] FLCS DTN SW comm_status: 0 (18, 0 with data), 1 (18, 18 with data) - keeping 1, left out 18
+```
+
+So the right value is read off a run. If the filter ever keeps nothing at all —
+a rig that numbers the two the other way round — it says so instead of leaving
+an empty panel and no reason for it, and names the file to change. Setting
+`sw_filter_by_comm_status` to `false` goes back to keeping whichever arrived
+last.
+
 The PHY counter report is the odd one twice over. Unlike every other report it
 carries no `vmp_cmsw_header_t`, so the payload is the struct and nothing else
 and the VL id is the whole of what identifies it — and it came with no byte
