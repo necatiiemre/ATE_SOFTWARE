@@ -99,6 +99,9 @@ typedef struct {
 typedef struct {
     hm_item_kind_t kind;
     uint16_t       vl_id;
+    uint16_t       line;    // paketin geldiği DSM hattı (CMC port index).
+                            // RX worker'ın kuyruğundan gelir; DPM VL
+                            // sayaçlarını hat bazında ayırmak için.
     uint64_t       rx_timestamp_ns;
     union {
         Pcs_profile_stats   pcs;
@@ -124,7 +127,8 @@ typedef struct {
 //   len      : UDP payload uzunluğu (bayt)
 // Tür payload uzunluğuna göre belirlenir; bilinmeyen uzunluk → drop + sayaç.
 // ============================================================================
-void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len);
+void hm_handle_packet(uint16_t vl_id, uint16_t line,
+                      const uint8_t *payload, uint16_t len);
 
 // ============================================================================
 // Dashboard — main thread'den 1 Hz çağrılır. Ring'i drain eder, her item için
@@ -149,19 +153,37 @@ void print_pcs_profile_stats   (const Pcs_profile_stats   *data, uint16_t vl_id,
 void print_counters_dpm        (const COUNTERS_DPM        *data, uint16_t vl_id, unsigned packets);
 void print_counters_inter_dpm  (const COUNTERS_INTER_DPM  *data, uint16_t vl_id, unsigned packets);
 void print_counters_dsm        (const COUNTERS_DSM        *data, uint16_t vl_id, unsigned packets);
-void print_counters_dpm_vl     (const COUNTERS_DPM_VL     *data, uint16_t vl_id, unsigned packets);
+// DPM VL sayaçları artık HM dashboard'unda kendi tablosuyla basılmıyor;
+// canlı stats tablosunun altında DPM özeti, test sonu raporunda ise VL
+// kırılımı olarak gösteriliyor (bkz. dpm_vl_* erişimcileri).
 
 // ============================================================================
-// DPM VL kümülatif biriktirme + Inter-DPM paket kaybı — health_monitor_cmc.c.
-//   dpm_vl_accumulate : DPM VL paketi SANİYELİK (delta) değerler taşır;
-//                       dashboard her drained paket için çağırır, ilgili
-//                       DPM'in kümülatif toplamına ekler. Per-DPM tablo ve
-//                       loss hesabı bu kümülatif toplamlar üzerinden çalışır.
-//   print_dpm_vl_loss_table : komşu DPM'ler arası TX(sender) - RX(receiver)
-//                       kümülatif farkını (loss>0) basar.
+// DPM VL sayaçları — (DSM hattı × DPM × VL) biriktirme, health_monitor_cmc.c.
+//
+// Paket SANİYELİK (delta) değerler taşır, kümülatif değil; dashboard drain
+// ettiği her paket için accumulate çağırır ve değerler toplanır.
+//
+// Hat ayrımı paketin geldiği RX kuyruğundan gelir: aynı DPM her iki DSM
+// hattından da rapor gönderebildiği için ikisini aynı torbaya atmak, hangi
+// hatta sorun olduğunu göremez hale getirirdi.
 // ============================================================================
-void dpm_vl_accumulate(uint16_t vl_id, const COUNTERS_DPM_VL *data);
-void print_dpm_vl_loss_table(void);
+
+/** Bir DPM VL paketini ilgili (hat, blok) slotuna ekle. */
+void dpm_vl_accumulate(uint16_t line, uint16_t vl_id, const COUNTERS_DPM_VL *data);
+
+/** Tüm biriktiricileri sıfırla (warm-up → test geçişinde çağrılır). */
+void dpm_vl_reset(void);
+
+/** O (hat, blok) için hiç paket geldi mi. */
+bool dpm_vl_has_data(uint16_t line, uint16_t block);
+
+/** Tek bir VL'in kümülatif sayaçları. Aralık dışıysa ikisi de 0 döner. */
+void dpm_vl_get(uint16_t line, uint16_t block, uint16_t index,
+                uint64_t *cmc_rx, uint64_t *cmc_tx);
+
+/** Bir DPM bloğunun 104 VL'inin toplamı. */
+void dpm_vl_block_totals(uint16_t line, uint16_t block,
+                         uint64_t *cmc_rx, uint64_t *cmc_tx);
 void print_dtn_es_monitoring   (const tA664ESMonitoring   *data, uint16_t vl_id, unsigned packets);
 void print_dtn_sw_monitoring   (const tA664SWMonitoring   *data, uint16_t vl_id, unsigned packets);
 

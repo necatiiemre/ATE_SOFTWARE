@@ -79,27 +79,6 @@ static int temp_index(uint16_t vl_id)
 }
 
 // ============================================================================
-// DPM VL flow counters — DPM VL-ID'sine göre RX/TX base VL-IDX aralığı
-// ----------------------------------------------------------------------------
-// Her DPM 104 RX + 104 TX akış sayacı gönderir. Akış i için:
-//   RX VL-IDX = rx_base + i   (ingress, paketin DPM'e girdiği VL)
-//   TX VL-IDX = tx_base + i   (egress, DPM'in bir sonraki DPM'e gönderdiği VL)
-// Zincir mantığı: DPM-N'in TX base'i = DPM-(N+1)'in RX base'i.
-// true → bilinen DPM; false → base bilinmiyor (ham index gösterilir).
-// ============================================================================
-static bool dpm_vl_bases(uint16_t vl_id, uint16_t *rx_base, uint16_t *tx_base)
-{
-    switch (vl_id) {
-        case 2021: *rx_base = 10001; *tx_base = 10105; return true; // DPM-1
-        case 2042: *rx_base = 10105; *tx_base = 10209; return true; // DPM-2
-        case 2063: *rx_base = 10209; *tx_base = 10313; return true; // DPM-3
-        case 2084: *rx_base = 10313; *tx_base = 10417; return true; // DPM-4
-        case 2105: *rx_base = 10417; *tx_base = 10521; return true; // DPM-5
-        default:   *rx_base = 0;     *tx_base = 0;     return false;
-    }
-}
-
-// ============================================================================
 // Decode yardımcıları (her biri kendi static buffer'ında string döner;
 // aynı printf'te 2 kez kullanılabilir diye 2-slot ring)
 // ============================================================================
@@ -319,196 +298,104 @@ void print_counters_dsm(const COUNTERS_DSM *d, uint16_t vl_id, unsigned packets)
 #pragma GCC diagnostic pop
 
 // ============================================================================
-// DPM VL kümülatif sayaç biriktirici (accumulator)
+// DPM VL sayaçları — (DSM hattı × DPM bloğu × VL) kümülatif biriktirme
 // ----------------------------------------------------------------------------
-// ÖNEMLİ: Gelen paket KÜMÜLATİF DEĞİL — her paket o ~1 sn'lik pencerede
-// yapılan TX/RX'i (delta) taşır. Toplam TX/RX'i ve kümülatif kaybı
-// görebilmek için bu saniyelik değerleri kendi tarafımızda biriktiriyoruz.
-// Biriktirme dashboard thread'inde (tek tüketici) yapılır → kilit gerekmez.
-// Bir tick'te aynı DPM'den 2+ paket gelirse hepsi toplanmalı; bu yüzden
-// hm_print_dashboard drained item'ların TAMAMI üzerinde (dedup'tan önce)
-// dpm_vl_accumulate() çağırır.
+// Paket saniyelik delta taşır; her drain'de üstüne eklenir.
+//
+// Hat boyutu, paketin geldiği RX kuyruğundan geliyor. Aynı DPM her iki DSM
+// hattından da rapor gönderebiliyor; ikisini tek slota toplamak hangi hatta
+// sorun olduğunu göremez hale getirirdi.
+//
+// Blok eşlemesi Config.h'deki CMC_DPM_BLOCKS_INIT üzerinden: HM VL 2021 →
+// DPM-1 → blok 0, ... 2105 → DPM-5 → blok 4. VL index i'nin hangi VL-ID'ye
+// denk geldiği de oradan okunur (tx_vl_start = CMC RX, rx_vl_start = CMC TX).
+// Böylece bu tablo, eski zincir topolojisini tarif eden sabitler yerine yeni
+// VL haritasıyla birlikte hareket eder.
 // ============================================================================
+_Static_assert(DPM_VL_PORT_COUNT == CMC_VLS_PER_DPM,
+               "DPM VL packet entry count must match the VLs per DPM block");
+
+static const struct cmc_dpm_block g_dpm_blocks[CMC_DPM_BLOCK_COUNT] =
+    CMC_DPM_BLOCKS_INIT;
+
 typedef struct {
-    uint64_t rx_total[DPM_VL_PORT_COUNT];   // kümülatif RX (akış i = base+i)
-    uint64_t tx_total[DPM_VL_PORT_COUNT];   // kümülatif TX
-    bool     valid;                         // en az bir paket biriktirildi mi
+    uint64_t cmc_rx[DPM_VL_PORT_COUNT];   // DPM ingress  = ATE → CMC
+    uint64_t cmc_tx[DPM_VL_PORT_COUNT];   // DPM egress   = CMC → ATE
+    bool     valid;                       // en az bir paket geldi mi
 } dpm_vl_accum_t;
 
-static dpm_vl_accum_t g_dpm_accum[5];       // index 0..4 → DPM-1..5
+static dpm_vl_accum_t g_dpm_accum[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
 
-static int dpm_index(uint16_t vl_id)
+// HM VL-ID → DPM blok indeksi. Bilinmeyen VL için -1.
+static int dpm_block_of_hm_vl(uint16_t vl_id)
 {
-    switch (vl_id) {
-        case 2021: return 0;
-        case 2042: return 1;
-        case 2063: return 2;
-        case 2084: return 3;
-        case 2105: return 4;
-        default:   return -1;
+    for (int b = 0; b < CMC_DPM_BLOCK_COUNT; b++) {
+        if (g_dpm_blocks[b].hm_vl_id == vl_id) {
+            return b;
+        }
     }
+    return -1;
 }
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-// Bir paketin saniyelik TX/RX değerlerini ilgili DPM'in kümülatif toplamına ekler.
-void dpm_vl_accumulate(uint16_t vl_id, const COUNTERS_DPM_VL *d)
+void dpm_vl_accumulate(uint16_t line, uint16_t vl_id, const COUNTERS_DPM_VL *d)
 {
-    int idx = dpm_index(vl_id);
-    if (idx < 0 || d == NULL) return;
+    if (d == NULL || line >= CMC_PORT_COUNT) {
+        return;
+    }
+    int b = dpm_block_of_hm_vl(vl_id);
+    if (b < 0) {
+        return;
+    }
+
+    dpm_vl_accum_t *a = &g_dpm_accum[line][b];
     for (unsigned i = 0; i < (unsigned)DPM_VL_PORT_COUNT; i++) {
-        g_dpm_accum[idx].rx_total[i] += d->rx_count[i];
-        g_dpm_accum[idx].tx_total[i] += d->tx_count[i];
+        a->cmc_rx[i] += d->vl[i].rx_count;
+        a->cmc_tx[i] += d->vl[i].tx_count;
     }
-    g_dpm_accum[idx].valid = true;
+    a->valid = true;
 }
-#pragma GCC diagnostic pop
 
-// ============================================================================
-// COUNTERS_DPM_VL — per-VL RX/TX akış sayaçları (kümülatif gösterim)
-// ----------------------------------------------------------------------------
-// 104 RX + 104 TX akış; tablo 2'li sütun (52 fiziksel satır) halinde basılır,
-// böylece tüm 104 akış tek tabloda görünür. Sol sütun akış 0..51, sağ sütun
-// akış 52..103. Her hücre: RX VL-IDX, RX count, TX VL-IDX, TX count.
-// ============================================================================
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-void print_counters_dpm_vl(const COUNTERS_DPM_VL *d, uint16_t vl_id, unsigned packets)
+void dpm_vl_reset(void)
 {
-    if (d == NULL) return;
-    banner(vl_id, "DPM VL FLOW COUNTERS (RX/TX, kumulatif)", packets);
-
-    uint16_t rx_base = 0, tx_base = 0;
-    bool known = dpm_vl_bases(vl_id, &rx_base, &tx_base);
-    int  idx   = dpm_index(vl_id);
-
-    // Gösterilecek değerler KÜMÜLATİF toplamdır (paket saniyelik gelir,
-    // biriktirici tutar). Bilinmeyen VL için biriktirici slotu yoksa son
-    // paketin ham saniyelik değerleri gösterilir.
-    uint64_t rx[DPM_VL_PORT_COUNT], tx[DPM_VL_PORT_COUNT];
-    if (idx >= 0) {
-        for (unsigned i = 0; i < (unsigned)DPM_VL_PORT_COUNT; i++) {
-            rx[i] = g_dpm_accum[idx].rx_total[i];
-            tx[i] = g_dpm_accum[idx].tx_total[i];
-        }
-    } else {
-        for (unsigned i = 0; i < (unsigned)DPM_VL_PORT_COUNT; i++) {
-            rx[i] = d->rx_count[i];
-            tx[i] = d->tx_count[i];
-        }
-    }
-
-    char info[128];
-    if (known) {
-        snprintf(info, sizeof(info),
-                 "RX VL %u..%u (ingress)  TX VL %u..%u (egress)  -  kumulatif toplam (boot'tan beri)",
-                 rx_base, (unsigned)(rx_base + DPM_VL_PORT_COUNT - 1),
-                 tx_base, (unsigned)(tx_base + DPM_VL_PORT_COUNT - 1));
-    } else {
-        snprintf(info, sizeof(info),
-                 "VL base araligi bilinmiyor - ham saniyelik deger, ham akis index'i (0..%u)",
-                 (unsigned)(DPM_VL_PORT_COUNT - 1));
-    }
-    printf("║  " C_DIM "%-107s" C_RESET " ║\n", info);
-    hr();
-
-    // İki yarım sütunlu başlık (her yarı: RXvl, RX count, TXvl, TX count)
-    printf("║  " C_BOLD "%-6s %-19s %-6s %-19s" C_RESET " │ "
-           C_BOLD "%-6s %-19s %-6s %-19s" C_RESET " ║\n",
-           "RXvl", "RX total", "TXvl", "TX total",
-           "RXvl", "RX total", "TXvl", "TX total");
-    hr();
-
-    const unsigned half = DPM_VL_PORT_COUNT / 2; // 52
-    for (unsigned r = 0; r < half; r++) {
-        unsigned li = r;          // sol sütundaki akış
-        unsigned ri = r + half;   // sağ sütundaki akış
-        printf("║  %-6u %-19" PRIu64 " %-6u %-19" PRIu64 " │ %-6u %-19" PRIu64 " %-6u %-19" PRIu64 " ║\n",
-               (unsigned)(rx_base + li), rx[li], (unsigned)(tx_base + li), tx[li],
-               (unsigned)(rx_base + ri), rx[ri], (unsigned)(tx_base + ri), tx[ri]);
-    }
-
-    table_footer();
+    memset(g_dpm_accum, 0, sizeof(g_dpm_accum));
 }
-#pragma GCC diagnostic pop
 
-// ============================================================================
-// Inter-DPM VL paket kaybı (cross-DPM)
-// ----------------------------------------------------------------------------
-// Komşu DPM'ler zincir halinde: DPM-N'in TX VL aralığı = DPM-(N+1)'in RX VL
-// aralığı ve index hizalı (DPM-N.tx ↔ DPM-(N+1).rx, aynı VL-IDX).
-// Kümülatif kayıp = sender.tx_total[i] - receiver.rx_total[i] (biriktirilmiş
-// toplamlar üzerinden); yalnızca loss>0 (gerçek kayıp) satırları gösterilir.
-//   Eşleşmeyen uçlar (loss tablosuna girmez):
-//     DPM-1.RX (10001-10104) — gönderen yok
-//     DPM-5.TX (10521-10624) — alıcı yok
-// ============================================================================
-void print_dpm_vl_loss_table(void)
+bool dpm_vl_has_data(uint16_t line, uint16_t block)
 {
-    // Hiç DPM VL paketi biriktirilmediyse tabloyu basma.
-    bool any_valid = false;
-    for (int k = 0; k < 5; k++) any_valid |= g_dpm_accum[k].valid;
-    if (!any_valid) return;
+    if (line >= CMC_PORT_COUNT || block >= CMC_DPM_BLOCK_COUNT) {
+        return false;
+    }
+    return g_dpm_accum[line][block].valid;
+}
 
-    static const struct {
-        uint16_t    sender_vl;   // TX tarafı (DPM-N)
-        uint16_t    recv_vl;     // RX tarafı (DPM-N+1)
-        const char *label;
-    } links[4] = {
-        {2021, 2042, "DPM-1->DPM-2"},
-        {2042, 2063, "DPM-2->DPM-3"},
-        {2063, 2084, "DPM-3->DPM-4"},
-        {2084, 2105, "DPM-4->DPM-5"},
-    };
+void dpm_vl_get(uint16_t line, uint16_t block, uint16_t index,
+                uint64_t *cmc_rx, uint64_t *cmc_tx)
+{
+    uint64_t rx = 0, tx = 0;
 
-    banner_plain("INTER-DPM VL PACKET LOSS  (loss = TX_sender - RX_receiver, sadece loss>0)");
+    if (line < CMC_PORT_COUNT && block < CMC_DPM_BLOCK_COUNT &&
+        index < DPM_VL_PORT_COUNT) {
+        rx = g_dpm_accum[line][block].cmc_rx[index];
+        tx = g_dpm_accum[line][block].cmc_tx[index];
+    }
+    if (cmc_rx) *cmc_rx = rx;
+    if (cmc_tx) *cmc_tx = tx;
+}
 
-    printf("║  " C_BOLD "%-16s │ %-10s │ %-24s │ %-24s │ %-22s" C_RESET " ║\n",
-           "Link", "VL-IDX", "TX (sender)", "RX (receiver)", "Loss");
-    hr();
+void dpm_vl_block_totals(uint16_t line, uint16_t block,
+                         uint64_t *cmc_rx, uint64_t *cmc_tx)
+{
+    uint64_t rx = 0, tx = 0;
 
-    uint64_t grand_loss = 0;
-    unsigned lossy_rows = 0;
-
-    for (int L = 0; L < 4; L++) {
-        int si = dpm_index(links[L].sender_vl);
-        int ri = dpm_index(links[L].recv_vl);
-        if (si < 0 || ri < 0) continue;
-
-        if (!g_dpm_accum[si].valid || !g_dpm_accum[ri].valid) {
-            char note[128];
-            snprintf(note, sizeof(note), "%s : veri bekleniyor (paket gelmedi)", links[L].label);
-            printf("║  " C_DIM "%-107s" C_RESET " ║\n", note);
-            continue;
-        }
-
-        // Link'in paylaşılan VL-IDX base'i = sender'ın TX base'i.
-        uint16_t rx_base = 0, tx_base = 0;
-        dpm_vl_bases(links[L].sender_vl, &rx_base, &tx_base);
-
+    if (line < CMC_PORT_COUNT && block < CMC_DPM_BLOCK_COUNT) {
+        const dpm_vl_accum_t *a = &g_dpm_accum[line][block];
         for (unsigned i = 0; i < (unsigned)DPM_VL_PORT_COUNT; i++) {
-            uint64_t tx = g_dpm_accum[si].tx_total[i];   // kümülatif gönderilen
-            uint64_t rx = g_dpm_accum[ri].rx_total[i];   // kümülatif alınan
-            if (tx <= rx) continue;                       // sadece loss>0
-            uint64_t loss = tx - rx;
-            grand_loss += loss;
-            lossy_rows++;
-            printf("║  %-16s │ %-10u │ %-24" PRIu64 " │ %-24" PRIu64 " │ " C_RED "%-22" PRIu64 C_RESET " ║\n",
-                   links[L].label, (unsigned)(tx_base + i), tx, rx, loss);
+            rx += a->cmc_rx[i];
+            tx += a->cmc_tx[i];
         }
     }
-
-    if (lossy_rows == 0) {
-        printf("║  " C_GREEN "%-107s" C_RESET " ║\n",
-               "Tum linkler dengeli — paket kaybi yok.");
-    } else {
-        char sum[128];
-        snprintf(sum, sizeof(sum), "TOPLAM: %u VL'de kayip, toplam %" PRIu64 " paket kayboldu.",
-                 lossy_rows, grand_loss);
-        printf("║  " C_BOLD C_RED "%-107s" C_RESET " ║\n", sum);
-    }
-
-    table_footer();
+    if (cmc_rx) *cmc_rx = rx;
+    if (cmc_tx) *cmc_tx = tx;
 }
 
 // ============================================================================

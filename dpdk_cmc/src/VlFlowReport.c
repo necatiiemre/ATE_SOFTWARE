@@ -9,6 +9,7 @@
 #include "Port.h"
 #include "TxRxManager.h"
 #include "AteMode.h"
+#include "health_monitor.h"   // dpm_vl_* — the CMC's own per-VL counters
 
 #if STATS_MODE_CMC
 
@@ -196,6 +197,82 @@ static void vlflow_write_totals(FILE *f, const char *label,
             t->vls_with_loss, vl_count, t->vls_never_seen);
 }
 
+/*
+ * The CMC's own per-VL tally, printed as its own section after ours.
+ *
+ * Each DPM reports how many packets it saw on each of its VLs; we add up the
+ * deltas as they arrive. Side by side with the table above, the useful number
+ * is the difference: our count is what reached the server, the DPM's is what
+ * it saw internally, so a gap places the loss inside the CMC rather than on
+ * the wire.
+ */
+static void vlflow_write_dpm_tables(FILE *f)
+{
+    fprintf(f, "\n\n");
+    fprintf(f, "================================================================================\n");
+    fprintf(f, " DPM COUNTERS REPORTED BY THE CMC (per VL-ID)\n");
+    fprintf(f, "================================================================================\n");
+    fprintf(f, " Each DPM reports its own packet tally per VL over the health-monitor VLs.\n");
+    fprintf(f, " Accumulated here from the per-interval values it sends; not read from our\n");
+    fprintf(f, " own counters at all, so the two columns can be compared against the table\n");
+    fprintf(f, " above to tell wire loss from loss inside the CMC.\n");
+    fprintf(f, "   CMC RX = the DPM received it (ATE -> CMC)\n");
+    fprintf(f, "   CMC TX = the DPM sent it back (CMC -> ATE)\n");
+    fprintf(f, "\n");
+
+    for (uint16_t cmc = 0; cmc < CMC_PORT_COUNT; cmc++) {
+        fprintf(f, "\n");
+        fprintf(f, "################################################################################\n");
+        fprintf(f, "###  %s  — DPM counters\n", cmc_port_labels[cmc]);
+        fprintf(f, "################################################################################\n");
+
+        for (uint16_t b = 0; b < CMC_DPM_BLOCK_COUNT; b++) {
+            const struct cmc_dpm_block *blk = &g_dpm_blocks[b];
+
+            fprintf(f, "\n  === %s / %s (HM VL %u) : CMC RX %u..%u -> CMC TX %u..%u ===\n",
+                    cmc_port_labels[cmc], blk->label, blk->hm_vl_id,
+                    blk->tx_vl_start, blk->tx_vl_start + blk->vl_count - 1,
+                    blk->rx_vl_start, blk->rx_vl_start + blk->vl_count - 1);
+
+            if (!dpm_vl_has_data(cmc, b)) {
+                fprintf(f, "  (no counter packet was received from this DPM on this line)\n");
+                continue;
+            }
+
+            fputs("  +--------+--------+--------------------+--------------------+--------------------+\n", f);
+            fprintf(f, "  | %-6s | %-6s | %18s | %18s | %18s |\n",
+                    "CMC RX", "CMC TX", "CMC RX pkts", "CMC TX pkts", "RX - TX");
+            fputs("  +--------+--------+--------------------+--------------------+--------------------+\n", f);
+
+            uint64_t t_rx = 0, t_tx = 0;
+            for (uint16_t i = 0; i < blk->vl_count; i++) {
+                uint64_t rx = 0, tx = 0;
+                dpm_vl_get(cmc, b, i, &rx, &tx);
+                t_rx += rx;
+                t_tx += tx;
+
+                char diff[24];
+                if (rx >= tx) snprintf(diff, sizeof(diff), "%" PRIu64, rx - tx);
+                else          snprintf(diff, sizeof(diff), "-%" PRIu64, tx - rx);
+
+                fprintf(f, "  | %6u | %6u | %18" PRIu64 " | %18" PRIu64 " | %18s |\n",
+                        (unsigned)(blk->tx_vl_start + i),
+                        (unsigned)(blk->rx_vl_start + i), rx, tx, diff);
+            }
+
+            fputs("  +--------+--------+--------------------+--------------------+--------------------+\n", f);
+            {
+                char diff[24];
+                if (t_rx >= t_tx) snprintf(diff, sizeof(diff), "%" PRIu64, t_rx - t_tx);
+                else              snprintf(diff, sizeof(diff), "-%" PRIu64, t_tx - t_rx);
+                fprintf(f, "  %s %s TOTAL: CMC RX=%" PRIu64 "  CMC TX=%" PRIu64
+                           "  RX-TX=%s\n",
+                        cmc_port_labels[cmc], blk->label, t_rx, t_tx, diff);
+            }
+        }
+    }
+}
+
 int vlflow_write_reports(const char *log_path, const char *csv_path,
                          uint32_t test_seconds)
 {
@@ -228,7 +305,8 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
          * cmc_rx_* / cmc_tx_* -- the values did not change, the labels did. */
         fprintf(fcsv, "line,dpm,hm_vl,cmc_rx_vl,cmc_tx_vl,cmc_rx_pkts,cmc_tx_pkts,"
                       "loss_rxtx,loss_pct,loss_seq,first_seq,last_seq,"
-                      "max_seq,expected_seq,seen\n");
+                      "max_seq,expected_seq,seen,"
+                      "dpm_cmc_rx_pkts,dpm_cmc_tx_pkts\n");
     }
 
     struct vl_totals grand = {0};
@@ -265,18 +343,22 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
                 struct vl_row row;
                 vlflow_collect(cmc, (uint16_t)(blk->tx_vl_start + i), &row);
 
+                uint64_t dpm_rx = 0, dpm_tx = 0;
+                dpm_vl_get(cmc, b, i, &dpm_rx, &dpm_tx);
+
                 if (flog) vlflow_write_row(flog, &row);
                 if (fcsv) {
                     fprintf(fcsv,
                             "%s,%s,%u,%u,%u,%" PRIu64 ",%" PRIu64 ",%" PRIu64
                             ",%.6f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
-                            ",%" PRIu64 ",%d\n",
+                            ",%" PRIu64 ",%d,%" PRIu64 ",%" PRIu64 "\n",
                             line, blk->label, blk->hm_vl_id,
                             row.cmc_rx_vl, row.cmc_tx_vl,
                             row.cmc_rx_pkts, row.cmc_tx_pkts, row.loss_rxtx,
                             loss_pct(row.loss_rxtx, row.cmc_rx_pkts), row.loss_seq,
                             row.first_seq, row.last_seq, row.max_seq,
-                            row.expected_seq, row.seen);
+                            row.expected_seq, row.seen,
+                            dpm_rx, dpm_tx);
                 }
 
                 vlflow_accumulate(&blk_tot, &row);
@@ -308,6 +390,8 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
         fprintf(flog, "================================================================================\n");
         vlflow_write_totals(flog, "GRAND TOTAL", &grand, grand_vls);
         fprintf(flog, "================================================================================\n");
+
+        vlflow_write_dpm_tables(flog);
         fclose(flog);
         printf("VLFLOW: VL-to-VL table written to %s\n", log_path);
     }

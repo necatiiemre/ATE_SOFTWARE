@@ -212,8 +212,8 @@ static void swap_counters_inter_dpm(COUNTERS_INTER_DPM *c)
 static void swap_counters_dpm_vl(COUNTERS_DPM_VL *c)
 {
     for (int i = 0; i < DPM_VL_PORT_COUNT; i++) {
-        c->rx_count[i] = be32(c->rx_count[i]);
-        c->tx_count[i] = be32(c->tx_count[i]);
+        c->vl[i].rx_count = be32(c->vl[i].rx_count);
+        c->vl[i].tx_count = be32(c->vl[i].tx_count);
     }
 }
 
@@ -537,7 +537,8 @@ static size_t hm_ring_drain(hm_queue_item_t *out, size_t max)
 // Tür ayrımı toplam payload uzunluğuna göre — uzunluk sabitleri yukarıda.
 // SW_MON 2344 B olduğu için iki parça halinde gelir (1401 + 945).
 // ============================================================================
-void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len)
+void hm_handle_packet(uint16_t vl_id, uint16_t line,
+                      const uint8_t *payload, uint16_t len)
 {
     // 1. Genel Sayaç ve Güvenlik Kontrolleri
     __atomic_add_fetch(&g_hm_rx_total, 1, __ATOMIC_RELAXED);
@@ -555,6 +556,7 @@ void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len)
         hm_queue_item_t item;
         memset(&item, 0, sizeof(item));
         item.vl_id = vl_id;
+        item.line  = line;
         item.rx_timestamp_ns = now_ns();
         if (vl50_capture_ipmc(&item, len, payload))
             hm_ring_push(&item);
@@ -568,6 +570,7 @@ void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len)
     hm_queue_item_t item;
     memset(&item, 0, sizeof(item));
     item.vl_id = vl_id;
+    item.line  = line;
     item.rx_timestamp_ns = now_ns();
 
     // 2. SW_MON Parça Birleştirme (Reassembly) Mantığı
@@ -696,9 +699,8 @@ static void hm_print_item(const hm_queue_item_t *it, unsigned packets)
             print_dtn_sw_monitoring(&it->payload.sw_mon, it->vl_id, packets);
             break;
         case HM_ITEM_COUNTERS_DPM_VL:
-            // Biriktirme çağıran tarafta tüm item'lar için yapılır; burada
-            // sadece kümülatif toplam yazdırılır.
-            print_counters_dpm_vl(&it->payload.counters_dpm_vl, it->vl_id, packets);
+            // Accumulated at drain time and reported by the stats tables and
+            // the end-of-run VL report, so nothing to print here.
             break;
         case HM_ITEM_CLCMSW:
             print_clcmsw(&it->payload.clcmsw, it->vl_id, packets);
@@ -779,7 +781,6 @@ void hm_print_last_snapshot(void)
         hm_print_item(&g_hm_latest[order[j]], 1);
     }
 
-    print_dpm_vl_loss_table();
     print_temperature_summary();
     print_ipmc_temperatures();
     fflush(stdout);
@@ -798,7 +799,7 @@ void hm_print_dashboard(void)
     // sayardık (dedup yalnızca en son paketi yazdırmak için).
     for (size_t i = 0; i < n; i++) {
         if (drain_buf[i].kind == HM_ITEM_COUNTERS_DPM_VL) {
-            dpm_vl_accumulate(drain_buf[i].vl_id,
+            dpm_vl_accumulate(drain_buf[i].line, drain_buf[i].vl_id,
                               &drain_buf[i].payload.counters_dpm_vl);
         } else if (drain_buf[i].kind == HM_ITEM_IPMC) {
             // IPMC board temp'leri device_id bazında burada (tek thread) sakla.
@@ -867,9 +868,6 @@ void hm_print_dashboard(void)
         hm_latest_store(it);
         hm_print_item(it, dedup[j].count);
     }
-
-    // Per-DPM tablolar basıldı; komşu DPM'ler arası VL paket kaybı özeti.
-    print_dpm_vl_loss_table();
 
     // Tüm kaynaklardaki sıcaklıkları en altta tek tabloda topla.
     print_temperature_summary();

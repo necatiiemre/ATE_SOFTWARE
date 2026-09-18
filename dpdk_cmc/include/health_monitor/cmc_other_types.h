@@ -44,19 +44,36 @@ typedef struct __attribute__((packed))
 // ============================================================================
 // DPM VL bazlı RX/TX akış sayaçları (per-VL flow counters)
 // ----------------------------------------------------------------------------
-// DPM-1..5 her biri 104 RX + 104 TX VL akışının paket sayacını tek pakette
-// gönderir. Her sayaç 4 byte (uint32), wire'da big-endian. Layout:
-//   [   0 .. 415 ] rx_count[104]  → RX VL-IDX base+i
-//   [ 416 .. 831 ] tx_count[104]  → TX VL-IDX base+i
-// Toplam 832 byte + 1 byte sequence trailer = 833 byte UDP payload.
-// RX[i] ile TX[i] aynı mantıksal akışın giriş/çıkış VL-IDX'leridir; base
-// VL-IDX'ler DPM'e göre değişir (bkz. health_monitor_cmc.c → dpm_vl_bases()).
+// DPM-1..5 her biri kendi 104 VL akışının paket sayacını tek pakette gönderir.
+// Wire'da VL BAŞINA bir {rx, tx} çifti var — iki ayrı dizi değil, araya girmiş
+// çiftler:
+//   [  0 ..  7 ] VL index 0: rx_count, tx_count
+//   [  8 .. 15 ] VL index 1: rx_count, tx_count
+//   ...
+//   [824 ..831 ] VL index 103
+// Her sayaç 4 byte (uint32), big-endian. Toplam 832 byte + 1 byte sequence
+// trailer = 833 byte UDP payload.
+//
+// NOT: bu diziliş, daha önce varsayılan [rx×104][tx×104] ayrık dizilişin
+// yerini aldı. İki biçim de 832 byte olduğu için uzunluk kontrolü aradaki
+// farkı yakalamaz — sayılar yanlış offsetten okunur ve sessizce saçmalar.
+// Değerler beklenmedik görünüyorsa ilk şüphelenilecek yer burasıdır.
+//
+// rx_count = DPM'in o VL'de ALDIĞI  paket  → CMC RX (ATE → CMC yönü)
+// tx_count = DPM'in o VL'de GÖNDERDİĞİ    → CMC TX (CMC → ATE yönü)
+// index i'nin hangi VL-ID'ye denk geldiği DPM'in bloğuna bağlı; eşleme
+// Config.h'deki CMC_DPM_BLOCKS_INIT tablosunda.
 #define DPM_VL_PORT_COUNT 104
 
 typedef struct __attribute__((packed))
 {
-	uint32_t rx_count[DPM_VL_PORT_COUNT];   // 416 B — RX VL-IDX base+i
-	uint32_t tx_count[DPM_VL_PORT_COUNT];   // 416 B — TX VL-IDX base+i
+	uint32_t rx_count;                      // CMC RX (DPM ingress)
+	uint32_t tx_count;                      // CMC TX (DPM egress)
+} VL_DATA_COUNT;                            // 8 byte
+
+typedef struct __attribute__((packed))
+{
+	VL_DATA_COUNT vl[DPM_VL_PORT_COUNT];    // 104 × 8 B
 } COUNTERS_DPM_VL;                          // TOPLAM: 832 byte
 
 

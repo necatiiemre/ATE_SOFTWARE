@@ -10,6 +10,7 @@
 #include "Packet.h"       // for PACKET_SIZE (byte approximation for per-CMC stats)
 #include "TxRxManager.h"  // for rx_stats_per_port
 #include "AteMode.h"
+#include "health_monitor.h"   // dpm_vl_* — the CMC's own per-DPM counters
 
 // Daemon mode flag - when true, ANSI escape codes are disabled
 bool g_daemon_mode = false;
@@ -48,6 +49,11 @@ void helper_reset_stats(const struct ports_config *ports_config,
 #if STATS_MODE_CMC
     init_cmc_stats();
     reset_cmc_prev_bytes();
+
+    // The CMC's own DPM counters are reported next to ours, so they have to
+    // cover the same window -- otherwise the two disagree by exactly the
+    // warm-up traffic and it looks like loss.
+    dpm_vl_reset();
 #endif
 }
 
@@ -211,6 +217,61 @@ static void cmc_row_print(const char *label, const struct cmc_row *r)
            r->lost, r->bit_errors, r->ber);
 }
 
+// The DPMs' own tally, as reported by the CMC.
+//
+// These are not our counters: each DPM sends its per-VL packet totals over the
+// health-monitor VLs, and we add up the deltas. Printed next to our own
+// figures because the interesting number is the difference -- ours says what
+// reached the server, the CMC's says what its DPM saw, and a gap between them
+// places the loss inside the CMC rather than on the wire.
+//
+// Per DPM here, not per VL: the VL-by-VL breakdown goes in the end-of-run
+// report, where there is room for 104 rows a block.
+static void print_dpm_counter_rows(uint16_t line)
+{
+    bool any = false;
+    for (uint16_t b = 0; b < CMC_DPM_BLOCK_COUNT; b++) {
+        if (dpm_vl_has_data(line, b)) { any = true; break; }
+    }
+
+    if (!any) {
+        printf("  DPM counters (reported by the CMC): no packet received yet\n");
+        return;
+    }
+
+    printf("  DPM counters reported by the CMC (its own tally, summed over each block's VLs)\n");
+    printf("  ┌─────────┬────────────────┬────────────────┬────────────────┬──────────┐\n");
+    printf("  │ %-7s │ %14s │ %14s │ %14s │ %8s │\n",
+           "Block", "CMC RX pkts", "CMC TX pkts", "RX-TX", "State");
+    printf("  ├─────────┼────────────────┼────────────────┼────────────────┼──────────┤\n");
+
+    uint64_t t_rx = 0, t_tx = 0;
+    for (uint16_t b = 0; b < CMC_DPM_BLOCK_COUNT; b++) {
+        uint64_t rx = 0, tx = 0;
+        dpm_vl_block_totals(line, b, &rx, &tx);
+        t_rx += rx;
+        t_tx += tx;
+
+        char diff[24];
+        if (rx >= tx) snprintf(diff, sizeof(diff), "%lu", rx - tx);
+        else          snprintf(diff, sizeof(diff), "-%lu", tx - rx);
+
+        printf("  │ %-7s │ %14lu │ %14lu │ %14s │ %8s │\n",
+               g_blocks[b].label, rx, tx, diff,
+               dpm_vl_has_data(line, b) ? "ok" : "no data");
+    }
+
+    printf("  ├─────────┼────────────────┼────────────────┼────────────────┼──────────┤\n");
+    {
+        char diff[24];
+        if (t_rx >= t_tx) snprintf(diff, sizeof(diff), "%lu", t_rx - t_tx);
+        else              snprintf(diff, sizeof(diff), "-%lu", t_tx - t_rx);
+        printf("  │ %-7s │ %14lu │ %14lu │ %14s │ %8s │\n",
+               "TOTAL", t_rx, t_tx, diff, "");
+    }
+    printf("  └─────────┴────────────────┴────────────────┴────────────────┴──────────┘\n");
+}
+
 // Print one DSM line's table: five DPM rows plus the line total.
 static void print_cmc_line_table(uint16_t line, bool update_prev)
 {
@@ -271,6 +332,8 @@ static void print_cmc_line_table(uint16_t line, bool update_prev)
            (uint64_t)rte_atomic64_read(&cmc_line_stats[line].hm_rx_bytes),
            (uint64_t)rte_atomic64_read(&cmc_line_stats[line].other_rx_pkts),
            (uint64_t)rte_atomic64_read(&cmc_line_stats[line].other_rx_bytes));
+
+    print_dpm_counter_rows(line);
 }
 // ==========================================
 // FINAL SNAPSHOT (end of run)

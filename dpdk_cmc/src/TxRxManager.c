@@ -1882,7 +1882,10 @@ int rx_worker(void *arg)
                     if (unlikely(hm_is_health_monitor_vl_id(vl_id_hm)))
                     {
                         uint16_t hm_len = (uint16_t)(m->pkt_len - payload_off);
-                        hm_handle_packet(vl_id_hm, pkt + payload_off, hm_len);
+                        // worker_cmc_port names the DSM line this queue is
+                        // pinned to; the DPM VL counters are split by it.
+                        hm_handle_packet(vl_id_hm, worker_cmc_port,
+                                         pkt + payload_off, hm_len);
 #if STATS_MODE_CMC
                         if (worker_cmc_port < CMC_PORT_COUNT) {
                             local_line[worker_cmc_port].hm_pkts++;
