@@ -130,8 +130,10 @@ void port_vlans_load_config(bool ate_mode)
 struct rx_stats rx_stats_per_port[MAX_PORTS];
 
 #if STATS_MODE_CMC
-// CMC per-port statistics
-struct cmc_port_stats cmc_stats[CMC_PORT_COUNT];
+// CMC statistics: payload verification per (line, DPM block), plus the
+// per-line traffic that belongs to no block.
+struct cmc_port_stats cmc_stats[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
+struct cmc_line_stats cmc_line_stats[CMC_PORT_COUNT];
 
 // CMC port mapping table
 struct cmc_port_map_entry cmc_port_map[CMC_PORT_COUNT] = CMC_PORT_MAP_INIT;
@@ -147,23 +149,28 @@ uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
 
 // Per-(CMC port, VL-ID) TX packet counters for the VL-to-VL report.
 uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
-uint64_t cmc_tx_bytes_total[CMC_PORT_COUNT];
+uint64_t cmc_tx_bytes[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
 
 void reset_vl_tx_counts(void)
 {
     memset(vl_tx_counts, 0, sizeof(vl_tx_counts));
-    memset(cmc_tx_bytes_total, 0, sizeof(cmc_tx_bytes_total));
+    memset(cmc_tx_bytes, 0, sizeof(cmc_tx_bytes));
 }
 
 // Charge one packet to a line's per-VL TX counter. Out-of-range arguments are
 // dropped silently rather than clamped — a counter that quietly folds two
 // VL-IDs together would be worse than a missing row in the report.
 static inline void vl_tx_count_bump(uint16_t cmc_port, uint16_t vl_id,
-                                    uint16_t pkt_len)
+                                    uint16_t vl_base, uint16_t pkt_len)
 {
-    if (cmc_port < CMC_PORT_COUNT && vl_id <= MAX_VL_ID) {
-        vl_tx_counts[cmc_port][vl_id]++;
-        cmc_tx_bytes_total[cmc_port] += pkt_len;
+    if (cmc_port >= CMC_PORT_COUNT || vl_id > MAX_VL_ID) {
+        return;
+    }
+    vl_tx_counts[cmc_port][vl_id]++;
+
+    uint16_t block = cmc_block_of_vl(vl_id, vl_base);
+    if (block < CMC_DPM_BLOCK_COUNT) {
+        cmc_tx_bytes[cmc_port][block] += pkt_len;
     }
 }
 
@@ -652,25 +659,28 @@ void init_cmc_port_map(void)
 void init_cmc_stats(void)
 {
     for (int i = 0; i < CMC_PORT_COUNT; i++) {
-        rte_atomic64_init(&cmc_stats[i].good_pkts);
-        rte_atomic64_init(&cmc_stats[i].bad_pkts);
-        rte_atomic64_init(&cmc_stats[i].splitmix_fail);
-        rte_atomic64_init(&cmc_stats[i].crc32_fail);
-        rte_atomic64_init(&cmc_stats[i].xor_fail);
-        rte_atomic64_init(&cmc_stats[i].bit_errors);
-        rte_atomic64_init(&cmc_stats[i].lost_pkts);
-        rte_atomic64_init(&cmc_stats[i].out_of_order_pkts);
-        rte_atomic64_init(&cmc_stats[i].duplicate_pkts);
-        rte_atomic64_init(&cmc_stats[i].short_pkts);
-        rte_atomic64_init(&cmc_stats[i].total_rx_pkts);
-        rte_atomic64_init(&cmc_stats[i].rx_bytes);
-        rte_atomic64_init(&cmc_stats[i].hm_rx_pkts);
-        rte_atomic64_init(&cmc_stats[i].hm_rx_bytes);
-        rte_atomic64_init(&cmc_stats[i].other_rx_pkts);
-        rte_atomic64_init(&cmc_stats[i].other_rx_bytes);
+        for (int b = 0; b < CMC_DPM_BLOCK_COUNT; b++) {
+            rte_atomic64_init(&cmc_stats[i][b].good_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].bad_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].splitmix_fail);
+            rte_atomic64_init(&cmc_stats[i][b].crc32_fail);
+            rte_atomic64_init(&cmc_stats[i][b].xor_fail);
+            rte_atomic64_init(&cmc_stats[i][b].bit_errors);
+            rte_atomic64_init(&cmc_stats[i][b].lost_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].out_of_order_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].duplicate_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].short_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].total_rx_pkts);
+            rte_atomic64_init(&cmc_stats[i][b].rx_bytes);
+        }
+        rte_atomic64_init(&cmc_line_stats[i].hm_rx_pkts);
+        rte_atomic64_init(&cmc_line_stats[i].hm_rx_bytes);
+        rte_atomic64_init(&cmc_line_stats[i].other_rx_pkts);
+        rte_atomic64_init(&cmc_line_stats[i].other_rx_bytes);
     }
     reset_vl_tx_counts();
-    printf("CMC port statistics initialized for %d ports\n", CMC_PORT_COUNT);
+    printf("CMC statistics initialized for %d lines x %d DPM blocks\n",
+           CMC_PORT_COUNT, CMC_DPM_BLOCK_COUNT);
 }
 
 // ==========================================
@@ -1662,7 +1672,7 @@ int tx_worker(void *arg)
         if (likely(nb_tx > 0))
         {
 #if STATS_MODE_CMC
-            vl_tx_count_bump(tx_cmc_primary, curr_vl, tx_pkt_len);
+            vl_tx_count_bump(tx_cmc_primary, curr_vl, vl_start, tx_pkt_len);
 #endif
             uint16_t nb_tx_b = 1;
             if (params->dual_net) {
@@ -1671,7 +1681,7 @@ int tx_worker(void *arg)
                 nb_tx_b_dbg = nb_tx_b;
 #if STATS_MODE_CMC
                 if (likely(nb_tx_b > 0)) {
-                    vl_tx_count_bump(tx_cmc_alt, curr_vl, tx_pkt_len);
+                    vl_tx_count_bump(tx_cmc_alt, curr_vl, vl_start, tx_pkt_len);
                 }
 #endif
                 if (unlikely(nb_tx_b == 0)) {
@@ -1770,9 +1780,9 @@ int rx_worker(void *arg)
     const uint32_t FLUSH = 128;
 
 #if STATS_MODE_CMC
-    // Per-CMC local accumulators. Per-packet dispatch is keyed on VL-ID so a
-    // single queue may feed multiple CMC slots (e.g. Port 0 Q0 carries normal
-    // loopback + pure-PRBS cross return traffic).
+    // Per-(line, DPM block) local accumulators, flushed to the shared atomics
+    // in batches. The worker owns exactly one line, but a packet's block
+    // depends on its VL-ID, so the block dimension is resolved per packet.
     struct cmc_local_accum {
         uint64_t rx;
         uint64_t rx_bytes;
@@ -1783,13 +1793,19 @@ int rx_worker(void *arg)
         uint64_t xor_fail;
         uint64_t bit_errors;
         uint64_t lost;
+    };
+    struct cmc_local_accum local_cmc[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
+    memset(local_cmc, 0, sizeof(local_cmc));
+
+    // Traffic with no DPM block of its own, accumulated per line.
+    struct cmc_local_line {
         uint64_t hm_pkts;
         uint64_t hm_bytes;
         uint64_t other_pkts;
         uint64_t other_bytes;
     };
-    struct cmc_local_accum local_cmc[CMC_PORT_COUNT];
-    memset(local_cmc, 0, sizeof(local_cmc));
+    struct cmc_local_line local_line[CMC_PORT_COUNT];
+    memset(local_line, 0, sizeof(local_line));
 #endif
 
     bool first_good = false, first_bad = false;
@@ -1806,6 +1822,12 @@ int rx_worker(void *arg)
         (worker_cmc_port < CMC_PORT_COUNT)
             ? &port_vl_trackers[params->port_id][worker_cmc_port]
             : &port_vl_trackers[params->port_id][0];
+
+    // First VL-ID of this queue's return range, which is what DPM block
+    // indices are measured from. Comes from the VLAN config rather than a
+    // constant so ATE mode -- where traffic loops back on the VL-ID it was
+    // sent with instead of the CMC's remapped one -- lands in the right block.
+    const uint16_t rx_vl_base = params->vl_id;
 
     const uint16_t INNER_LOOPS = 8;
 
@@ -1863,8 +1885,8 @@ int rx_worker(void *arg)
                         hm_handle_packet(vl_id_hm, pkt + payload_off, hm_len);
 #if STATS_MODE_CMC
                         if (worker_cmc_port < CMC_PORT_COUNT) {
-                            local_cmc[worker_cmc_port].hm_pkts++;
-                            local_cmc[worker_cmc_port].hm_bytes += m->pkt_len;
+                            local_line[worker_cmc_port].hm_pkts++;
+                            local_line[worker_cmc_port].hm_bytes += m->pkt_len;
                         }
 #endif
                         continue;
@@ -1907,8 +1929,8 @@ int rx_worker(void *arg)
                     local_short++;
 #if STATS_MODE_CMC
                     if (worker_cmc_port < CMC_PORT_COUNT) {
-                        local_cmc[worker_cmc_port].other_pkts++;
-                        local_cmc[worker_cmc_port].other_bytes += m->pkt_len;
+                        local_line[worker_cmc_port].other_pkts++;
+                        local_line[worker_cmc_port].other_bytes += m->pkt_len;
                     }
 #endif
                     continue;
@@ -2017,8 +2039,17 @@ int rx_worker(void *arg)
                      params->queue_id < NUM_RX_QUEUES_PER_PORT)
                         ? queue_to_cmc_port[params->port_id][params->queue_id]
                         : (uint16_t)CMC_QUEUE_INVALID;
-                if (pkt_gap_loss > 0 && pkt_cmc_port != CMC_QUEUE_INVALID) {
-                    local_cmc[pkt_cmc_port].lost += pkt_gap_loss;
+                // Which DPM block this VL-ID belongs to. A packet outside the
+                // configured range leaves acc NULL and is left out of the
+                // per-block tables rather than being charged to block 0.
+                uint16_t pkt_block = cmc_block_of_vl(vl_id, rx_vl_base);
+                struct cmc_local_accum *acc =
+                    (pkt_cmc_port < CMC_PORT_COUNT && pkt_block < CMC_DPM_BLOCK_COUNT)
+                        ? &local_cmc[pkt_cmc_port][pkt_block]
+                        : NULL;
+
+                if (pkt_gap_loss > 0 && acc != NULL) {
+                    acc->lost += pkt_gap_loss;
                 }
 #endif
                 uint8_t payload_mode;
@@ -2075,10 +2106,10 @@ int rx_worker(void *arg)
                     if (likely(crc_ok && sm_ok && xor_ok && prbs_ok)) {
                         local_good++;
 #if STATS_MODE_CMC
-                        if (pkt_cmc_port != CMC_QUEUE_INVALID) {
-                            local_cmc[pkt_cmc_port].rx++;
-                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
-                            local_cmc[pkt_cmc_port].good++;
+                        if (acc != NULL) {
+                            acc->rx++;
+                            acc->rx_bytes += m->pkt_len;
+                            acc->good++;
                         }
 #endif
                         if (unlikely(!first_good)) {
@@ -2135,14 +2166,14 @@ int rx_worker(void *arg)
                         }
                         local_bits += berr;
 #if STATS_MODE_CMC
-                        if (pkt_cmc_port != CMC_QUEUE_INVALID) {
-                            local_cmc[pkt_cmc_port].rx++;
-                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
-                            local_cmc[pkt_cmc_port].bad++;
-                            if (!sm_ok)  local_cmc[pkt_cmc_port].sm_fail++;
-                            if (!crc_ok) local_cmc[pkt_cmc_port].crc_fail++;
-                            if (!xor_ok) local_cmc[pkt_cmc_port].xor_fail++;
-                            local_cmc[pkt_cmc_port].bit_errors += berr;
+                        if (acc != NULL) {
+                            acc->rx++;
+                            acc->rx_bytes += m->pkt_len;
+                            acc->bad++;
+                            if (!sm_ok)  acc->sm_fail++;
+                            if (!crc_ok) acc->crc_fail++;
+                            if (!xor_ok) acc->xor_fail++;
+                            acc->bit_errors += berr;
                         }
 #endif
                     }
@@ -2164,10 +2195,10 @@ int rx_worker(void *arg)
                     if (likely(diff == 0)) {
                         local_good++;
 #if STATS_MODE_CMC
-                        if (pkt_cmc_port != CMC_QUEUE_INVALID) {
-                            local_cmc[pkt_cmc_port].rx++;
-                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
-                            local_cmc[pkt_cmc_port].good++;
+                        if (acc != NULL) {
+                            acc->rx++;
+                            acc->rx_bytes += m->pkt_len;
+                            acc->good++;
                         }
 #endif
                         if (unlikely(!first_good)) {
@@ -2197,11 +2228,11 @@ int rx_worker(void *arg)
                         }
                         local_bits += berr;
 #if STATS_MODE_CMC
-                        if (pkt_cmc_port != CMC_QUEUE_INVALID) {
-                            local_cmc[pkt_cmc_port].rx++;
-                            local_cmc[pkt_cmc_port].rx_bytes += m->pkt_len;
-                            local_cmc[pkt_cmc_port].bad++;
-                            local_cmc[pkt_cmc_port].bit_errors += berr;
+                        if (acc != NULL) {
+                            acc->rx++;
+                            acc->rx_bytes += m->pkt_len;
+                            acc->bad++;
+                            acc->bit_errors += berr;
                         }
 #endif
                     }
@@ -2229,23 +2260,28 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
                 // CMC per-port payload verification stats (per-VL-ID dispatch)
                 for (uint16_t vi = 0; vi < CMC_PORT_COUNT; vi++) {
-                    struct cmc_local_accum *a = &local_cmc[vi];
-                    if (a->rx == 0 && a->lost == 0 &&
-                        a->hm_pkts == 0 && a->other_pkts == 0) continue;
-                    rte_atomic64_add(&cmc_stats[vi].total_rx_pkts, a->rx);
-                    rte_atomic64_add(&cmc_stats[vi].rx_bytes, a->rx_bytes);
-                    rte_atomic64_add(&cmc_stats[vi].good_pkts, a->good);
-                    rte_atomic64_add(&cmc_stats[vi].bad_pkts, a->bad);
-                    rte_atomic64_add(&cmc_stats[vi].splitmix_fail, a->sm_fail);
-                    rte_atomic64_add(&cmc_stats[vi].crc32_fail, a->crc_fail);
-                    rte_atomic64_add(&cmc_stats[vi].xor_fail, a->xor_fail);
-                    rte_atomic64_add(&cmc_stats[vi].bit_errors, a->bit_errors);
-                    rte_atomic64_add(&cmc_stats[vi].lost_pkts, a->lost);
-                    rte_atomic64_add(&cmc_stats[vi].hm_rx_pkts, a->hm_pkts);
-                    rte_atomic64_add(&cmc_stats[vi].hm_rx_bytes, a->hm_bytes);
-                    rte_atomic64_add(&cmc_stats[vi].other_rx_pkts, a->other_pkts);
-                    rte_atomic64_add(&cmc_stats[vi].other_rx_bytes, a->other_bytes);
-                    memset(a, 0, sizeof(*a));
+                    for (uint16_t bi = 0; bi < CMC_DPM_BLOCK_COUNT; bi++) {
+                        struct cmc_local_accum *a = &local_cmc[vi][bi];
+                        if (a->rx == 0 && a->lost == 0) continue;
+                        rte_atomic64_add(&cmc_stats[vi][bi].total_rx_pkts, a->rx);
+                        rte_atomic64_add(&cmc_stats[vi][bi].rx_bytes, a->rx_bytes);
+                        rte_atomic64_add(&cmc_stats[vi][bi].good_pkts, a->good);
+                        rte_atomic64_add(&cmc_stats[vi][bi].bad_pkts, a->bad);
+                        rte_atomic64_add(&cmc_stats[vi][bi].splitmix_fail, a->sm_fail);
+                        rte_atomic64_add(&cmc_stats[vi][bi].crc32_fail, a->crc_fail);
+                        rte_atomic64_add(&cmc_stats[vi][bi].xor_fail, a->xor_fail);
+                        rte_atomic64_add(&cmc_stats[vi][bi].bit_errors, a->bit_errors);
+                        rte_atomic64_add(&cmc_stats[vi][bi].lost_pkts, a->lost);
+                        memset(a, 0, sizeof(*a));
+                    }
+
+                    struct cmc_local_line *l = &local_line[vi];
+                    if (l->hm_pkts == 0 && l->other_pkts == 0) continue;
+                    rte_atomic64_add(&cmc_line_stats[vi].hm_rx_pkts, l->hm_pkts);
+                    rte_atomic64_add(&cmc_line_stats[vi].hm_rx_bytes, l->hm_bytes);
+                    rte_atomic64_add(&cmc_line_stats[vi].other_rx_pkts, l->other_pkts);
+                    rte_atomic64_add(&cmc_line_stats[vi].other_rx_bytes, l->other_bytes);
+                    memset(l, 0, sizeof(*l));
                 }
 #endif
                 local_rx = local_good = local_bad = local_bits = 0;
@@ -2270,22 +2306,27 @@ int rx_worker(void *arg)
 
 #if STATS_MODE_CMC
         for (uint16_t vi = 0; vi < CMC_PORT_COUNT; vi++) {
-            struct cmc_local_accum *a = &local_cmc[vi];
-            if (a->rx == 0 && a->lost == 0 &&
-                a->hm_pkts == 0 && a->other_pkts == 0) continue;
-            rte_atomic64_add(&cmc_stats[vi].total_rx_pkts, a->rx);
-            rte_atomic64_add(&cmc_stats[vi].rx_bytes, a->rx_bytes);
-            rte_atomic64_add(&cmc_stats[vi].good_pkts, a->good);
-            rte_atomic64_add(&cmc_stats[vi].bad_pkts, a->bad);
-            rte_atomic64_add(&cmc_stats[vi].splitmix_fail, a->sm_fail);
-            rte_atomic64_add(&cmc_stats[vi].crc32_fail, a->crc_fail);
-            rte_atomic64_add(&cmc_stats[vi].xor_fail, a->xor_fail);
-            rte_atomic64_add(&cmc_stats[vi].bit_errors, a->bit_errors);
-            rte_atomic64_add(&cmc_stats[vi].lost_pkts, a->lost);
-            rte_atomic64_add(&cmc_stats[vi].hm_rx_pkts, a->hm_pkts);
-            rte_atomic64_add(&cmc_stats[vi].hm_rx_bytes, a->hm_bytes);
-            rte_atomic64_add(&cmc_stats[vi].other_rx_pkts, a->other_pkts);
-            rte_atomic64_add(&cmc_stats[vi].other_rx_bytes, a->other_bytes);
+            for (uint16_t bi = 0; bi < CMC_DPM_BLOCK_COUNT; bi++) {
+                struct cmc_local_accum *a = &local_cmc[vi][bi];
+                if (a->rx == 0 && a->lost == 0) continue;
+                rte_atomic64_add(&cmc_stats[vi][bi].total_rx_pkts, a->rx);
+                rte_atomic64_add(&cmc_stats[vi][bi].rx_bytes, a->rx_bytes);
+                rte_atomic64_add(&cmc_stats[vi][bi].good_pkts, a->good);
+                rte_atomic64_add(&cmc_stats[vi][bi].bad_pkts, a->bad);
+                rte_atomic64_add(&cmc_stats[vi][bi].splitmix_fail, a->sm_fail);
+                rte_atomic64_add(&cmc_stats[vi][bi].crc32_fail, a->crc_fail);
+                rte_atomic64_add(&cmc_stats[vi][bi].xor_fail, a->xor_fail);
+                rte_atomic64_add(&cmc_stats[vi][bi].bit_errors, a->bit_errors);
+                rte_atomic64_add(&cmc_stats[vi][bi].lost_pkts, a->lost);
+            }
+
+            struct cmc_local_line *l = &local_line[vi];
+            if (l->hm_pkts == 0 && l->other_pkts == 0) continue;
+            rte_atomic64_add(&cmc_line_stats[vi].hm_rx_pkts, l->hm_pkts);
+            rte_atomic64_add(&cmc_line_stats[vi].hm_rx_bytes, l->hm_bytes);
+            rte_atomic64_add(&cmc_line_stats[vi].other_rx_pkts, l->other_pkts);
+            rte_atomic64_add(&cmc_line_stats[vi].other_rx_bytes, l->other_bytes);
+            memset(l, 0, sizeof(*l));
         }
 #endif
     }
@@ -2304,42 +2345,50 @@ int rx_worker(void *arg)
 #if STATS_MODE_CMC
     {
         uint64_t queue_lost_total = 0;
-        for (uint16_t vi = 0; vi < CMC_PORT_COUNT; vi++) {
-            const struct cmc_port_map_entry *e = &cmc_port_map[vi];
-            if (e->tx_server_port != params->port_id ||
-                e->tx_server_queue != params->queue_id) {
-                continue;
-            }
 
-            uint64_t cmc_lost = 0;
-            uint32_t vl_start = e->vl_id_start;
-            uint32_t vl_end = vl_start + e->vl_id_count;
-            for (uint32_t vl = vl_start; vl < vl_end && vl <= MAX_VL_ID; vl++)
-            {
-                struct vl_sequence_tracker *seq_tracker = &vl_tracker->vl_trackers[vl];
-                if (!__atomic_load_n(&seq_tracker->initialized, __ATOMIC_ACQUIRE))
-                    continue;
+        // This worker owns exactly one line (its queue is pinned to one VLAN),
+        // so there is no map to search -- worker_cmc_port already names it.
+        // Blocks are walked off rx_vl_base rather than the map's vl_id_start so
+        // ATE mode, where traffic returns on the VL-ID it was sent with, scans
+        // the range the trackers were actually filled at.
+        if (worker_cmc_port < CMC_PORT_COUNT) {
+            for (uint16_t bi = 0; bi < CMC_DPM_BLOCK_COUNT; bi++) {
+                uint64_t block_lost = 0;
+                uint32_t vl_start = (uint32_t)rx_vl_base +
+                                    (uint32_t)bi * CMC_VLS_PER_DPM;
+                uint32_t vl_end = vl_start + CMC_VLS_PER_DPM;
 
-                uint64_t max_seq = __atomic_load_n(&seq_tracker->max_seq, __ATOMIC_ACQUIRE);
-                uint64_t pkt_count = __atomic_load_n(&seq_tracker->pkt_count, __ATOMIC_ACQUIRE);
+                for (uint32_t vl = vl_start; vl < vl_end && vl <= MAX_VL_ID; vl++)
+                {
+                    struct vl_sequence_tracker *seq_tracker = &vl_tracker->vl_trackers[vl];
+                    if (!__atomic_load_n(&seq_tracker->initialized, __ATOMIC_ACQUIRE))
+                        continue;
+
+                    uint64_t max_seq = __atomic_load_n(&seq_tracker->max_seq, __ATOMIC_ACQUIRE);
+                    uint64_t pkt_count = __atomic_load_n(&seq_tracker->pkt_count, __ATOMIC_ACQUIRE);
 #if TOKEN_BUCKET_TX_ENABLED
-                uint64_t min_seq = __atomic_load_n(&seq_tracker->min_seq, __ATOMIC_ACQUIRE);
-                uint64_t expected_count = max_seq - min_seq + 1;
+                    uint64_t min_seq = __atomic_load_n(&seq_tracker->min_seq, __ATOMIC_ACQUIRE);
+                    uint64_t expected_count = max_seq - min_seq + 1;
 #else
-                uint64_t expected_count = max_seq + 1;
+                    uint64_t expected_count = max_seq + 1;
 #endif
-                if (expected_count > pkt_count)
-                    cmc_lost += (expected_count - pkt_count);
-            }
+                    if (expected_count > pkt_count)
+                        block_lost += (expected_count - pkt_count);
+                }
 
-            // Reconcile: replace the real-time (possibly reorder-inflated)
-            // value with the accurate watermark total.
-            rte_atomic64_set(&cmc_stats[vi].lost_pkts, (int64_t)cmc_lost);
-            queue_lost_total += cmc_lost;
-            if (cmc_lost > 0) {
-                printf("RX Worker Port %u Q%u (CMC %u): %lu lost packets (VL-ID %u-%u)\n",
-                       params->port_id, params->queue_id, vi,
-                       cmc_lost, vl_start, vl_end - 1);
+                // Reconcile: replace the real-time (possibly reorder-inflated)
+                // value with the accurate watermark total.
+                rte_atomic64_set(&cmc_stats[worker_cmc_port][bi].lost_pkts,
+                                 (int64_t)block_lost);
+                queue_lost_total += block_lost;
+
+                if (block_lost > 0) {
+                    printf("RX Worker Port %u Q%u (%s DPM-%u): %lu lost packets "
+                           "(VL-ID %u-%u)\n",
+                           params->port_id, params->queue_id,
+                           cmc_port_labels[worker_cmc_port], (unsigned)(bi + 1),
+                           block_lost, vl_start, vl_end - 1);
+                }
             }
         }
 

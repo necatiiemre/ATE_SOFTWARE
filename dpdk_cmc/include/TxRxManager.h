@@ -68,21 +68,23 @@ extern struct rx_stats rx_stats_per_port[MAX_PORTS];
 // ==========================================
 #if STATS_MODE_CMC
 
-// CMC per-line statistics.
+// CMC statistics, split two ways.
 //
 // Everything here is counted in software at the point the packet is
-// classified, which is what makes it possible to report PRBS traffic on its
-// own. The hardware per-queue counters cannot: every packet steered to a
-// queue lands in q_ipackets, so PRBS, health-monitor and MMMS traffic are
-// summed together there with no way to separate them afterwards.
+// classified. The hardware per-queue counters cannot stand in for it: a queue
+// carries one whole DSM line, so its counter lumps all five DPM blocks
+// together along with health-monitor and MMMS traffic, and none of that can be
+// separated after the fact.
 //
-// The three RX groups below partition the classified traffic:
-//   total_rx_pkts / rx_bytes    PRBS packets that reached payload verification
-//   hm_rx_pkts    / hm_rx_bytes health-monitor packets (branched off earlier)
-//   other_rx_pkts / other_rx_bytes  everything else — currently packets
-//                                   rejected by the minimum-length filter
-// Their sum should equal the hardware queue counter; the final report prints
-// the comparison so a mismatch is visible rather than silently absorbed.
+// Payload verification is tracked per (line, DPM block) because that is the
+// granularity the tables report at. Traffic that has no block -- health
+// monitor, and packets rejected by the length filter -- lives in the per-line
+// struct below instead of being forced into a block it does not belong to.
+//
+// The RX groups partition the classified traffic: PRBS totals summed over the
+// blocks, plus the line's health-monitor and other counts, should equal the
+// hardware queue counter. The final report prints that comparison so a
+// mismatch is visible rather than silently absorbed.
 struct cmc_port_stats {
     rte_atomic64_t good_pkts;
     rte_atomic64_t bad_pkts;
@@ -95,17 +97,40 @@ struct cmc_port_stats {
     rte_atomic64_t out_of_order_pkts;
     rte_atomic64_t duplicate_pkts;
     rte_atomic64_t short_pkts;
-    rte_atomic64_t total_rx_pkts;     // Server RX = CMC TX packet count (PRBS)
-    rte_atomic64_t rx_bytes;          // PRBS bytes received (on-wire lengths)
+    rte_atomic64_t total_rx_pkts;    // Server RX = CMC TX packet count (PRBS)
+    rte_atomic64_t rx_bytes;         // PRBS bytes received (on-wire lengths)
+};
 
-    // Non-PRBS traffic on the same queue, kept out of the totals above.
-    rte_atomic64_t hm_rx_pkts;
+// PRBS verification stats, indexed [DSM line][DPM block].
+extern struct cmc_port_stats cmc_stats[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
+
+// Traffic on a line that belongs to no DPM block.
+struct cmc_line_stats {
+    rte_atomic64_t hm_rx_pkts;        // health-monitor packets
     rte_atomic64_t hm_rx_bytes;
-    rte_atomic64_t other_rx_pkts;     // failed the minimum-length filter
+    rte_atomic64_t other_rx_pkts;     // rejected by the minimum-length filter
     rte_atomic64_t other_rx_bytes;
 };
 
-extern struct cmc_port_stats cmc_stats[CMC_PORT_COUNT];
+extern struct cmc_line_stats cmc_line_stats[CMC_PORT_COUNT];
+
+// Which DPM block a VL-ID falls in, relative to the range's first VL-ID.
+// Returns CMC_BLOCK_INVALID for anything outside the configured span, so a
+// stray VL-ID is dropped from the per-block tables instead of landing in
+// block 0 and quietly inflating it.
+#define CMC_BLOCK_INVALID 0xFFFF
+
+static inline uint16_t cmc_block_of_vl(uint16_t vl_id, uint16_t range_base)
+{
+    if (vl_id < range_base) {
+        return CMC_BLOCK_INVALID;
+    }
+    uint16_t offset = (uint16_t)(vl_id - range_base);
+    if (offset >= CMC_TOTAL_VL_COUNT) {
+        return CMC_BLOCK_INVALID;
+    }
+    return (uint16_t)(offset / CMC_VLS_PER_DPM);
+}
 
 // CMC port mapping table (loaded from config at runtime)
 extern struct cmc_port_map_entry cmc_port_map[CMC_PORT_COUNT];
@@ -114,10 +139,10 @@ extern struct cmc_port_map_entry cmc_port_map[CMC_PORT_COUNT];
 extern uint8_t vlan_to_cmc_port[CMC_VLAN_LOOKUP_SIZE];
 
 // (port, queue) → CMC port lookup. Each RX queue is steered via rte_flow to a
-// single VLAN, and each Net A / Net B flow lives on its own queue, so this is
-// the unambiguous dispatch key for the RX hot path. VL-ID alone is not unique
-// across networks (Net A and Net B both return on VL-ID range 10521..10624);
-// the RX VLAN, and therefore the RX queue, is what distinguishes them.
+// single VLAN, and each DSM line lives on its own queue, so this is the
+// unambiguous dispatch key for the RX hot path. VL-ID alone is not unique
+// across lines (DSM-A and DSM-B both return on the same VL-ID range); the RX
+// VLAN, and therefore the RX queue, is what distinguishes them.
 #define CMC_QUEUE_INVALID 0xFFFF
 extern uint16_t queue_to_cmc_port[MAX_PORTS][NUM_RX_QUEUES_PER_PORT];
 
@@ -140,15 +165,15 @@ extern uint16_t tx_queue_to_cmc_port[MAX_PORTS][NUM_TX_QUEUES_PER_PORT];
 // snapshot time is not possible since TX has already stopped by then.
 extern uint64_t vl_tx_counts[CMC_PORT_COUNT][MAX_VL_ID + 1];
 
-// Per-line TX byte total, accumulated from the on-wire length of each packet
-// the NIC accepted. The packet count is deliberately not duplicated here: it
-// is the sum of vl_tx_counts over the line's VL range, so the final report and
-// the VL-to-VL table cannot drift apart. Same single-writer reasoning as
-// vl_tx_counts.
-extern uint64_t cmc_tx_bytes_total[CMC_PORT_COUNT];
+// TX byte total per (line, DPM block), accumulated from the on-wire length of
+// each packet the NIC accepted. The packet count is deliberately not
+// duplicated here: it is the sum of vl_tx_counts over the block's VL range, so
+// the tables and the VL-to-VL report cannot drift apart. Same single-writer
+// reasoning as vl_tx_counts.
+extern uint64_t cmc_tx_bytes[CMC_PORT_COUNT][CMC_DPM_BLOCK_COUNT];
 
 /**
- * Zero the per-VL TX counters and the per-line TX byte totals. Called from
+ * Zero the per-VL TX counters and the per-block TX byte totals. Called from
  * init_cmc_stats() so the warm-up → test transition clears them along with
  * everything else.
  */
