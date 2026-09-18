@@ -18,11 +18,11 @@ static const struct cmc_dpm_block g_dpm_blocks[CMC_DPM_BLOCK_COUNT] =
 /* One VL-ID's worth of numbers, gathered from the TX counters and the RX
  * sequence tracker so the formatting code below never touches either. */
 struct vl_row {
-    uint16_t tx_vl;
-    uint16_t rx_vl;
-    uint64_t tx_pkts;
-    uint64_t rx_pkts;
-    uint64_t loss_txrx;
+    uint16_t cmc_rx_vl;     /* VL-ID we send on   = the CMC's ingress  */
+    uint16_t cmc_tx_vl;     /* VL-ID it returns on = the CMC's egress  */
+    uint64_t cmc_rx_pkts;   /* packets we put on the wire for that VL  */
+    uint64_t cmc_tx_pkts;   /* packets that came back                  */
+    uint64_t loss_rxtx;
     uint64_t loss_seq;
     uint64_t first_seq;
     uint64_t last_seq;
@@ -32,9 +32,9 @@ struct vl_row {
 };
 
 struct vl_totals {
-    uint64_t tx_pkts;
-    uint64_t rx_pkts;
-    uint64_t loss_txrx;
+    uint64_t cmc_rx_pkts;
+    uint64_t cmc_tx_pkts;
+    uint64_t loss_rxtx;
     uint64_t loss_seq;
     uint32_t vls_with_loss;
     uint32_t vls_never_seen;
@@ -57,51 +57,52 @@ static void vlflow_collect(uint16_t cmc_port, uint16_t tx_vl, struct vl_row *row
     const uint16_t srv_rx_port = entry->tx_server_port;
 
     memset(row, 0, sizeof(*row));
-    row->tx_vl = tx_vl;
-    row->rx_vl = (uint16_t)(tx_vl + vlflow_rx_offset());
+    row->cmc_rx_vl = tx_vl;
+    row->cmc_tx_vl = (uint16_t)(tx_vl + vlflow_rx_offset());
 
     if (tx_vl <= MAX_VL_ID) {
-        row->tx_pkts = vl_tx_counts[cmc_port][tx_vl];
+        row->cmc_rx_pkts = vl_tx_counts[cmc_port][tx_vl];
     }
 
-    if (srv_rx_port >= MAX_PORTS || row->rx_vl > MAX_VL_ID) {
+    if (srv_rx_port >= MAX_PORTS || row->cmc_tx_vl > MAX_VL_ID) {
         return;
     }
 
     const struct vl_sequence_tracker *t =
-        &port_vl_trackers[srv_rx_port][cmc_port].vl_trackers[row->rx_vl];
+        &port_vl_trackers[srv_rx_port][cmc_port].vl_trackers[row->cmc_tx_vl];
 
     if (!t->initialized) {
-        /* Nothing ever arrived on this VL — every transmitted packet is lost. */
-        row->loss_txrx = row->tx_pkts;
+        /* Nothing ever came back on this VL — everything sent into the CMC is
+         * unaccounted for. */
+        row->loss_rxtx = row->cmc_rx_pkts;
         return;
     }
 
     row->seen         = 1;
-    row->rx_pkts      = t->pkt_count;
+    row->cmc_tx_pkts  = t->pkt_count;
     row->first_seq    = t->first_seq;
     row->last_seq     = t->last_seq;
     row->max_seq      = t->max_seq;
     row->expected_seq = t->expected_seq;
 
-    if (row->tx_pkts > row->rx_pkts) {
-        row->loss_txrx = row->tx_pkts - row->rx_pkts;
+    if (row->cmc_rx_pkts > row->cmc_tx_pkts) {
+        row->loss_rxtx = row->cmc_rx_pkts - row->cmc_tx_pkts;
     }
 
     /* Sequences start at 0, so max_seq + 1 packets should have been seen. */
     uint64_t expected_count = row->max_seq + 1;
-    if (expected_count > row->rx_pkts) {
-        row->loss_seq = expected_count - row->rx_pkts;
+    if (expected_count > row->cmc_tx_pkts) {
+        row->loss_seq = expected_count - row->cmc_tx_pkts;
     }
 }
 
 static void vlflow_accumulate(struct vl_totals *t, const struct vl_row *row)
 {
-    t->tx_pkts   += row->tx_pkts;
-    t->rx_pkts   += row->rx_pkts;
-    t->loss_txrx += row->loss_txrx;
-    t->loss_seq  += row->loss_seq;
-    if (row->loss_txrx > 0 || row->loss_seq > 0) t->vls_with_loss++;
+    t->cmc_rx_pkts += row->cmc_rx_pkts;
+    t->cmc_tx_pkts += row->cmc_tx_pkts;
+    t->loss_rxtx   += row->loss_rxtx;
+    t->loss_seq    += row->loss_seq;
+    if (row->loss_rxtx > 0 || row->loss_seq > 0) t->vls_with_loss++;
     if (!row->seen)                              t->vls_never_seen++;
 }
 
@@ -136,18 +137,21 @@ static void vlflow_write_file_header(FILE *f, uint32_t test_seconds)
     fprintf(f, " Lines         : %s (VLAN %u -> %u), %s (VLAN %u -> %u)\n",
             cmc_port_labels[0], cmc_port_map[0].rx_vlan, cmc_port_map[0].tx_vlan,
             cmc_port_labels[1], cmc_port_map[1].rx_vlan, cmc_port_map[1].tx_vlan);
-    fprintf(f, " VL mapping    : TX %u..%u -> RX %u..%u (offset +%u)\n",
+    fprintf(f, " VL mapping    : CMC RX %u..%u -> CMC TX %u..%u (offset +%u)\n",
             CMC_TX_VL_ID_BASE, CMC_TX_VL_ID_BASE + CMC_TOTAL_VL_COUNT - 1,
             CMC_TX_VL_ID_BASE + off,
             CMC_TX_VL_ID_BASE + off + CMC_TOTAL_VL_COUNT - 1, off);
     fprintf(f, " Blocks        : %u DPM blocks x %u VL-IDs, on each of %u lines\n",
             CMC_DPM_BLOCK_COUNT, CMC_VLS_PER_DPM, CMC_PORT_COUNT);
     fprintf(f, "\n");
-    fprintf(f, " TX pkts   = packets this line actually put on the wire for that VL-ID\n");
-    fprintf(f, " RX pkts   = packets received back on the matching return VL-ID\n");
-    fprintf(f, " Loss(T-R) = TX pkts - RX pkts (end to end)\n");
-    fprintf(f, " Loss(seq) = (max_seq + 1) - RX pkts (sequence holes at the receiver)\n");
-    fprintf(f, " '-' in the sequence columns means no packet ever arrived on that VL-ID\n");
+    fprintf(f, " Columns are named from the CMC's point of view, matching the live table:\n");
+    fprintf(f, "   CMC RX VL   / CMC RX pkts = the VL-ID we transmit on, and what we sent\n");
+    fprintf(f, "                               into the CMC for it\n");
+    fprintf(f, "   CMC TX VL   / CMC TX pkts = the VL-ID it returns on, and what came back\n");
+    fprintf(f, "   Loss(RX-TX) = CMC RX pkts - CMC TX pkts (went in, never came out)\n");
+    fprintf(f, "   Loss(seq)   = (max_seq + 1) - CMC TX pkts (sequence holes in what returned)\n");
+    fprintf(f, " The sequence columns describe the returning stream (the CMC's TX side).\n");
+    fprintf(f, " '-' there means no packet ever arrived on that VL-ID.\n");
     fprintf(f, "\n");
 }
 
@@ -158,7 +162,7 @@ static void vlflow_write_table_header(FILE *f)
 {
     fputs(VL_TABLE_RULE, f);
     fprintf(f, "  | %-6s | %-6s | %12s | %12s | %12s | %7s | %12s | %10s | %10s | %10s | %10s |\n",
-            "TX VL", "RX VL", "TX pkts", "RX pkts", "Loss(T-R)", "Loss %",
+            "CMC RX", "CMC TX", "CMC RX pkts", "CMC TX pkts", "Loss(RX-TX)", "Loss %",
             "Loss(seq)", "first_seq", "last_seq", "max_seq", "expect_seq");
     fputs(VL_TABLE_RULE, f);
 }
@@ -169,25 +173,26 @@ static void vlflow_write_row(FILE *f, const struct vl_row *r)
         fprintf(f, "  | %6u | %6u | %12" PRIu64 " | %12" PRIu64 " | %12" PRIu64
                    " | %6.2f%% | %12" PRIu64 " | %10" PRIu64 " | %10" PRIu64
                    " | %10" PRIu64 " | %10" PRIu64 " |\n",
-                r->tx_vl, r->rx_vl, r->tx_pkts, r->rx_pkts, r->loss_txrx,
-                loss_pct(r->loss_txrx, r->tx_pkts), r->loss_seq,
+                r->cmc_rx_vl, r->cmc_tx_vl, r->cmc_rx_pkts, r->cmc_tx_pkts,
+                r->loss_rxtx, loss_pct(r->loss_rxtx, r->cmc_rx_pkts), r->loss_seq,
                 r->first_seq, r->last_seq, r->max_seq, r->expected_seq);
     } else {
         fprintf(f, "  | %6u | %6u | %12" PRIu64 " | %12" PRIu64 " | %12" PRIu64
                    " | %6.2f%% | %12s | %10s | %10s | %10s | %10s |\n",
-                r->tx_vl, r->rx_vl, r->tx_pkts, r->rx_pkts, r->loss_txrx,
-                loss_pct(r->loss_txrx, r->tx_pkts), "-", "-", "-", "-", "-");
+                r->cmc_rx_vl, r->cmc_tx_vl, r->cmc_rx_pkts, r->cmc_tx_pkts,
+                r->loss_rxtx, loss_pct(r->loss_rxtx, r->cmc_rx_pkts),
+                "-", "-", "-", "-", "-");
     }
 }
 
 static void vlflow_write_totals(FILE *f, const char *label,
                                 const struct vl_totals *t, uint32_t vl_count)
 {
-    fprintf(f, "  %-22s TX=%-12" PRIu64 " RX=%-12" PRIu64
-               " Loss(T-R)=%-10" PRIu64 " (%.4f%%)  Loss(seq)=%-10" PRIu64
+    fprintf(f, "  %-22s CMC RX=%-12" PRIu64 " CMC TX=%-12" PRIu64
+               " Loss(RX-TX)=%-10" PRIu64 " (%.4f%%)  Loss(seq)=%-10" PRIu64
                "  VLs with loss: %u/%u  never seen: %u\n",
-            label, t->tx_pkts, t->rx_pkts, t->loss_txrx,
-            loss_pct(t->loss_txrx, t->tx_pkts), t->loss_seq,
+            label, t->cmc_rx_pkts, t->cmc_tx_pkts, t->loss_rxtx,
+            loss_pct(t->loss_rxtx, t->cmc_rx_pkts), t->loss_seq,
             t->vls_with_loss, vl_count, t->vls_never_seen);
 }
 
@@ -218,8 +223,11 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
 
     if (flog) vlflow_write_file_header(flog, test_seconds);
     if (fcsv) {
-        fprintf(fcsv, "line,dpm,hm_vl,tx_vl,rx_vl,tx_pkts,rx_pkts,"
-                      "loss_txrx,loss_pct,loss_seq,first_seq,last_seq,"
+        /* Column names follow the CMC's point of view, same as the tables.
+         * Note this is a rename from earlier runs: tx_* / rx_* became
+         * cmc_rx_* / cmc_tx_* -- the values did not change, the labels did. */
+        fprintf(fcsv, "line,dpm,hm_vl,cmc_rx_vl,cmc_tx_vl,cmc_rx_pkts,cmc_tx_pkts,"
+                      "loss_rxtx,loss_pct,loss_seq,first_seq,last_seq,"
                       "max_seq,expected_seq,seen\n");
     }
 
@@ -245,7 +253,7 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
             struct vl_totals blk_tot = {0};
 
             if (flog) {
-                fprintf(flog, "\n  === %s / %s (HM VL %u) : TX %u..%u -> RX %u..%u ===\n",
+                fprintf(flog, "\n  === %s / %s (HM VL %u) : CMC RX %u..%u -> CMC TX %u..%u ===\n",
                         line, blk->label, blk->hm_vl_id,
                         blk->tx_vl_start, blk->tx_vl_start + blk->vl_count - 1,
                         (uint16_t)(blk->tx_vl_start + vlflow_rx_offset()),
@@ -263,9 +271,10 @@ int vlflow_write_reports(const char *log_path, const char *csv_path,
                             "%s,%s,%u,%u,%u,%" PRIu64 ",%" PRIu64 ",%" PRIu64
                             ",%.6f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
                             ",%" PRIu64 ",%d\n",
-                            line, blk->label, blk->hm_vl_id, row.tx_vl, row.rx_vl,
-                            row.tx_pkts, row.rx_pkts, row.loss_txrx,
-                            loss_pct(row.loss_txrx, row.tx_pkts), row.loss_seq,
+                            line, blk->label, blk->hm_vl_id,
+                            row.cmc_rx_vl, row.cmc_tx_vl,
+                            row.cmc_rx_pkts, row.cmc_tx_pkts, row.loss_rxtx,
+                            loss_pct(row.loss_rxtx, row.cmc_rx_pkts), row.loss_seq,
                             row.first_seq, row.last_seq, row.max_seq,
                             row.expected_seq, row.seen);
                 }
@@ -319,8 +328,8 @@ void vlflow_print_summary(uint32_t test_seconds)
     printf("  Test duration: %u s after warm-up\n", test_seconds);
     printf("================================================================================\n");
     printf("  %-8s %-7s %-7s %14s %14s %12s %9s %12s\n",
-           "Line", "Block", "HM VL", "TX pkts", "RX pkts", "Loss(T-R)", "Loss %",
-           "Loss(seq)");
+           "Line", "Block", "HM VL", "CMC RX pkts", "CMC TX pkts", "Loss(RX-TX)",
+           "Loss %", "Loss(seq)");
     printf("  ------------------------------------------------------------------------------------------------\n");
 
     struct vl_totals grand = {0};
@@ -343,23 +352,23 @@ void vlflow_print_summary(uint32_t test_seconds)
             printf("  %-8s %-7s %-7u %14" PRIu64 " %14" PRIu64 " %12" PRIu64
                    " %8.4f%% %12" PRIu64 "\n",
                    cmc_port_labels[cmc], blk->label, blk->hm_vl_id,
-                   blk_tot.tx_pkts, blk_tot.rx_pkts, blk_tot.loss_txrx,
-                   loss_pct(blk_tot.loss_txrx, blk_tot.tx_pkts), blk_tot.loss_seq);
+                   blk_tot.cmc_rx_pkts, blk_tot.cmc_tx_pkts, blk_tot.loss_rxtx,
+                   loss_pct(blk_tot.loss_rxtx, blk_tot.cmc_rx_pkts), blk_tot.loss_seq);
         }
 
         printf("  %-8s %-7s %-7s %14" PRIu64 " %14" PRIu64 " %12" PRIu64
                " %8.4f%% %12" PRIu64 "\n",
                cmc_port_labels[cmc], "TOTAL", "-",
-               line_tot.tx_pkts, line_tot.rx_pkts, line_tot.loss_txrx,
-               loss_pct(line_tot.loss_txrx, line_tot.tx_pkts), line_tot.loss_seq);
+               line_tot.cmc_rx_pkts, line_tot.cmc_tx_pkts, line_tot.loss_rxtx,
+               loss_pct(line_tot.loss_rxtx, line_tot.cmc_rx_pkts), line_tot.loss_seq);
         printf("  ------------------------------------------------------------------------------------------------\n");
     }
 
     printf("  %-8s %-7s %-7s %14" PRIu64 " %14" PRIu64 " %12" PRIu64
            " %8.4f%% %12" PRIu64 "\n",
            "ALL", "TOTAL", "-",
-           grand.tx_pkts, grand.rx_pkts, grand.loss_txrx,
-           loss_pct(grand.loss_txrx, grand.tx_pkts), grand.loss_seq);
+           grand.cmc_rx_pkts, grand.cmc_tx_pkts, grand.loss_rxtx,
+           loss_pct(grand.loss_rxtx, grand.cmc_rx_pkts), grand.loss_seq);
     printf("  VL-IDs with loss: %u   VL-IDs that never received a packet: %u\n",
            grand.vls_with_loss, grand.vls_never_seen);
     printf("================================================================================\n");
