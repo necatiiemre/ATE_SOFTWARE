@@ -28,11 +28,9 @@
 //   1) CRC32C over [0..71] (SEQ + SplitMix XOR'd zone)
 //   2) SplitMix XOR zone byte-for-byte against locally regenerated values
 //   3) XOR-zone byte (1 B): the original PRBS byte at this offset, XOR'd by
-//      CMC firmware with the chain {6, 7, 8, 13, 15}. XOR is commutative +
-//      associative, so the chain folds to a single mask 0x0B; we keep both
-//      forms in source (XOR_ZONE_CHAIN = source-of-truth, XOR_ZONE_MASK =
-//      what we actually compare with). Update XOR_ZONE_CHAIN if CMC's
-//      constant set changes; XOR_ZONE_MASK is recomputed at compile time.
+//      the DPM with its own chassis slot number (see CMC_DPM_BLOCKS_INIT).
+//      Which slot to expect follows from the packet's VL-ID: each 104-VL
+//      block enters exactly one DPM.
 //   4) PRBS over the remaining payload (skipping the trailing DTN_SEQ byte).
 //
 // Used in unit test mode only (not ATE loopback).
@@ -43,13 +41,15 @@
     (SPLITMIX_XOR_BYTES + SPLITMIX_CRC_BYTES + XOR_ZONE_BYTES)  // 69
 #define SPLITMIX_MIN_PAYLOAD (SEQ_BYTES + SPLITMIX_TOTAL_OVERHEAD)         // 77
 
-// Source-of-truth chain (kept as an array for clarity / easy edit).
-static const uint8_t XOR_ZONE_CHAIN[] = {6, 7, 8, 13, 15};
-// Folded mask: 6 ^ 7 ^ 8 ^ 13 ^ 15 == 0x0B. Computed at compile time so the
-// rx_worker fast path stays a single XOR instead of a 5-step loop.
-#define XOR_ZONE_MASK ((uint8_t)(6u ^ 7u ^ 8u ^ 13u ^ 15u))
-_Static_assert(XOR_ZONE_MASK == 0x0B,
-               "XOR_ZONE_MASK must equal 6^7^8^13^15 = 0x0B");
+// DPM block table, read by the RX hot path for the XOR-zone slot number.
+//
+// This replaced a single folded mask (6^7^8^13^15 == 0x0B). That fold was
+// correct only while a packet was chained through all five DPMs and came back
+// XOR'd by every slot in turn. Now that each VL block enters exactly one DPM,
+// the byte carries that one slot number, and folding produces a mismatch on
+// every single packet -- which is what the XOR Fail column was reporting.
+static const struct cmc_dpm_block g_dpm_blocks[CMC_DPM_BLOCK_COUNT] =
+    CMC_DPM_BLOCKS_INIT;
 
 static inline uint64_t splitmix64(uint64_t x)
 {
@@ -2029,9 +2029,16 @@ int rx_worker(void *arg)
                 uint64_t off = (seq * (uint64_t)NUM_PRBS_BYTES) % (uint64_t)PRBS_CACHE_SIZE;
                 uint8_t *prbs_exp = prbs_cache_ext + off;
 
+                // Which DPM block this VL-ID belongs to. Needed by payload
+                // verification (it selects the expected XOR slot), not just by
+                // the stats, so it is resolved outside the STATS_MODE_CMC
+                // section. CMC_BLOCK_INVALID means the VL-ID is outside the
+                // configured range.
+                uint16_t pkt_block = cmc_block_of_vl(vl_id, rx_vl_base);
+
 #if STATS_MODE_CMC
-                // CMC dispatches by (port, queue) rather than VL-ID — Net A
-                // and Net B share the same return-path VL-ID range, and only
+                // CMC dispatches by (port, queue) rather than VL-ID — the two
+                // DSM lines share the same return-path VL-ID range, and only
                 // the RX VLAN (i.e. the queue rte_flow steered the packet to)
                 // distinguishes them.
                 uint16_t pkt_cmc_port =
@@ -2039,10 +2046,9 @@ int rx_worker(void *arg)
                      params->queue_id < NUM_RX_QUEUES_PER_PORT)
                         ? queue_to_cmc_port[params->port_id][params->queue_id]
                         : (uint16_t)CMC_QUEUE_INVALID;
-                // Which DPM block this VL-ID belongs to. A packet outside the
-                // configured range leaves acc NULL and is left out of the
-                // per-block tables rather than being charged to block 0.
-                uint16_t pkt_block = cmc_block_of_vl(vl_id, rx_vl_base);
+                // A packet outside the configured range leaves acc NULL and
+                // is left out of the per-block tables rather than being
+                // charged to block 0.
                 struct cmc_local_accum *acc =
                     (pkt_cmc_port < CMC_PORT_COUNT && pkt_block < CMC_DPM_BLOCK_COUNT)
                         ? &local_cmc[pkt_cmc_port][pkt_block]
@@ -2087,15 +2093,25 @@ int rx_worker(void *arg)
                     }
                     bool sm_ok = (memcmp(payload_base + SEQ_BYTES, expected_sm, SPLITMIX_XOR_BYTES) == 0);
 
-                    // 3) XOR-zone byte at offset SEQ + 64 + 4 = 76. CMC takes
-                    //    the original PRBS byte at this offset and runs it
-                    //    through the XOR_ZONE_CHAIN ({6,7,8,13,15}); since
-                    //    XOR is commutative we just compare against PRBS ^
-                    //    XOR_ZONE_MASK.
+                    // 3) XOR-zone byte at offset SEQ + 64 + 4 = 76. The DPM
+                    //    takes the original PRBS byte at this offset and XORs
+                    //    it with its own chassis slot number, so the expected
+                    //    value depends on which DPM the packet went through --
+                    //    that is, on which VL block it belongs to.
+                    //
+                    //    A VL-ID outside the configured range names no DPM, so
+                    //    the slot is unknown and this stage is skipped rather
+                    //    than guessed; such a packet is anomalous already and
+                    //    shows up as unaccounted in the RX accounting table.
                     const size_t xor_off = SPLITMIX_XOR_BYTES + SPLITMIX_CRC_BYTES;
                     uint8_t recv_xor = payload_base[SEQ_BYTES + xor_off];
-                    uint8_t expected_xor = (uint8_t)(prbs_exp[xor_off] ^ XOR_ZONE_MASK);
-                    bool xor_ok = (recv_xor == expected_xor);
+                    uint8_t expected_xor = recv_xor;
+                    bool xor_ok = true;
+                    if (likely(pkt_block < CMC_DPM_BLOCK_COUNT)) {
+                        expected_xor = (uint8_t)(prbs_exp[xor_off] ^
+                                                 g_dpm_blocks[pkt_block].xor_slot);
+                        xor_ok = (recv_xor == expected_xor);
+                    }
 
                     // 4) PRBS check on [77+] (after SplitMix + CRC + XOR overhead)
                     uint8_t *recv_prbs = payload_base + SEQ_BYTES + SPLITMIX_TOTAL_OVERHEAD;

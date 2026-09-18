@@ -139,14 +139,28 @@ struct cmc_dpm_block {
   uint16_t    tx_vl_start;  /* first ATE → CMC VL-ID in the block */
   uint16_t    rx_vl_start;  /* first CMC → ATE VL-ID in the block */
   uint16_t    vl_count;
+  uint8_t     xor_slot;     /* chassis slot number, see below     */
 };
 
+/*
+ * xor_slot is the DPM's chassis slot number, and it is what the CMC XORs into
+ * the payload's XOR-zone byte on the way back.
+ *
+ * This used to be a single folded constant. In the old topology a packet was
+ * chained through all five DPMs, so the byte came back XOR'd by every slot
+ * number in turn -- and because XOR is associative, 6^7^8^13^15 == 0x0B
+ * described the whole traversal in one mask.
+ *
+ * With the blocks separated, each VL range enters exactly one DPM and comes
+ * back carrying that DPM's slot number alone. The folded mask is wrong for
+ * every block now, so the slot is looked up per block instead.
+ */
 #define CMC_DPM_BLOCKS_INIT {                                                     \
-  {"DPM-1", 2021, 10001, 10521, CMC_VLS_PER_DPM},                                 \
-  {"DPM-2", 2042, 10105, 10625, CMC_VLS_PER_DPM},                                 \
-  {"DPM-3", 2063, 10209, 10729, CMC_VLS_PER_DPM},                                 \
-  {"DPM-4", 2084, 10313, 10833, CMC_VLS_PER_DPM},                                 \
-  {"DPM-5", 2105, 10417, 10937, CMC_VLS_PER_DPM},                                 \
+  {"DPM-1", 2021, 10001, 10521, CMC_VLS_PER_DPM,  6},                             \
+  {"DPM-2", 2042, 10105, 10625, CMC_VLS_PER_DPM,  7},                             \
+  {"DPM-3", 2063, 10209, 10729, CMC_VLS_PER_DPM,  8},                             \
+  {"DPM-4", 2084, 10313, 10833, CMC_VLS_PER_DPM, 13},                             \
+  {"DPM-5", 2105, 10417, 10937, CMC_VLS_PER_DPM, 15},                             \
 }
 
 typedef struct
