@@ -1761,10 +1761,13 @@ static void print_event_faults(const char *color,
                                const char *const (*names)[16],
                                const uint16_t *words, int word_count)
 {
-    int fault_count = 0;
+    int fault_count   = 0;
+    int unknown_count = 0;
     for (int w = 0; w < word_count; w++) {
         for (int b = 0; b < 16; b++) {
-            if (words[w] & (1u << b)) fault_count++;
+            if (!(words[w] & (1u << b))) continue;
+            fault_count++;
+            if (!names[w][b]) unknown_count++;   // isimsiz (reserved) bit set
         }
     }
 
@@ -1793,6 +1796,36 @@ static void print_event_faults(const char *color,
     }
     printf("+-----+-----+------------------------------------------------+\n");
     printf("  %s event FAIL bit sayisi: %d\n", color, fault_count);
+
+    // Ham kelime dökümü: set bitleri ICD ile birebir karşılaştırabilmek için.
+    // (Tabloda yalnızca set bitler görünüyor; burada kelimenin tamamı var.)
+    printf("  %s ham kelimeler:", color);
+    for (int w = 0; w < word_count; w++) {
+        printf(" [%d]=0x%04X", w + 1, words[w]);
+    }
+    printf("\n");
+
+    // İsimsiz bit set ise tablo ICD'ye göre eksik ya da bit yerleşimi kaymış
+    // demektir. Hangi flag'in hangi bitleri olduğunu maskeyle birlikte yaz ki
+    // ICD'den doğrulanabilsin.
+    if (unknown_count > 0) {
+        printf("  DIKKAT: %d adet isimsiz (reserved) %s biti set -> bit tablosu eksik/kaymis olabilir:\n",
+               unknown_count, color);
+        for (int w = 0; w < word_count; w++) {
+            uint16_t unknown = 0;
+            for (int b = 0; b < 16; b++) {
+                if ((words[w] & (1u << b)) && !names[w][b]) {
+                    unknown |= (uint16_t)(1u << b);
+                }
+            }
+            if (unknown == 0) continue;
+            printf("    FLG %-2d : isimsiz maske=0x%04X  bit(ler):", w + 1, unknown);
+            for (int b = 0; b < 16; b++) {
+                if (unknown & (1u << b)) printf(" %d", b);
+            }
+            printf("\n");
+        }
+    }
 }
 
 void print_bm_flag_cbit_report(const bm_flag_cbit_report_t *data, const char *device_name)
