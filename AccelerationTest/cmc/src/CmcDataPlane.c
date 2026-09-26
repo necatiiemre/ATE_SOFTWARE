@@ -352,11 +352,14 @@ static void *rx_thread_fn(void *arg)
         return NULL;
 
     while (!*dp->stop) {
-        const int n = raw_socket_recv(&dp->sock[net], buf, CMC_FRAME_LEN_MAX + 64, 200);
+        /* Poll once, then drain: at tens of thousands of frames a second a poll
+         * per frame is half the system calls this thread makes. */
+        int n = raw_socket_recv(&dp->sock[net], buf, CMC_FRAME_LEN_MAX + 64, 200);
 
-        if (n <= 0)
-            continue;                    /* timeout, or an interrupted wait */
-        cmc_data_plane_ingest(dp, net, buf, (size_t)n);
+        while (n > 0) {
+            cmc_data_plane_ingest(dp, net, buf, (size_t)n);
+            n = raw_socket_recv_nowait(&dp->sock[net], buf, CMC_FRAME_LEN_MAX + 64);
+        }
     }
     free(buf);
     return NULL;

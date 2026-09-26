@@ -412,11 +412,12 @@ static void *pmm_thread_fn(void *arg)
         return NULL;
 
     while (!*pmm->stop) {
-        const int n = raw_socket_recv(&pmm->sock[link], buf, PMM_FRAME_MAX, 200);
+        int n = raw_socket_recv(&pmm->sock[link], buf, PMM_FRAME_MAX, 200);
 
-        if (n <= 0)
-            continue;
-        cmc_pmm_ingest(pmm, link, buf, (size_t)n);
+        while (n > 0) {
+            cmc_pmm_ingest(pmm, link, buf, (size_t)n);
+            n = raw_socket_recv_nowait(&pmm->sock[link], buf, PMM_FRAME_MAX);
+        }
     }
     free(buf);
     return NULL;

@@ -68,11 +68,11 @@ void cmc_stats_print_net(cmc_stats_view_t *view, const cmc_data_plane_t *dp,
     const uint64_t cmc_rx_pkts  = st->tx_pkts;
     const uint64_t cmc_rx_bytes = st->tx_bytes;
 
-    const double tx_gbps = to_gbps(cmc_tx_bytes - view->prev_rx_bytes[net]);
-    const double rx_gbps = to_gbps(cmc_rx_bytes - view->prev_tx_bytes[net]);
+    const double tx_gbps = to_gbps(cmc_tx_bytes - view->prev_arrived_bytes[net]);
+    const double rx_gbps = to_gbps(cmc_rx_bytes - view->prev_sent_bytes[net]);
 
-    view->prev_rx_bytes[net] = cmc_tx_bytes;
-    view->prev_tx_bytes[net] = cmc_rx_bytes;
+    view->prev_arrived_bytes[net] = cmc_tx_bytes;
+    view->prev_sent_bytes[net] = cmc_rx_bytes;
 
     const uint64_t lost_bits  = lost_bits_of(st->lost, config);
     const uint64_t bit_errors = st->bit_errors + lost_bits;

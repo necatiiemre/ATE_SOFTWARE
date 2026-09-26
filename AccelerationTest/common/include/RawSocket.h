@@ -66,6 +66,18 @@ bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len);
 int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeout_ms);
 
 /**
+ * @brief Take a frame if one is already waiting, without waiting for one.
+ *
+ * raw_socket_recv() polls and then reads, which is two system calls for every
+ * frame. That is nothing at a frame every few milliseconds and adds up at tens
+ * of thousands a second, so a reader under load polls once and then drains with
+ * this until it comes back empty.
+ *
+ * @return bytes received, 0 when nothing was waiting, -1 on error
+ */
+int raw_socket_recv_nowait(raw_socket_t *sock, uint8_t *buf, size_t cap);
+
+/**
  * @brief Receive from whichever of @p socks has something, in turn.
  *
  * Each call resumes the scan one past the socket it served last, so two links

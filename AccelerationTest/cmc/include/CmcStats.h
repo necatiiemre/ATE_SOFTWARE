@@ -38,8 +38,11 @@
  * test window shows a second's rate computed against the whole warm-up.
  */
 typedef struct {
-    uint64_t prev_rx_bytes[APP_MAX_CMC_NETS];
-    uint64_t prev_tx_bytes[APP_MAX_CMC_NETS];
+    /* Named from this end: what arrived on the link, and what went out of it.
+     * The table's columns are named from the CMC's end, so its "CMC TX" column
+     * is the first of these and its "CMC RX" column the second. */
+    uint64_t prev_arrived_bytes[APP_MAX_CMC_NETS];
+    uint64_t prev_sent_bytes[APP_MAX_CMC_NETS];
 } cmc_stats_view_t;
 
 void cmc_stats_view_reset(cmc_stats_view_t *view);

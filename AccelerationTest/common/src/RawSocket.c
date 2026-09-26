@@ -165,6 +165,17 @@ int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeo
     return n < 0 ? -1 : (int)n;
 }
 
+int raw_socket_recv_nowait(raw_socket_t *sock, uint8_t *buf, size_t cap)
+{
+    ssize_t n = recv(sock->fd, buf, cap, MSG_DONTWAIT);
+
+    if (n >= 0)
+        return (int)n;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+        return 0;
+    return -1;
+}
+
 int raw_socket_recv_any(raw_socket_t *socks, size_t count, uint8_t *buf, size_t cap,
                         unsigned timeout_ms, size_t *which)
 {
