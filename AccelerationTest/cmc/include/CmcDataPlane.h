@@ -31,6 +31,7 @@
 
 #include "AppConfig.h"
 #include "CmcPacket.h"
+#include "RawSocket.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -115,6 +116,17 @@ void cmc_data_plane_pause_tx(cmc_data_plane_t *dp, bool paused);
 void cmc_data_plane_reset(cmc_data_plane_t *dp);
 
 const cmc_net_stats_t *cmc_data_plane_stats(const cmc_data_plane_t *dp, uint8_t net);
+
+/**
+ * @brief One network's open link.
+ *
+ * The data plane owns the sockets, and the MMMS handover needs to put one frame
+ * on network A's. Rather than open a second socket on the same interface, it
+ * borrows this one - the traffic is paused by then, so nothing else is using it.
+ * NULL before the links are open.
+ */
+struct raw_socket;
+raw_socket_t *cmc_data_plane_link(cmc_data_plane_t *dp, uint8_t net);
 
 /** The rate each network is paced at, in Gbps - half the configured target. */
 double cmc_data_plane_net_gbps(const cmc_data_plane_t *dp);

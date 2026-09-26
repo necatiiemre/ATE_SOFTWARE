@@ -221,6 +221,13 @@ const cmc_net_stats_t *cmc_data_plane_stats(const cmc_data_plane_t *dp, uint8_t 
     return &dp->stats[net];
 }
 
+raw_socket_t *cmc_data_plane_link(cmc_data_plane_t *dp, uint8_t net)
+{
+    if (!dp || net >= dp->config->net_count || !dp->opened[net])
+        return NULL;
+    return &dp->sock[net];
+}
+
 void cmc_data_plane_pause_tx(cmc_data_plane_t *dp, bool paused)
 {
     dp->tx_paused = paused;
