@@ -1,4 +1,8 @@
-# DTN configuration test — runbook
+# Acceleration test — runbook
+
+The DTN test is first and in the most detail because it needs a second program
+alongside it. The VMC and CMC tests are one program each; the CMC one is in
+section 8.
 
 Two programs, one server, one DTN. The acceleration test drives the DTN over
 copper and configures it; the fibre emulator stands in for the unit that will
@@ -60,10 +64,16 @@ make test          # logic only, no DPDK needed
 make               # needs DPDK
 ```
 
-Both test runs should end in `PASS`. `AccelerationTest` runs three: it rebuilds
-the 47 frames of a configuration the hardware is known to accept, reproduces all
-three rounds against the captured config1 byte for byte, and checks the profiles
-are self-consistent. A pass means the encoder is still emitting valid frames.
+Every test run should end in `PASS`. `AccelerationTest` runs one set per unit:
+four for the DTN — rebuilding the 47 frames of a configuration the hardware is
+known to accept, reproducing all three rounds against the captured config1 byte
+for byte, checking the profiles are self-consistent and the health decoder reads
+the fields it documents — three for the VMC, and four for the CMC. A pass means
+the encoders still emit valid frames and the decoders still read them.
+
+`make symbols` is worth running after touching anything under
+`cmc/src/health_monitor/`: those files are copies of `dpdk_cmc`'s, and it checks
+none of their symbols has started colliding with the rest of the binary.
 
 ---
 
@@ -341,3 +351,115 @@ log by the same amount.
 
 The emulator prints its table and exits 0 only when every fibre link returned
 traffic, so it can be scripted.
+
+---
+
+## 8. The CMC test
+
+One program, four Ethernet links, no DPDK and no emulator. The CMC loops the
+traffic back itself.
+
+```
+   ens6f0 ──────── DSM-A   network A: traffic out and back, health monitor
+   ens6f1 ──────── DSM-B   network B: the same traffic, the same way
+   ens6f2 ──────── PMM1    listen only: the SMMM's stream to PMM1
+   ens6f3 ──────── PMM2    listen only: the SMMM's stream to PMM2
+```
+
+### Before the run
+
+```bash
+for i in ens6f0 ens6f1 ens6f2 ens6f3; do ip link show "$i" | head -1; done
+```
+
+All four `UP` with a carrier; `sudo ip link set <iface> up` for any that is not.
+They need no IP address — everything goes through AF_PACKET.
+
+Switch the CMC on by hand. The test never touches the supply.
+
+If the interfaces are named something else, or the modules are on different
+cables, that is one edit: `g_cmc` in `AccelerationTest/common/src/AppConfig.c`.
+
+### Run
+
+```bash
+cd AccelerationTest
+sudo ./build/acceleration_test
+```
+
+1. `1` for CMC
+2. read the plan it prints — the four interfaces, the VL ranges, the rate — then `y`
+
+It then generates the PRBS-31 stream, which is 256 MB and takes a moment and
+prints its progress, opens the four links, and starts. The first 120 seconds are
+warm-up; at the end of them the counters are zeroed and the test proper begins.
+That boundary is `warmup_s` in `AppConfig.c`.
+
+### What to look at
+
+The screen, top to bottom:
+
+1. the **health monitor** — every report the two DSMs send, decoded: CL CMSW
+   status for each LRM in the chassis, end-system and switch monitoring, the
+   inter-LRM counters, the IPMC board temperatures, the SMMM readings, and the
+   temperature summary at the end of it
+2. the **loss tables**, one per network, then the **PMM table**, then the
+   warnings
+
+Read the loss tables by eye. What matters in them:
+
+| column | what a healthy run looks like |
+|---|---|
+| CMC TX / CMC RX Packets | climbing together; a gap between them is traffic that did not come back |
+| Gbps | steady at about half the configured target on each network |
+| Good | climbing |
+| Bad, SplitMix64 / CRC32 / XOR Fail | zero |
+| Loss | zero |
+| Bit Error, BER | zero |
+
+The two networks should read the same. They are given byte-identical traffic, so
+a difference between the rows is the unit.
+
+In the PMM table, `CRC OK` climbing with `CRC Fail` at zero, `Loss` at zero, and
+both lines `LIVE`. The `CRC:` note in its heading says which CRC variant was
+detected; `looking for the CRC variant` after the first packets means none of the
+eight matched, and the line under the table says so too.
+
+### Stopping
+
+Ctrl+C once. That stops the traffic and asks the CMC for its MMMS logs, which
+needs an otherwise idle wire; they are written under `/tmp/mmms_logs`, one
+directory per file the unit sends. Ctrl+C again gives up on the logs and stops
+straight away.
+
+### When it does not work
+
+**Nothing in the Packets column of either network.** The unit is not returning
+traffic. Check the two DSM cables and that the CMC is actually up — the health
+monitor is the tell: if its reports are arriving, the link is fine and the
+problem is the data plane's configuration on the unit's side.
+
+**One network returns and the other does not.** That is the cabling or that DSM.
+The sender puts the same frame on both, so nothing this end distinguishes them
+beyond which socket it went out of.
+
+**Bad climbing with CRC32 Fail but SplitMix64 Fail at zero**, or any other single
+column moving on its own, is the useful case: each column is one zone of the
+payload, so which one is failing says which part of the unit's transform is off.
+All four moving together is usually a PRBS mismatch, which means the two ends
+disagree about the stream rather than about the transform.
+
+**`frame(s) the link would not take` in the warnings.** That is this end, not the
+unit: the kernel refused a send. It would otherwise read as loss.
+
+**`frame(s) on an unexpected VL id`.** Something is arriving on a DSM link that is
+neither data plane nor health monitor. The line names the last one seen.
+
+**Both PMM lines `NO DATA`.** The SMMM is not sending, or those two cables are the
+wrong way round. `AddrMismatch` climbing in the `Diag:` line instead means the
+traffic is arriving but its addresses are not the ones in `AppConfig.c`.
+
+**Unknown-length packets under the health monitor.** A report whose length is
+none of the expected ones. The dashboard prints the `(vl_id, length)` pair and the
+first 64 bytes of it, which is enough to identify a report the decoder does not
+know about yet.

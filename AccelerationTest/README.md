@@ -1,8 +1,8 @@
 # AccelerationTest
 
 Acceleration test rig for the ATE units. The operator picks a unit and the
-application runs that unit's acceleration test. The DTN and VMC tests are
-written; CMC is registered so its wiring is already in place.
+application runs that unit's acceleration test. All three are written: DTN, VMC
+and CMC.
 
 Each unit keeps its own folder — its wire formats, its decoders, its test, its
 tests and its fixtures — so reading one means reading one directory. `common/`
@@ -40,7 +40,16 @@ vmc/src/VmcPrint.c         dpdk_vmc's printers, verbatim
 vmc/src/VmcPbitRequest.c   the one thing this application transmits
 vmc/tests/                 three test programs
 
-cmc/src/CmcTest.c          placeholder
+cmc/src/CmcTest.c          the CMC acceleration test
+cmc/include/CmcPacket.h    wire format: the data-plane frame and PRBS-31
+cmc/src/CmcDataPlane.c     the twin senders, the receivers and the loss accounting
+cmc/src/CmcVerify.c        what the CMC does to a payload, checked in reverse
+cmc/src/CmcStats.c         the two loss tables
+cmc/src/CmcPmm.c           the PMM lines: listen only
+cmc/src/MmmsHandler.c      the Ctrl+C log handover, copied from dpdk_cmc
+cmc/src/health_monitor/    the DSM health monitor, copied from dpdk_cmc whole
+cmc/include/health_monitor/ its nine headers, likewise
+cmc/tests/                 four test programs
 ```
 
 `make` builds the application; `make test` builds and runs every unit's tests
@@ -518,6 +527,158 @@ message ids, in one struct. The ids are `dpdk_vmc`'s and have not been confirmed
 against this rig, which is why they are a table rather than constants spread
 through the decoder. Moving to a different environment is one edit there and
 nothing else.
+
+## The CMC test
+
+Four Ethernet links where `dpdk_cmc` has one fibre port:
+
+| interface | module | what it carries |
+|---|---|---|
+| `ens6f0` | DSM-A | network A of the data plane, and its health monitor |
+| `ens6f1` | DSM-B | network B of the data plane, and its health monitor |
+| `ens6f2` | PMM1 | listen only: the SMMM's stream to the first PMM |
+| `ens6f3` | PMM2 | listen only: the SMMM's stream to the second PMM |
+
+The reference multiplexes all four flows onto one fibre port and tells them
+apart by the 802.1Q tag the Cumulus switch adds and strips. Here each flow has
+its own interface, so the interface is what tells them apart — which is also why
+the third PMM is absent rather than present and always empty: the rig has two.
+`cmc_config_t` in `AppConfig.h` holds the whole map, and re-cabling is one edit.
+
+### The frames are untagged, and that changes nothing the unit sees
+
+The reference sends tagged, the switch strips the tag before the CMC gets the
+frame, the CMC answers untagged, and the switch tags it again on the way back.
+So the frame the unit actually handles is the untagged one, and that is the frame
+this puts on a direct cable — 1509 bytes, with the payload kept at the 1467 bytes
+the reference builds for a tagged frame. Keeping the payload length fixed is the
+whole point: it makes the direct-cable frame byte for byte the one the CMC
+already answers. `vlan_tagged` puts the tag back if a switch is ever put in
+between.
+
+### Both networks get the same frame
+
+One sender walks the 104 VL ids in turn and, for each, puts the *same* frame on
+both links: same VL id, same sequence, same payload, same trailing `DTN_SEQ`
+byte, differing only in the last byte of the source MAC — `0x20` for network A,
+`0x40` for B — which is what names the network. That is the test. Two networks
+given identical traffic, so a difference in what comes back is a difference in
+the unit rather than in what it was given.
+
+The sequence belongs to the VL id and is shared by the twins, and it advances
+only once network A's frame is actually on the wire. A refused frame retries the
+same sequence rather than skipping one; the one case where the pair comes apart —
+A sent, B not — is left to show up as loss on B, which is what it is.
+
+### What the CMC returns, and how it is checked
+
+The frame that comes back is not the frame that went out. The CMC rewrites the
+front of the payload and returns it on a VL id 520 higher:
+
+```
+[seq 8][SplitMix XOR 64][CRC32C 4][XOR byte 1][PRBS …][DTN_SEQ 1]
+ 0..7   8..71            72..75    76          77..     last
+```
+
+- the SplitMix zone is the original PRBS bytes XOR'd with `splitmix64` fed from
+  the big-endian sequence, eight bytes at a time
+- the CRC covers bytes 0..71, big-endian on the wire, and uses the unit's own
+  CRC table, which is **not** standard CRC-32C — see `CmcPayloadVerify.h`
+- the XOR byte is the original PRBS byte at that offset run through the chain
+  `{6,7,8,13,15}`, which folds to a single XOR with `0x0B`
+- the rest is the PRBS stream untouched, short of the last byte, which carries
+  `DTN_SEQ` and is skipped
+
+Nothing is remembered between packets. The sequence in the payload says which
+PRBS offset to regenerate, so every check is against something derived, and a
+packet that arrives out of order still verifies on its own. Loss is the gap
+between the sequence that arrived and the one expected, per VL and per network,
+counted once at the packet that reveals it; a late packet adds nothing and does
+not move the expectation backwards, which would make the next packet look like a
+fresh gap.
+
+### The health monitors, and the copies
+
+`cmc/src/health_monitor/` and `cmc/include/health_monitor/` are eleven files
+copied from `dpdk_cmc` byte for byte. None of them touches DPDK — the health
+monitor rides on the data-plane links and its decoder only ever sees a UDP
+payload — so there was nothing to rewrite, and every printer is the reference's,
+field for field. `diff` against the reference is the test that matters, and the
+commit that changes that is the commit to argue with.
+
+Two things were needed to make eleven unmodified files build here.
+`health_monitor_cmc.c` includes `"Config.h"` for `DEBUG_MODE`, and the
+reference's `Config.h` is a DPDK application's configuration — rate limits, queue
+counts, VLAN templates — so a `Config.h` holding that one symbol sits beside the
+copies. And one symbol collides: `dpdk_vmc` and `dpdk_cmc` each have a
+`print_pcs_profile_stats` for their own unit's CPU-usage report, and both copies
+are in this binary, so the CMC's is renamed on the compiler command line rather
+than in the file. `make symbols` compares every global the copies define against
+every other global in the binary, so the next collision arrives as a sentence
+saying what to do.
+
+`MmmsHandler.c` is a copy too, with two regions changed and a comment at the top
+saying which: the include block, and the body of `mmms_send_trigger`, which the
+reference builds into a DPDK mbuf and which here goes into a buffer and out of a
+raw socket.
+
+### The PMM lines
+
+Listen only — there is no transmit path at all. `MSG` is 1036 bytes: an 8-byte
+sequence, 1024 of data, a 4-byte CRC, with the SMMM's own 2-byte header
+sometimes in front and told apart by the UDP length being 1038 instead.
+
+Two things about it are not pinned down by any document, and both are handled
+rather than assumed, as the reference handles them. The sequence is big-endian:
+read the other way round, a real captured counter came out as 10¹⁶ and the loss
+column filled with nonsense. And the CRC's algorithm, coverage and byte order
+are found by trying the eight combinations on the first packets and locking onto
+the one that matches — the verified one is first in the list, so on a healthy
+line the lock happens on the first packet, and the table says which one is in
+use.
+
+A sequence jump too large to be loss is a resync rather than a million lost
+packets, and an address that does not match the configured one is counted rather
+than dropped, so a wrong assumption in `AppConfig.c` shows up in the table
+instead of throwing the line's traffic away.
+
+### The output, and the one thing that moved
+
+The tables are the reference's, column for column and box for box. Two things in
+them differ, both because there is no DPDK underneath: the "Server Port" column
+holds the interface name instead of a DPDK port number, which is 0 in every row
+of the reference and is the thing an operator needs here when a row goes quiet;
+and the packet and byte counts are the ones this program kept rather than a NIC's
+hardware counters.
+
+The order differs in exactly one way: the reference prints the loss tables first
+and the health monitor after, and this prints **the health monitor first and the
+loss tables last**. The tables are what gets watched, and the bottom of the
+screen is where they stay put while the health monitor above them grows and
+shrinks.
+
+The warnings block gains one line the reference has no need for — a frame the
+kernel would not take for sending. The kernel is in the send path here, so it can
+happen, it is this end rather than the unit, and without a line of its own it
+would read as loss.
+
+### What is left out, and why
+
+The PSU telemetry table. It exists to show the 1 Hz V/I/W stream MainSoftware
+publishes while it drives the supply; nothing drives a supply here — the unit is
+switched on by hand — so the table would print empty every second.
+
+### Two departures in the mechanics
+
+Pacing sleeps the bulk of each slot and spins only the last 60 µs, where the
+reference busy-waits the whole gap. That is free on a dedicated DPDK lcore and
+rude on a shared one; the pacing it produces is the same, one frame per slot with
+no catching up, so falling behind still cannot turn into a burst.
+
+And the sockets ask for 16 MB of receive buffer and bypass the qdisc. The kernel
+is in the path here and its default buffers are a few hundred kilobytes, so a
+scheduling hiccup on a receiver would otherwise look exactly like loss on the
+unit's side.
 
 ## Not yet pinned down
 
