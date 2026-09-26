@@ -14,6 +14,7 @@
 #include "CmcDataPlane.h"
 #include "CmcPacket.h"
 #include "CmcPayloadVerify.h"
+#include "CmcStats.h"
 #include "CmcVerify.h"
 
 #include <stdio.h>
@@ -316,6 +317,46 @@ static void test_rate(const cmc_config_t *c)
     printf("[ OK ] the rate split\n");
 }
 
+/* The tables, over a state with something in every column. What they print is
+ * for the eye on the rig; what is checked here is that they run, which is what
+ * a format string one argument short does not. */
+static void test_tables(const cmc_config_t *c)
+{
+    cmc_sink_t sink = {0};
+    cmc_data_plane_t *dp = cmc_data_plane_create(c, &g_prbs, &sink, NULL);
+    cmc_stats_view_t view;
+    uint8_t frame[CMC_FRAME_LEN_MAX];
+
+    cmc_stats_view_reset(&view);
+
+    for (uint8_t n = 0; n < c->net_count; n++) {
+        size_t len = build_returned_frame(frame, c, 0, 0);
+
+        cmc_data_plane_ingest(dp, n, frame, len);
+
+        /* A gap, and a packet the unit got wrong, so loss, bad, the three fail
+         * columns and the BER all have something in them. */
+        len = build_returned_frame(frame, c, 0, 3);
+        frame[CMC_PAYLOAD_OFF(c->vlan_tagged) + CMC_SEQ_BYTES + 2] ^= 0xFF;
+        cmc_data_plane_ingest(dp, n, frame, len);
+    }
+
+    cmc_stats_print_banner(c, false, 17);
+    cmc_stats_print_all(&view, dp, c);
+    cmc_stats_print_banner(c, true, 240);
+    cmc_stats_print_all(&view, dp, c);
+    cmc_stats_print_warnings(dp, c);
+    for (uint8_t n = 0; n < c->net_count; n++)
+        cmc_stats_log_net(dp, c, n);
+
+    check(cmc_data_plane_stats(dp, 0)->lost == 2 &&
+          cmc_data_plane_stats(dp, 0)->bad == 1,
+          "the state the tables were printed over is the one intended");
+
+    cmc_data_plane_destroy(dp);
+    printf("[ OK ] the loss tables run over a filled state\n");
+}
+
 int main(void)
 {
     const cmc_config_t *c = app_config_cmc();
@@ -338,6 +379,7 @@ int main(void)
     test_loss_and_reordering(c);
     test_other_traffic(c);
     test_rate(c);
+    test_tables(c);
 
     cmc_data_plane_destroy(dp);
 

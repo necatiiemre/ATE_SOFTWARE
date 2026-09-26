@@ -40,7 +40,7 @@ $(BUILD)/vmc/src/VmcPrint.o: vmc/src/VmcPrint.c
 
 DTN_TESTS := test_reference test_rounds test_profiles test_health
 VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
-CMC_TESTS := test_cmc_packet test_cmc_dataplane
+CMC_TESTS := test_cmc_packet test_cmc_dataplane test_cmc_pmm
 
 test: $(foreach t,$(DTN_TESTS),$(BUILD)/dtn/$(t)) \
       $(foreach t,$(VMC_TESTS),$(BUILD)/vmc/$(t)) \
