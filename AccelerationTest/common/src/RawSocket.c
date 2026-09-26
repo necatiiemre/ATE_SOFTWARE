@@ -120,6 +120,19 @@ void raw_socket_set_buffers(raw_socket_t *sock, int rcv_bytes, int snd_bytes,
     }
 }
 
+bool raw_socket_ignore_outgoing(raw_socket_t *sock)
+{
+#ifdef PACKET_IGNORE_OUTGOING
+    int on = 1;
+
+    return setsockopt(sock->fd, SOL_PACKET, PACKET_IGNORE_OUTGOING,
+                      &on, sizeof on) == 0;
+#else
+    (void)sock;
+    return false;
+#endif
+}
+
 bool raw_socket_bypass_qdisc(raw_socket_t *sock)
 {
 #ifdef PACKET_QDISC_BYPASS

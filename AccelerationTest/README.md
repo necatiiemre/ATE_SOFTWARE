@@ -668,6 +668,26 @@ The PSU telemetry table. It exists to show the 1 Hz V/I/W stream MainSoftware
 publishes while it drives the supply; nothing drives a supply here — the unit is
 switched on by hand — so the table would print empty every second.
 
+### What has actually been run
+
+Everything below `make test` — the frame field by field, the PRBS stream, the
+verification path against an independent statement of the CMC's transform, the
+loss arithmetic, the PMM channel, the health-monitor decode and every printer.
+
+And `sudo make smoke`, which is the only one that uses a socket: the real data
+plane against the loopback interface with a thread standing in for the unit,
+reading what the sender emits, applying the transform, moving the VL id into the
+return range and sending it back. That covers the sockets, the threads, the
+pacing and the whole loop, and it is what found the one thing unit tests could
+not: a packet socket opened for every protocol is handed outgoing frames too, so
+without `PACKET_IGNORE_OUTGOING` the receiver counted every frame this end sent
+as an arrival on an unexpected VL.
+
+What none of it covers is the unit. The stand-in does what we believe the CMC
+does, so agreeing with it means the two ends of *this* program agree. Whether the
+CMC accepts an untagged 1509-byte frame, returns it on a VL id 520 higher, and
+applies that exact transform, only the CMC can say.
+
 ### Two departures in the mechanics
 
 Pacing sleeps the bulk of each slot and spins only the last 60 µs, where the

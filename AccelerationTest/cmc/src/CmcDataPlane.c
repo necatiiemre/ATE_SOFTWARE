@@ -184,10 +184,17 @@ bool cmc_data_plane_open(cmc_data_plane_t *dp)
                               &rcv, &snd);
         const bool bypass = raw_socket_bypass_qdisc(&dp->sock[n]);
 
-        log_line("[cmc] %-8s %-5s %s  src MAC tail 0x%02X  rcvbuf %d KB  sndbuf %d KB%s",
+        /* This link both sends and receives, so without this the receiver would
+         * be handed every frame the sender puts out - one phantom arrival per
+         * frame sent, landing in the unexpected-VL counter because the frames
+         * this end sends carry the outbound VL range. */
+        const bool own = raw_socket_ignore_outgoing(&dp->sock[n]);
+
+        log_line("[cmc] %-8s %-5s %s  src MAC tail 0x%02X  rcvbuf %d KB  sndbuf %d KB%s%s",
                  link->iface, link->unit_label, link->label,
                  link->src_mac_tail, rcv / 1024, snd / 1024,
-                 bypass ? "  qdisc bypassed" : "");
+                 bypass ? "  qdisc bypassed" : "",
+                 own ? "" : "  (kernel still shows us our own frames)");
     }
     return true;
 }

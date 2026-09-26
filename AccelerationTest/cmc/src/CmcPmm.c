@@ -180,6 +180,9 @@ bool cmc_pmm_open(cmc_pmm_t *pmm)
 
         int rcv = 0;
         raw_socket_set_buffers(&pmm->sock[i], PMM_RCVBUF, 0, &rcv, NULL);
+        /* Nothing is sent on a PMM line, but saying so costs one call and keeps
+         * the two kinds of link opened the same way. */
+        (void)raw_socket_ignore_outgoing(&pmm->sock[i]);
         log_line("[pmm] %-8s %-5s listening for %s:%u -> %s:%u  rcvbuf %d KB",
                  link->iface, link->label, link->unit_ip, link->unit_port,
                  link->local_ip, link->local_port, rcv / 1024);

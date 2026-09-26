@@ -48,6 +48,21 @@ void raw_socket_set_buffers(raw_socket_t *sock, int rcv_bytes, int snd_bytes,
                             int *rcv_got, int *snd_got);
 
 /**
+ * @brief Stop seeing our own transmissions on this socket.
+ *
+ * A packet socket opened for every protocol is handed outgoing frames as well as
+ * incoming ones, so a program that both sends and receives on a link sees
+ * everything it sent come straight back at its own receiver. For a test that
+ * counts what the unit returned, that is one phantom frame per frame sent - and
+ * it lands wherever an unexpected frame lands, which is a counter climbing for
+ * no reason anybody can explain from the wire.
+ *
+ * Best effort: false on a kernel too old to have the option (before 4.20), which
+ * costs the phantom frames and nothing else.
+ */
+bool raw_socket_ignore_outgoing(raw_socket_t *sock);
+
+/**
  * @brief Send without going through the interface's queueing discipline.
  *
  * One less place for a frame to be reordered or delayed on the way out, which

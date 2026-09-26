@@ -18,7 +18,7 @@ OBJ        := $(patsubst %.c,$(BUILD)/%.o,$(SRC))
 # Everything except main, for the tests to link against.
 LIB_OBJ := $(filter-out $(BUILD)/app/main.o,$(OBJ))
 
-.PHONY: all test clean symbols
+.PHONY: all test clean symbols smoke
 
 all: $(BUILD)/acceleration_test
 
@@ -83,6 +83,15 @@ $(BUILD)/vmc/%: vmc/tests/%.c $(LIB_OBJ)
 $(BUILD)/cmc/%: cmc/tests/%.c $(LIB_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
+
+# The loopback smoke test. Separate from `make test` because it needs a raw
+# socket, so it needs root, and because it takes a few seconds of wall clock.
+# It runs the real data plane against `lo` with a thread standing in for the
+# unit, which is the only thing here that exercises the sockets and the threads
+# rather than the functions under them.
+.PHONY: smoke
+smoke: $(BUILD)/cmc/smoke_cmc_loopback
+	@$(BUILD)/cmc/smoke_cmc_loopback
 
 # Every global symbol the CMC health-monitor copies define, against every other
 # global in the binary. A new collision is a link error that reads as a mystery;

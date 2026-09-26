@@ -75,6 +75,13 @@ the encoders still emit valid frames and the decoders still read them.
 `cmc/src/health_monitor/`: those files are copies of `dpdk_cmc`'s, and it checks
 none of their symbols has started colliding with the rest of the binary.
 
+`sudo make smoke` runs the CMC data plane against the loopback interface with a
+thread standing in for the unit — sockets, threads, pacing and the whole
+verification loop, end to end, without any hardware. It is the one test that
+exercises the plumbing rather than the functions under it, so it is worth a run
+after touching anything in `cmc/src/CmcDataPlane.c`. It needs root and takes
+about fifteen seconds, most of that generating the PRBS stream twice.
+
 ---
 
 ## 2. Before each run
