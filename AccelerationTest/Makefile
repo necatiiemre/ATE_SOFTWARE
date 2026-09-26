@@ -6,7 +6,7 @@ CC      ?= gcc
 # none of them; app/ is main and the registry that says which units exist.
 UNITS   := dtn vmc cmc
 INCLUDE := -Icommon/include -Iapp $(foreach u,$(UNITS),-I$(u)/include)
-CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic $(INCLUDE)
+CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic -pthread $(INCLUDE)
 
 COMMON_SRC := $(wildcard common/src/*.c)
 UNIT_SRC   := $(foreach u,$(UNITS),$(wildcard $(u)/src/*.c))
@@ -40,7 +40,7 @@ $(BUILD)/vmc/src/VmcPrint.o: vmc/src/VmcPrint.c
 
 DTN_TESTS := test_reference test_rounds test_profiles test_health
 VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
-CMC_TESTS := test_cmc_packet
+CMC_TESTS := test_cmc_packet test_cmc_dataplane
 
 test: $(foreach t,$(DTN_TESTS),$(BUILD)/dtn/$(t)) \
       $(foreach t,$(VMC_TESTS),$(BUILD)/vmc/$(t)) \

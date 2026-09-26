@@ -34,6 +34,28 @@ bool raw_socket_open(raw_socket_t *sock, const char *iface, bool promiscuous);
 
 void raw_socket_close(raw_socket_t *sock);
 
+/**
+ * @brief Grow the kernel's socket buffers.
+ *
+ * The configuration and health-monitor paths do not need this - they handle a
+ * frame every few milliseconds. The CMC data plane sends and receives tens of
+ * thousands of frames a second, and the default buffers are a few hundred
+ * kilobytes, so a scheduling hiccup on the reader becomes a drop that looks
+ * exactly like a lost packet on the unit's side. Best effort: a kernel that
+ * refuses the size is not an error, and the actual sizes come back.
+ */
+void raw_socket_set_buffers(raw_socket_t *sock, int rcv_bytes, int snd_bytes,
+                            int *rcv_got, int *snd_got);
+
+/**
+ * @brief Send without going through the interface's queueing discipline.
+ *
+ * One less place for a frame to be reordered or delayed on the way out, which
+ * matters when the test measures the unit by what comes back in what order.
+ * Best effort; false if the kernel does not support it.
+ */
+bool raw_socket_bypass_qdisc(raw_socket_t *sock);
+
 /** Put one complete Ethernet frame on the wire. */
 bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len);
 

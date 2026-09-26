@@ -95,6 +95,43 @@ void raw_socket_close(raw_socket_t *sock)
     sock->fd = -1;
 }
 
+void raw_socket_set_buffers(raw_socket_t *sock, int rcv_bytes, int snd_bytes,
+                            int *rcv_got, int *snd_got)
+{
+    socklen_t len;
+
+    if (rcv_bytes > 0)
+        (void)setsockopt(sock->fd, SOL_SOCKET, SO_RCVBUF, &rcv_bytes, sizeof rcv_bytes);
+    if (snd_bytes > 0)
+        (void)setsockopt(sock->fd, SOL_SOCKET, SO_SNDBUF, &snd_bytes, sizeof snd_bytes);
+
+    /* What the kernel actually gave us, which is what a caller reporting the
+     * setting should print: the request is a hint and it doubles it for
+     * bookkeeping. */
+    if (rcv_got) {
+        *rcv_got = 0;
+        len = sizeof *rcv_got;
+        (void)getsockopt(sock->fd, SOL_SOCKET, SO_RCVBUF, rcv_got, &len);
+    }
+    if (snd_got) {
+        *snd_got = 0;
+        len = sizeof *snd_got;
+        (void)getsockopt(sock->fd, SOL_SOCKET, SO_SNDBUF, snd_got, &len);
+    }
+}
+
+bool raw_socket_bypass_qdisc(raw_socket_t *sock)
+{
+#ifdef PACKET_QDISC_BYPASS
+    int on = 1;
+
+    return setsockopt(sock->fd, SOL_PACKET, PACKET_QDISC_BYPASS, &on, sizeof on) == 0;
+#else
+    (void)sock;
+    return false;
+#endif
+}
+
 bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len)
 {
     struct sockaddr_ll dest;
