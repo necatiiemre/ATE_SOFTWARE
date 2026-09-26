@@ -40,12 +40,14 @@ $(BUILD)/vmc/src/VmcPrint.o: vmc/src/VmcPrint.c
 
 DTN_TESTS := test_reference test_rounds test_profiles test_health
 VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
+CMC_TESTS := test_cmc_packet
 
 test: $(foreach t,$(DTN_TESTS),$(BUILD)/dtn/$(t)) \
-      $(foreach t,$(VMC_TESTS),$(BUILD)/vmc/$(t))
+      $(foreach t,$(VMC_TESTS),$(BUILD)/vmc/$(t)) \
+      $(foreach t,$(CMC_TESTS),$(BUILD)/cmc/$(t))
 	@first=1; \
-	 for u in dtn vmc; do \
-	   case $$u in dtn) list="$(DTN_TESTS)";; vmc) list="$(VMC_TESTS)";; esac; \
+	 for u in dtn vmc cmc; do \
+	   case $$u in dtn) list="$(DTN_TESTS)";; vmc) list="$(VMC_TESTS)";; cmc) list="$(CMC_TESTS)";; esac; \
 	   for t in $$list; do \
 	     [ $$first = 1 ] || echo; first=0; \
 	     (cd $$u && ../$(BUILD)/$$u/$$t) || exit 1; \
@@ -57,6 +59,12 @@ $(BUILD)/dtn/%: dtn/tests/%.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/vmc/%: vmc/tests/%.c $(LIB_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
+
+# CmcPayloadVerify.h is a copy of the reference's header and carries helpers
+# this or that test does not call. Same reason as VmcPrint.o above.
+$(BUILD)/cmc/%: cmc/tests/%.c $(LIB_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-unused-function $^ -o $@
 

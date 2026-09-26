@@ -97,6 +97,50 @@ const vmc_config_t *app_config_vmc(void)
     return &g_vmc;
 }
 
+/* ------------------------------------------------------------------ */
+/* CMC                                                                */
+/* ------------------------------------------------------------------ */
+/* Four interfaces, one per CMC module, in the order the rig is cabled:
+ *   ens6f0  DSM-A   network A of the data plane, and its health monitor
+ *   ens6f1  DSM-B   network B of the data plane, and its health monitor
+ *   ens6f2  PMM1    listen only: the SMMM's stream to the first PMM
+ *   ens6f3  PMM2    listen only: the SMMM's stream to the second PMM
+ * The DPDK reference has a third PMM; two lines are what this rig runs, so
+ * PMM3 is not here rather than here and always empty. */
+static const cmc_config_t g_cmc = {
+    .nets = {
+        {.iface = "ens6f0", .label = "NET-A", .unit_label = "DSMA",
+         .src_mac_tail = 0x20, .tx_vlan = 97, .rx_vlan = 225},
+        {.iface = "ens6f1", .label = "NET-B", .unit_label = "DSMB",
+         .src_mac_tail = 0x40, .tx_vlan = 98, .rx_vlan = 226},
+    },
+    .net_count = 2,
+    .pmms = {
+        {.iface = "ens6f2", .label = "PMM1",
+         .unit_ip = "10.41.156.60", .unit_port  = 50000,
+         .local_ip = "10.41.156.61", .local_port = 10025, .rx_vlan = 227},
+        {.iface = "ens6f3", .label = "PMM2",
+         .unit_ip = "10.41.156.60", .unit_port  = 50000,
+         .local_ip = "10.41.156.62", .local_port = 10026, .rx_vlan = 228},
+    },
+    .pmm_count = 2,
+
+    .vlan_tagged = false,       /* direct cables; see the field's comment */
+
+    .tx_vl_start = 10001,
+    .rx_vl_start = 10521,
+    .vl_count    = 104,
+
+    .target_gbps      = 0.300,  /* the reference Makefile's default */
+    .warmup_s         = 120,
+    .stats_interval_s = 1,
+};
+
+const cmc_config_t *app_config_cmc(void)
+{
+    return &g_cmc;
+}
+
 const copper_link_t *app_config_config_link(void)
 {
     /* The 100M link is the proven management path: it is where the main ATE

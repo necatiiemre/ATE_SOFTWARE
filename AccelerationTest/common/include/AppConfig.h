@@ -180,6 +180,87 @@ typedef struct {
 
 const vmc_config_t *app_config_vmc(void);
 
+/* ------------------------------------------------------------------ */
+/* CMC                                                                */
+/* ------------------------------------------------------------------ */
+
+#define APP_MAX_CMC_NETS 2     /**< DSM-A and DSM-B */
+#define APP_MAX_CMC_PMMS 2     /**< PMM1 and PMM2; the rig fits two */
+
+/**
+ * @brief One DSM network: an interface, and the L2 identity it carries.
+ *
+ * The DPDK reference runs both networks down one fibre port and tells them
+ * apart by the 802.1Q tag the Cumulus switch adds and strips. Here each
+ * network has its own copper interface, so the interface is what tells them
+ * apart and the tag is not needed - see cmc_config_t::vlan_tagged.
+ */
+typedef struct {
+    const char *iface;
+    const char *label;        /**< "NET-A" / "NET-B", as the tables print it */
+    const char *unit_label;   /**< "DSMA" / "DSMB", as the rig is wired */
+    uint8_t     src_mac_tail; /**< last byte of the source MAC: 0x20 or 0x40 */
+    uint16_t    tx_vlan;      /**< only used when vlan_tagged is on */
+    uint16_t    rx_vlan;      /**< only used when vlan_tagged is on */
+} cmc_net_link_t;
+
+/**
+ * @brief One PMM line. Listen only: the SMMM sends, we count and check.
+ *
+ * The addresses are a consistency check rather than a filter - a packet whose
+ * addresses do not match is still counted, and the mismatch shows in the
+ * table, because that is how a wrong assumption here becomes visible instead
+ * of silently dropping traffic.
+ */
+typedef struct {
+    const char *iface;
+    const char *label;        /**< "PMM1" / "PMM2" */
+    const char *unit_ip;      /**< the SMMM, the sender */
+    uint16_t    unit_port;
+    const char *local_ip;     /**< the PMM, the addressee */
+    uint16_t    local_port;
+    uint16_t    rx_vlan;      /**< only used when vlan_tagged is on */
+} cmc_pmm_link_t;
+
+/**
+ * @brief Everything the CMC test needs: four interfaces and the wire format.
+ *
+ * One place, as with the VMC. The acceleration rig cables each CMC module to
+ * its own interface, so which interface is which module is the first thing
+ * that changes when the rig is re-cabled.
+ */
+typedef struct {
+    cmc_net_link_t nets[APP_MAX_CMC_NETS];
+    uint8_t        net_count;
+    cmc_pmm_link_t pmms[APP_MAX_CMC_PMMS];
+    uint8_t        pmm_count;
+
+    /**
+     * Whether frames carry an 802.1Q tag.
+     *
+     * Off, because the links are direct. In the DPDK rig the server sends
+     * tagged, the switch strips the tag before the CMC sees it, the CMC
+     * answers untagged and the switch tags it again on the way back - so the
+     * frame the unit handles is the untagged one, and that is the frame this
+     * puts on a direct cable. Turn it on only if a switch is put back in
+     * between; the payload keeps the VLAN-mode length either way so that what
+     * the unit sees stays byte for byte what it sees today.
+     */
+    bool     vlan_tagged;
+
+    uint16_t tx_vl_start;      /**< 10001: what the server sends */
+    uint16_t rx_vl_start;      /**< 10521: what the CMC sends back */
+    uint16_t vl_count;         /**< 104 VLs per network */
+
+    double   target_gbps;      /**< for the whole test, split across the networks */
+    unsigned warmup_s;         /**< run this long, then zero the counters */
+    unsigned stats_interval_s; /**< how often the dashboard is redrawn */
+} cmc_config_t;
+
+const cmc_config_t *app_config_cmc(void);
+
+
+
 /** Which copper link the configuration frames go out of. */
 const copper_link_t *app_config_config_link(void);
 
