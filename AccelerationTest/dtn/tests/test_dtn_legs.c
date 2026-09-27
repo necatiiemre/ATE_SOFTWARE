@@ -13,6 +13,8 @@
 #include "AppConfig.h"
 #include "DtnConfig.h"
 #include "DtnLegs.h"
+#include "PayloadVerify.h"
+#include "SplitmixVerify.h"
 #include "VlProfile.h"
 
 #include <stdio.h>
@@ -46,24 +48,47 @@ static const vl_profile_t *config1(void)
     return NULL;
 }
 
-static void put_be64(uint8_t *p, uint64_t v)
+/* What the VMC does to the payload it was given, written out from dpdk_vmc's
+ * receive path rather than called from the verifier - so the verifier is checked
+ * against an independent statement of the transform and not against itself.
+ *
+ * dpdk_vmc has no XOR'd byte, which is the one thing that differs from the CMC's
+ * version of the same transform. */
+static void apply_vmc_transform(uint8_t *payload, const uint8_t *prbs_exp)
 {
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * (7 - i)));
+    uint64_t seq;
+    memcpy(&seq, payload, sizeof seq);
+
+    const uint64_t seq_be = __builtin_bswap64(seq);
+    for (int blk = 0; blk < SPLITMIX_XOR_BYTES / 8; blk++) {
+        const uint64_t sm = __builtin_bswap64(splitmix64(8 * seq_be + (uint64_t)blk));
+        uint64_t orig;
+
+        memcpy(&orig, prbs_exp + blk * 8, 8);
+        const uint64_t xored = orig ^ sm;
+        memcpy(payload + 8 + blk * 8, &xored, 8);
+    }
+
+    const uint32_t crc = sw_crc32c(payload, 8 + SPLITMIX_XOR_BYTES);
+    const uint32_t be = __builtin_bswap32(crc);
+
+    memcpy(payload + 8 + SPLITMIX_XOR_BYTES, &be, sizeof be);
 }
 
-/* One frame as it comes back: sent from the fibre port on the return VL, with
- * the payload the workstation put in it. */
+/* One frame as it comes back: sent from the fibre port on the return VL, with the
+ * payload the workstation put in it and the VMC's rewrite applied. A data-plane
+ * frame, so nothing after the payload. */
 static size_t returned_frame(const dtn_leg_config_t *cfg, uint8_t fibre_port,
                             uint16_t rx_vl, uint64_t seq)
 {
     const size_t prbs_len = dtn_legs_prbs_stride(cfg);
     uint8_t payload[2048];
 
-    put_be64(payload, seq);
+    memcpy(payload, &seq, sizeof seq);          /* raw host order, as the unit writes it */
     memcpy(payload + 8, prbs31_at(&g_prbs, seq), prbs_len);
+    apply_vmc_transform(payload, prbs31_at(&g_prbs, seq));
 
-    int n = dtn_build_frame_from(fibre_port, payload, prbs_len + 8, 1, rx_vl,
+    int n = dtn_build_data_frame(fibre_port, payload, prbs_len + 8, rx_vl,
                                 -1, DTN_NET_A, g_frame, sizeof g_frame);
     return n > 0 ? (size_t)n : 0;
 }
@@ -117,12 +142,29 @@ static void test_good_and_bad(const vl_profile_t *p, const dtn_leg_config_t *cfg
     check(st->bit_errors == 0, "and a good frame contributes no bit errors");
     check(dtn_legs_stats(legs, 1)->rx_frames == 0, "nothing landed on the other leg");
 
-    /* One flipped bit in the payload. */
+    /* One flipped bit in the SplitMix zone: the CRC covers it, so both name it. */
     len = returned_frame(cfg, 8, 4025, 0);
-    g_frame[42 + 8 + 100] ^= 0x01;
+    g_frame[42 + 8 + 3] ^= 0x01;
     dtn_legs_ingest(legs, 32, g_frame, len);
-    check(st->bad == 1, "a corrupted payload is bad");
-    check(st->bit_errors == 1, "and one flipped bit is one bit error");
+    check(st->bad == 1, "a corrupted SplitMix zone is bad");
+    check(st->splitmix_fail == 1 && st->crc_fail == 1,
+          "and both the zone and the CRC over it say so");
+    check(st->bit_errors >= 1, "one flipped bit is at least one bit error");
+
+    /* And one in the PRBS zone, which neither the CRC nor SplitMix covers. */
+    len = returned_frame(cfg, 8, 4026, 0);
+    g_frame[42 + 8 + 200] ^= 0x01;
+    dtn_legs_ingest(legs, 32, g_frame, len);
+    check(st->bad == 2 && st->splitmix_fail == 1 && st->crc_fail == 1,
+          "a corrupted PRBS zone is bad without touching the other two columns");
+
+    /* The last payload byte is the DTN's to overwrite, so changing it must not
+     * make a frame bad - that is what the comparison leaves out. */
+    len = returned_frame(cfg, 8, 4027, 0);
+    g_frame[len - 1] ^= 0xFF;
+    dtn_legs_ingest(legs, 32, g_frame, len);
+    check(st->bad == 2, "the last payload byte is the DTN's and is not compared");
+    check(st->good == 2, "so that frame is good");
 
     dtn_legs_destroy(legs);
     printf("[ OK ] a returned frame verifies, a corrupted one does not\n");
@@ -217,14 +259,17 @@ static void test_frame_shape(const dtn_leg_config_t *cfg)
     const size_t prbs_len = dtn_legs_prbs_stride(cfg);
     uint8_t payload[2048];
 
-    check(prbs_len == (size_t)cfg->frame_bytes - 42 - 1 - 8,
-          "the PRBS fills what is left after the headers, the sequence and the "
-          "AFDX byte");
+    check(prbs_len == (size_t)cfg->frame_bytes - 42 - 8,
+          "the PRBS fills what is left after the headers and the sequence");
+    check(cfg->frame_bytes == 1509 && prbs_len == 1459,
+          "1509 bytes and 1459 of PRBS: what the VMC already answers, once the "
+          "switch has stripped dpdk_vmc's 802.1Q tag");
 
-    put_be64(payload, 0x0102030405060708ull);
+    const uint64_t seq = 0x0102030405060708ull;
+    memcpy(payload, &seq, sizeof seq);
     memset(payload + 8, 0xA5, prbs_len);
 
-    int n = dtn_build_frame_from(32, payload, prbs_len + 8, 7, 3024, -1,
+    int n = dtn_build_data_frame(32, payload, prbs_len + 8, 3024, -1,
                                 DTN_NET_A, g_frame, sizeof g_frame);
 
     check(n == cfg->frame_bytes, "the frame is the configured length");
@@ -234,19 +279,21 @@ static void test_frame_shape(const dtn_leg_config_t *cfg)
           g_frame[14 + 14] == 32 && g_frame[14 + 15] == 1,
           "the source IP names the copper port it came from");
     const uint16_t ip_len = (uint16_t)((g_frame[16] << 8) | g_frame[17]);
-    check(ip_len == 20 + 8 + prbs_len + 8,
-          "the IP length counts the payload and not the AFDX byte");
-    check((size_t)n == 42 + prbs_len + 8 + 1,
-          "which is why the frame is one byte longer than the IP says");
-    check(g_frame[n - 1] == 7, "the AFDX sequence byte is last");
+    check(ip_len == 20 + 8 + prbs_len + 8, "the IP length counts the whole payload");
+    check((size_t)n == 42 + prbs_len + 8,
+          "and the frame is exactly that long - no AFDX byte after it, because "
+          "the DTN writes its sequence into the last payload byte instead");
     check(memcmp(g_frame + 42, payload, prbs_len + 8) == 0,
-          "and the payload goes on the wire as it was built");
+          "the payload goes on the wire as it was built");
 
-    /* The configuration path must keep the reference's source IP: it is part of
-     * the only frame sequence real hardware is known to have accepted. */
+    /* The management path keeps its trailing byte, and the reference's source
+     * IP: both are part of the only frame sequence real hardware is known to
+     * have accepted. */
     n = dtn_build_frame(payload, 16, 1, 0x2600, -1, DTN_NET_A, g_frame, sizeof g_frame);
-    check(n > 0 && g_frame[14 + 14] == 33,
-          "the configuration path still sources from 10.1.33.1");
+    check(n == 42 + 16 + 1, "the management path still appends the AFDX byte");
+    check(g_frame[n - 1] == 1, "with the sequence in it");
+    check(g_frame[14 + 14] == 33,
+          "and still sources from 10.1.33.1");
     printf("[ OK ] the frame on the wire\n");
 }
 

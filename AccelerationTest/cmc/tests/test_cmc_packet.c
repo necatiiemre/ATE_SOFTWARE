@@ -11,7 +11,7 @@
 
 #include "AppConfig.h"
 #include "CmcPacket.h"
-#include "CmcPayloadVerify.h"
+#include "PayloadVerify.h"
 
 #include <stdio.h>
 #include <string.h>

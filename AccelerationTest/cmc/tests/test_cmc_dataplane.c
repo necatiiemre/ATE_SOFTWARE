@@ -13,9 +13,9 @@
 #include "AppConfig.h"
 #include "CmcDataPlane.h"
 #include "CmcPacket.h"
-#include "CmcPayloadVerify.h"
+#include "PayloadVerify.h"
 #include "CmcStats.h"
-#include "CmcVerify.h"
+#include "SplitmixVerify.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +62,7 @@ static void on_mmms(const uint8_t *payload, uint16_t len)
 /* ------------------------------------------------------------------ */
 
 /* What the CMC does to the payload it was given, written out from the spec in
- * CmcVerify.h. If this and the verifier ever disagree, one of them is wrong and
+ * SplitmixVerify.h. If this and the verifier ever disagree, one of them is wrong and
  * the test says so - which is the whole point of not reusing the verifier's
  * own helpers for the CRC and the XOR. */
 static void apply_cmc_transform(uint8_t *payload, const uint8_t *prbs_exp,
@@ -175,8 +175,9 @@ static void test_each_failure(const cmc_config_t *c)
         (void)len;
         payload[cases[i].offset] ^= 0x01;
 
-        cmc_verify_t v;
-        const bool ok = cmc_verify_payload(payload, prbs31_at(&g_prbs, 1), &v);
+        const splitmix_layout_t layout = SPLITMIX_LAYOUT_CMC(CMC_NUM_PRBS_BYTES);
+        splitmix_result_t v;
+        const bool ok = splitmix_verify(payload, prbs31_at(&g_prbs, 1), &layout, &v);
 
         check(!ok, "a corrupted payload fails");
         check(v.splitmix_ok == cases[i].expect_sm &&

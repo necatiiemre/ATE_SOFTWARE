@@ -4,6 +4,7 @@
 
 #include "DtnConfig.h"
 #include "Log.h"
+#include "SplitmixVerify.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -13,9 +14,12 @@
 #include <string.h>
 #include <time.h>
 
-/* Headers before the payload, and the AFDX sequence byte after it. */
+/* Headers before the payload. Nothing after it: a data-plane frame is exactly
+ * IP total_length long, and the AFDX sequence lives as the last byte inside the
+ * payload, written by the DTN on the way through - which is why the PRBS
+ * comparison leaves that byte out. dpdk_vmc's convention, followed because the
+ * VMC is what answers these frames. */
 #define LEG_HDR_BYTES   42
-#define LEG_TRAILER     1
 #define LEG_SEQ_BYTES   8
 
 /* BAG is 1 ms on every VL record, so one frame per VL per millisecond is the
@@ -48,7 +52,6 @@ typedef struct {
     raw_socket_t *sock;
 
     uint64_t    tx_seq[DTN_LEG_MAX_VLS];    /**< per VL, the sender's */
-    uint8_t     afdx_seq[DTN_LEG_MAX_VLS];  /**< per VL, the trailing byte */
     leg_rx_vl_t rx[DTN_LEG_MAX_VLS];
 
     dtn_leg_stats_t stats;
@@ -69,6 +72,7 @@ struct dtn_legs {
 
     size_t  payload_bytes;   /**< sequence and PRBS */
     size_t  prbs_bytes;      /**< payload minus the sequence */
+    splitmix_layout_t layout;
 
     /* VL id -> which leg and which of its VLs, for return frames. */
     uint8_t vl_leg[LEG_VL_TABLE];
@@ -107,24 +111,9 @@ static void wait_until(uint64_t target)
     }
 }
 
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    for (int i = 0; i < 8; i++)
-        p[i] = (uint8_t)(v >> (8 * (7 - i)));
-}
-
-static uint64_t rd_be64(const uint8_t *p)
-{
-    uint64_t v = 0;
-
-    for (int i = 0; i < 8; i++)
-        v = (v << 8) | p[i];
-    return v;
-}
-
 size_t dtn_legs_prbs_stride(const dtn_leg_config_t *config)
 {
-    return (size_t)config->frame_bytes - LEG_HDR_BYTES - LEG_TRAILER - LEG_SEQ_BYTES;
+    return (size_t)config->frame_bytes - LEG_HDR_BYTES - LEG_SEQ_BYTES;
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,6 +205,9 @@ dtn_legs_t *dtn_legs_create(const vl_profile_t *profile,
     legs->prbs_bytes    = dtn_legs_prbs_stride(config);
     legs->payload_bytes = legs->prbs_bytes + LEG_SEQ_BYTES;
 
+    /* The VMC's shape: no XOR'd byte, and the trailing byte left out. */
+    legs->layout = SPLITMIX_LAYOUT_VMC((uint16_t)legs->prbs_bytes);
+
     if (!build_legs(legs, profile)) {
         free(legs);
         return NULL;
@@ -266,7 +258,6 @@ void dtn_legs_reset(dtn_legs_t *legs)
 
         memset(&leg->stats, 0, sizeof leg->stats);
         memset(leg->tx_seq, 0, sizeof leg->tx_seq);
-        memset(leg->afdx_seq, 0, sizeof leg->afdx_seq);
         memset(leg->rx, 0, sizeof leg->rx);
     }
 }
@@ -314,19 +305,6 @@ static uint64_t track(leg_rx_vl_t *vl, uint64_t seq, bool *late)
     return gap;
 }
 
-static uint64_t bit_errors(const uint8_t *a, const uint8_t *b, size_t len)
-{
-    uint64_t bits = 0;
-
-    for (size_t i = 0; i < len; i++) {
-        const uint8_t diff = (uint8_t)(a[i] ^ b[i]);
-
-        if (diff)
-            bits += (uint64_t)__builtin_popcount(diff);
-    }
-    return bits;
-}
-
 bool dtn_legs_ingest(dtn_legs_t *legs, uint8_t copper_port,
                      const uint8_t *frame, size_t len)
 {
@@ -351,16 +329,16 @@ bool dtn_legs_ingest(dtn_legs_t *legs, uint8_t copper_port,
     leg->stats.rx_frames++;
     leg->stats.rx_bytes += len;
 
-    /* The frame is headers, payload and one AFDX byte. Anything else on a return
+    /* The frame is headers and payload, nothing after. Anything else on a return
      * VL is not one of ours - named rather than verified, because verifying it
      * would compare the wrong bytes and report a unit fault. */
-    if (len != (size_t)LEG_HDR_BYTES + legs->payload_bytes + LEG_TRAILER) {
+    if (len != (size_t)LEG_HDR_BYTES + legs->payload_bytes) {
         leg->stats.wrong_length++;
         return true;
     }
 
     const uint8_t *payload = frame + LEG_HDR_BYTES;
-    const uint64_t seq = rd_be64(payload);
+    const uint64_t seq = splitmix_payload_seq(payload);
     bool late = false;
     const uint64_t gap = track(&leg->rx[off], seq, &late);
 
@@ -371,13 +349,24 @@ bool dtn_legs_ingest(dtn_legs_t *legs, uint8_t copper_port,
 
     const uint8_t *want = prbs31_at(legs->prbs, seq);
 
-    if (want && memcmp(payload + LEG_SEQ_BYTES, want, legs->prbs_bytes) == 0) {
+    if (!want) {
+        leg->stats.wrong_length++;
+        return true;
+    }
+
+    /* What comes back is not what went out: the VMC rewrites the front of the
+     * payload - SplitMix64 over the sequence, then a CRC32C over both - and
+     * leaves the rest PRBS. The whole verdict of this leg is whether that
+     * rewrite is exactly right. */
+    splitmix_result_t v;
+
+    if (splitmix_verify(payload, want, &legs->layout, &v)) {
         leg->stats.good++;
     } else {
         leg->stats.bad++;
-        if (want)
-            leg->stats.bit_errors += bit_errors(payload + LEG_SEQ_BYTES, want,
-                                                legs->prbs_bytes);
+        if (!v.splitmix_ok) leg->stats.splitmix_fail++;
+        if (!v.crc_ok)      leg->stats.crc_fail++;
+        leg->stats.bit_errors += v.bit_errors;
     }
     return true;
 }
@@ -432,15 +421,17 @@ static void *leg_sender(void *arg)
         if (!prbs)
             break;
 
-        put_be64(payload, seq);
+        /* A raw host-order word, which is what the reference writes and what its
+         * receiver reads straight back out. */
+        memcpy(payload, &seq, sizeof seq);
         memcpy(payload + LEG_SEQ_BYTES, prbs, legs->prbs_bytes);
 
-        leg->afdx_seq[off] = (seq == 0) ? 0 : dtn_next_seq(leg->afdx_seq[off]);
-
-        const int n = dtn_build_frame_from(leg->copper_port, payload,
-                                          legs->payload_bytes, leg->afdx_seq[off],
-                                          vl_id, -1, DTN_NET_A,
-                                          frame, sizeof frame);
+        /* The last payload byte is left as PRBS: the DTN writes its own sequence
+         * over it on the way through, which is why both reference receivers
+         * leave it out of the comparison. dpdk_vmc does not stamp it either. */
+        const int n = dtn_build_data_frame(leg->copper_port, payload,
+                                          legs->payload_bytes, vl_id, -1,
+                                          DTN_NET_A, frame, sizeof frame);
         if (n > 0 && raw_socket_send(leg->sock, frame, (size_t)n)) {
             leg->stats.tx_frames++;
             leg->stats.tx_bytes += (uint64_t)n;
@@ -516,10 +507,10 @@ void dtn_legs_print_table(dtn_legs_t *legs)
         return;
 
     printf("\n  copper legs (workstation -> DTN -> VMC -> DTN -> workstation)\n");
-    printf("  ┌────────┬───────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────┐\n");
-    printf("  │ copper │   VL out /    │        Sent         │      Returned       │        Good         │         Bad         │        Lost         │      Bit Error      │     BER     │\n");
-    printf("  │  port  │   VL back     │                     │                     │                     │                     │                     │                     │             │\n");
-    printf("  ├────────┼───────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────┤\n");
+    printf("  ┌────────┬───────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┬─────────────┐\n");
+    printf("  │ copper │   VL out /    │        Sent         │      Returned       │        Good         │         Bad         │  SplitMix64 Fail    │    CRC32 Fail       │        Lost         │      Bit Error      │     BER     │\n");
+    printf("  │  port  │   VL back     │                     │                     │                     │                     │                     │                     │                     │                     │             │\n");
+    printf("  ├────────┼───────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼─────────────┤\n");
 
     for (uint8_t l = 0; l < legs->count; l++) {
         const leg_t *leg = &legs->leg[l];
@@ -534,11 +525,13 @@ void dtn_legs_print_table(dtn_legs_t *legs)
         const double ber = total_bits ? (double)errors / (double)total_bits : 0.0;
 
         printf("  │   %2u   │ %-13s │ %19" PRIu64 " │ %19" PRIu64 " │ %19" PRIu64
-               " │ %19" PRIu64 " │ %19" PRIu64 " │ %19" PRIu64 " │ %11.2e │\n",
+               " │ %19" PRIu64 " │ %19" PRIu64 " │ %19" PRIu64 " │ %19" PRIu64
+               " │ %19" PRIu64 " │ %11.2e │\n",
                leg->copper_port, range, st->tx_frames, st->rx_frames,
-               st->good, st->bad, st->lost, errors, ber);
+               st->good, st->bad, st->splitmix_fail, st->crc_fail,
+               st->lost, errors, ber);
     }
-    printf("  └────────┴───────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────┘\n");
+    printf("  └────────┴───────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴─────────────┘\n");
 
     /* What is wrong, in words, under the numbers. */
     for (uint8_t l = 0; l < legs->count; l++) {
@@ -551,7 +544,8 @@ void dtn_legs_print_table(dtn_legs_t *legs)
                    leg->copper_port, st->tx_frames);
         if (st->bad)
             printf("      copper %u: %" PRIu64 " frame(s) came back with the wrong "
-                   "payload\n", leg->copper_port, st->bad);
+                   "payload (SplitMix %" PRIu64 ", CRC %" PRIu64 ")\n",
+                   leg->copper_port, st->bad, st->splitmix_fail, st->crc_fail);
         if (st->lost)
             printf("      copper %u: %" PRIu64 " frame(s) lost\n",
                    leg->copper_port, st->lost);
@@ -585,9 +579,11 @@ void dtn_legs_log_summary(const dtn_legs_t *legs)
         log_line("    sent %" PRIu64 " / %" PRIu64 " byte(s), returned %" PRIu64
                  " / %" PRIu64, st->tx_frames, st->tx_bytes, st->rx_frames,
                  st->rx_bytes);
-        log_line("    good %" PRIu64 ", bad %" PRIu64 ", lost %" PRIu64
-                 ", out of order %" PRIu64 ", bit errors %" PRIu64,
-                 st->good, st->bad, st->lost, st->late, st->bit_errors);
+        log_line("    good %" PRIu64 ", bad %" PRIu64 " (SplitMix %" PRIu64
+                 ", CRC %" PRIu64 "), lost %" PRIu64 ", out of order %" PRIu64
+                 ", bit errors %" PRIu64,
+                 st->good, st->bad, st->splitmix_fail, st->crc_fail,
+                 st->lost, st->late, st->bit_errors);
         if (st->wrong_length)
             log_line("    %" PRIu64 " frame(s) on a return VL were not this test's",
                      st->wrong_length);

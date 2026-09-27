@@ -187,6 +187,20 @@ int dtn_build_frame_from(uint8_t src_port, const uint8_t *payload, size_t len,
                          uint8_t seq, uint16_t vl_id, int vlan, uint8_t net,
                          uint8_t *out, size_t cap);
 
+/**
+ * @brief A data-plane frame: no AFDX sequence byte outside the IP length.
+ *
+ * The management path appends one - the reference configuration does, and so
+ * does the device's own health monitor. The data plane does not: dpdk_vmc's
+ * frames are exactly IP total_length long, and the sequence lives as the last
+ * byte *inside* the payload, written by the DTN as the frame passes through.
+ * That is why both reference receivers leave the last payload byte out of their
+ * PRBS comparison, and why this builder leaves the end of the frame alone.
+ */
+int dtn_build_data_frame(uint8_t src_port, const uint8_t *payload, size_t len,
+                         uint16_t vl_id, int vlan, uint8_t net,
+                         uint8_t *out, size_t cap);
+
 /** The device's 1-byte AFDX counter: 0 is only the first value, then 1..255. */
 uint8_t dtn_next_seq(uint8_t seq);
 

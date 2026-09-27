@@ -1,6 +1,6 @@
 #include "CmcPmm.h"
 
-#include "CmcPayloadVerify.h"   /* sw_crc32c - the unit's table, not the standard one */
+#include "PayloadVerify.h"   /* sw_crc32c - the unit's table, not the standard one */
 #include "Log.h"
 #include "RawSocket.h"
 

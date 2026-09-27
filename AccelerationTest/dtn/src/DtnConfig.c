@@ -138,6 +138,10 @@ int dtn_build_payload(const dtn_block_t *blocks, size_t count, uint8_t op,
     return (int)n;
 }
 
+static int build_frame(uint8_t src_port, const uint8_t *payload, size_t len,
+                       bool trailer, uint8_t seq, uint16_t vl_id, int vlan,
+                       uint8_t net, uint8_t *out, size_t cap);
+
 int dtn_build_frame(const uint8_t *payload, size_t len, uint8_t seq,
                     uint16_t vl_id, int vlan, uint8_t net, uint8_t *out, size_t cap)
 {
@@ -150,8 +154,28 @@ int dtn_build_frame_from(uint8_t src_port, const uint8_t *payload, size_t len,
                          uint8_t seq, uint16_t vl_id, int vlan, uint8_t net,
                          uint8_t *out, size_t cap)
 {
+    return build_frame(src_port, payload, len, true, seq, vl_id, vlan, net, out, cap);
+}
+
+int dtn_build_data_frame(uint8_t src_port, const uint8_t *payload, size_t len,
+                         uint16_t vl_id, int vlan, uint8_t net,
+                         uint8_t *out, size_t cap)
+{
+    return build_frame(src_port, payload, len, false, 0, vl_id, vlan, net, out, cap);
+}
+
+/* @p trailer says whether the AFDX sequence byte goes on the end, outside the IP
+ * length. The management path carries it - the reference configuration does, and
+ * so does the device's own health monitor. The data plane does not: dpdk_vmc's
+ * frames are exactly IP total_length long, and the sequence lives as the last
+ * byte *inside* the payload, written by the DTN as the frame passes through. */
+static int build_frame(uint8_t src_port, const uint8_t *payload, size_t len,
+                       bool trailer, uint8_t seq, uint16_t vl_id, int vlan,
+                       uint8_t net, uint8_t *out, size_t cap)
+{
     size_t tagged = (vlan >= 0) ? VLAN_TAG_LEN : 0;
-    size_t total  = ETH_HDR_LEN + tagged + IP_HDR_LEN + UDP_HDR_LEN + len + 1;
+    size_t total  = ETH_HDR_LEN + tagged + IP_HDR_LEN + UDP_HDR_LEN + len +
+                    (trailer ? 1u : 0u);
     size_t n = 0;
     uint8_t *ip;
 
@@ -195,7 +219,8 @@ int dtn_build_frame_from(uint8_t src_port, const uint8_t *payload, size_t len,
     n += len;
 
     /* AFDX sequence byte, deliberately outside the IP total_length. */
-    out[n++] = seq;
+    if (trailer)
+        out[n++] = seq;
     return (int)n;
 }
 

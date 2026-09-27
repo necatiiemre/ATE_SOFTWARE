@@ -2,8 +2,8 @@
 
 #include "CmcDataPlane.h"
 
-#include "CmcPayloadVerify.h"
-#include "CmcVerify.h"
+#include "PayloadVerify.h"
+#include "SplitmixVerify.h"
 #include "Log.h"
 #include "RawSocket.h"
 
@@ -320,14 +320,16 @@ bool cmc_data_plane_ingest(cmc_data_plane_t *dp, uint8_t net,
         return false;
     }
 
-    const uint64_t seq = cmc_payload_seq(payload);
+    const uint64_t seq = splitmix_payload_seq(payload);
     const uint64_t gap = track_sequence(&dp->tracker[net][vl_id], seq);
 
     if (gap)
         st->lost += gap;
 
-    cmc_verify_t v;
-    const bool ok = cmc_verify_payload(payload, prbs31_at(dp->prbs, seq), &v);
+    /* The CMC's layout: the XOR'd byte, and the trailing byte left out. */
+    const splitmix_layout_t layout = SPLITMIX_LAYOUT_CMC(CMC_NUM_PRBS_BYTES);
+    splitmix_result_t v;
+    const bool ok = splitmix_verify(payload, prbs31_at(dp->prbs, seq), &layout, &v);
 
     st->total_rx_pkts++;
     if (ok) {

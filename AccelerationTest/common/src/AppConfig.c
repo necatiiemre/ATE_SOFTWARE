@@ -21,7 +21,7 @@ static const timing_config_t g_timing = {
 
 static const dtn_leg_config_t g_dtn_legs = {
     .target_mbps = 100.0,
-    .frame_bytes = 1513,
+    .frame_bytes = 1509,
 };
 
 const dtn_leg_config_t *app_config_dtn_legs(void)

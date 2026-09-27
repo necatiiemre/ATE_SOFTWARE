@@ -51,9 +51,14 @@ const timing_config_t *app_config_timing(void);
  * is what keeps the two comparable - a difference between them is then the
  * unit's rather than the cable's.
  *
- * frame_bytes is the whole frame on the wire, the trailing AFDX sequence byte
- * included. The VL records declare LMAX 1518, so that is the hard ceiling; 1513
- * is what the reference DPDK applications send and leaves a little room under it.
+ * frame_bytes is the whole frame on the wire, which for a data-plane frame is
+ * exactly its IP total_length - there is no AFDX byte after it, because the DTN
+ * writes its sequence into the last byte of the payload instead.
+ *
+ * 1509 is what dpdk_vmc's frames are once the switch has stripped their 802.1Q
+ * tag, which is to say it is what the VMC already answers: 42 bytes of header
+ * and a 1467-byte payload, of which 8 are the sequence and 1459 the PRBS. The VL
+ * records declare LMAX 1518, so there is room under the ceiling.
  */
 typedef struct {
     double   target_mbps;   /**< per leg */

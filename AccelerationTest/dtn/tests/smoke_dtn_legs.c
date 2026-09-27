@@ -26,6 +26,8 @@
 #include "DtnConfig.h"
 #include "DtnLegs.h"
 #include "Log.h"
+#include "PayloadVerify.h"
+#include "SplitmixVerify.h"
 #include "RawSocket.h"
 #include "VlProfile.h"
 
@@ -77,12 +79,14 @@ static vl_profile_t smoke_profile(void)
 /* ------------------------------------------------------------------ */
 
 struct unit_ctx {
-    raw_socket_t   sock;
-    volatile bool *stop;
-    uint16_t       tx_first;
-    uint16_t       rx_first;
-    uint16_t       vl_count;
-    uint64_t       echoed;
+    raw_socket_t          sock;
+    volatile bool        *stop;
+    uint16_t              tx_first;
+    uint16_t              rx_first;
+    uint16_t              vl_count;
+    size_t                prbs_bytes;
+    const prbs31_cache_t *prbs;     /**< its own copy, so an offset disagreement shows */
+    uint64_t              echoed;
 };
 
 static void *unit_thread_fn(void *arg)
@@ -103,9 +107,11 @@ static void *unit_thread_fn(void *arg)
                 const uint16_t back = (uint16_t)(u->rx_first + (vl - u->tx_first));
 
                 /* The VL id, in both the places a frame carries it, and the IP
-                 * checksum after it. The payload is returned untouched - which is
-                 * what this test assumes the VMC does, and the one thing here
-                 * that will have to change when the real behaviour is known. */
+                 * checksum after it. Then the VMC's rewrite of the payload:
+                 * SplitMix64 over the sequence, a CRC32C over both, and the rest
+                 * left as PRBS - dpdk_vmc's transform, written out here rather
+                 * than called from the verifier so the two are checked against
+                 * each other. */
                 buf[4] = (uint8_t)(back >> 8);
                 buf[5] = (uint8_t)back;
 
@@ -121,6 +127,30 @@ static void *unit_thread_fn(void *arg)
                 const uint16_t csum = (uint16_t)~sum;
                 ip[10] = (uint8_t)(csum >> 8);
                 ip[11] = (uint8_t)csum;
+
+                uint8_t *payload = buf + 42;
+                uint64_t seq;
+                memcpy(&seq, payload, sizeof seq);
+
+                const uint8_t *prbs = prbs31_at(u->prbs, seq);
+                const uint64_t seq_be = __builtin_bswap64(seq);
+
+                for (int blk = 0; blk < SPLITMIX_XOR_BYTES / 8; blk++) {
+                    const uint64_t sm =
+                        __builtin_bswap64(splitmix64(8 * seq_be + (uint64_t)blk));
+                    uint64_t orig;
+
+                    memcpy(&orig, prbs + blk * 8, 8);
+                    const uint64_t xored = orig ^ sm;
+                    memcpy(payload + 8 + blk * 8, &xored, 8);
+                }
+                const uint32_t crc = sw_crc32c(payload, 8 + SPLITMIX_XOR_BYTES);
+                const uint32_t be = __builtin_bswap32(crc);
+                memcpy(payload + 8 + SPLITMIX_XOR_BYTES, &be, sizeof be);
+
+                /* And the byte the DTN would overwrite on the way through, so the
+                 * round trip is as unkind as the real one. */
+                buf[n - 1] = (uint8_t)(seq & 0xFF);
 
                 if (raw_socket_send(&u->sock, buf, (size_t)n))
                     u->echoed++;
@@ -140,6 +170,7 @@ int main(void)
     const dtn_leg_config_t *base = app_config_dtn_legs();
     dtn_leg_config_t cfg = *base;
     prbs31_cache_t prbs = {0};
+    prbs31_cache_t unit_prbs = {0};
     volatile bool stop = false;
     struct unit_ctx unit = {0};
     pthread_t unit_thread;
@@ -160,11 +191,16 @@ int main(void)
         return 1;
     }
 
-    printf("Generating the PRBS-31 stream (%zu MB)...\n",
+    printf("Generating the PRBS-31 stream twice (%zu MB each - one for each end, "
+           "so an offset disagreement would show)...\n",
            PRBS31_CACHE_SIZE / (1024 * 1024));
     if (!prbs31_cache_init(&prbs, PRBS31_INITIAL_STATE,
+                           dtn_legs_prbs_stride(&cfg), NULL) ||
+        !prbs31_cache_init(&unit_prbs, PRBS31_INITIAL_STATE,
                            dtn_legs_prbs_stride(&cfg), NULL)) {
         puts("[FAIL] the PRBS stream would not allocate");
+        prbs31_cache_free(&prbs);
+        prbs31_cache_free(&unit_prbs);
         free(buf);
         return 1;
     }
@@ -174,6 +210,8 @@ int main(void)
     unit.tx_first = 3024;
     unit.rx_first = 4024;
     unit.vl_count = 4;
+    unit.prbs = &unit_prbs;
+    unit.prbs_bytes = dtn_legs_prbs_stride(&cfg);
     if (!raw_socket_open(&unit.sock, SMOKE_IFACE, true)) {
         puts("[FAIL] could not open a raw socket on " SMOKE_IFACE
              " - this test needs root");
@@ -254,6 +292,8 @@ int main(void)
     check(unit.echoed > 0, "the stand-in received them and sent them back");
     check(st->good > 0, "and the receive path verified what came back");
     check(st->bad == 0, "with nothing failing verification");
+    check(st->splitmix_fail == 0 && st->crc_fail == 0,
+          "the SplitMix zone and its CRC both regenerate");
     check(st->lost == 0, "and no gaps in any VL's sequence");
     check(st->wrong_length == 0, "nothing arrived the wrong length");
     check(st->late == 0, "and nothing arrived twice or out of order");
@@ -266,8 +306,13 @@ int main(void)
     check(st->good <= unit.echoed && st->good + 8 >= unit.echoed,
           "every frame that came back was verified exactly once");
 
-    /* The rate. Loopback is not a wire; what is checked is that pacing produced
-     * roughly what it was asked for rather than a burst or a trickle. */
+    /* The rate. Loopback is not a wire and this is not a measurement of the
+     * pacing: three threads share these cores, one of them running SplitMix64
+     * and a CRC over every frame, so the sender loses slots to contention that
+     * it would not lose on the rig. Measured on its own the loop keeps 826
+     * frames a second against 828 asked, and 8176 against 8264 at the slot the
+     * rig actually uses. What is checked here is only that pacing produced
+     * something in the region rather than a burst or a trickle. */
     double fps = 0.0;
     (void)dtn_legs_rate_plan(legs, &fps, NULL);
     const double want = fps * SMOKE_SECONDS;
@@ -287,6 +332,7 @@ join:
 out:
     dtn_legs_destroy(legs);
     prbs31_cache_free(&prbs);
+    prbs31_cache_free(&unit_prbs);
     free(buf);
 
     if (rc == 0)

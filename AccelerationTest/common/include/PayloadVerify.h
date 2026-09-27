@@ -1,13 +1,19 @@
 /**
- * @file CmcPayloadVerify.h
+ * @file PayloadVerify.h
  * @brief dpdk_cmc/include/PayloadVerify.h, copied.
  *
  * Verbatim from the reference except for three lines: the include guard, the
- * include (the reference pulls in its DPDK Packet.h for the payload sizes;
- * ours come from CmcPacket.h), and the two size names in SPLITMIX_MIN_PAYLOAD.
+ * include (the reference pulls in its DPDK Packet.h for the payload sizes; the
+ * sizes here are the caller's), and the two size names in SPLITMIX_MIN_PAYLOAD.
  * Nothing that touches a byte on the wire is changed - the CRC table in here is
  * deliberately not standard CRC-32C, and the comment explaining why is the
  * reference's own.
+ *
+ * In common/ rather than cmc/ because two units need it. The CMC applies the
+ * whole transform including the XOR'd byte; dpdk_vmc's is the same without that
+ * byte, so the DTN's copper legs - which end at the VMC - use everything here
+ * except XOR_ZONE_CHAIN and XOR_ZONE_MASK. See SplitmixVerify.h, which is where
+ * that difference is expressed.
  *
  * Do not tidy this file. It is a copy, and it is worth more as a copy that can
  * be diffed against the reference than as something that reads like the rest of
@@ -20,7 +26,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "CmcPacket.h"   /* CMC_SEQ_BYTES, CMC_NUM_PRBS_BYTES */
+#include <stdint.h>
+#include <string.h>
 
 /*
  * Ortak payload doğrulama ilkelleri.
@@ -56,7 +63,8 @@
 #define XOR_ZONE_BYTES       1
 #define SPLITMIX_TOTAL_OVERHEAD                                                \
     (SPLITMIX_XOR_BYTES + SPLITMIX_CRC_BYTES + XOR_ZONE_BYTES)  // 69
-#define SPLITMIX_MIN_PAYLOAD (CMC_SEQ_BYTES + SPLITMIX_TOTAL_OVERHEAD)         // 77
+#define SPLITMIX_SEQ_BYTES   8
+#define SPLITMIX_MIN_PAYLOAD (SPLITMIX_SEQ_BYTES + SPLITMIX_TOTAL_OVERHEAD)   // 77
 
 // Source-of-truth chain (kept as an array for clarity / easy edit).
 static const uint8_t XOR_ZONE_CHAIN[] __attribute__((unused)) = {6, 7, 8, 13, 15};

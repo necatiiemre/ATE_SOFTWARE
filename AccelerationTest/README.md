@@ -230,23 +230,57 @@ The copper legs are the point of the round: one flow proves the DTN forwards
 copper to fibre and back *and* that the VMC at the far end is alive, rather than
 two separate tests that each prove half of it.
 
-The workstation generates the traffic. Every payload is an 8-byte big-endian
-sequence followed by PRBS-31, the stream generated once at the start of a run
-(`common/Prbs31.c`, shared with the CMC test) and read at an offset the sequence
-decides - never per frame. So the receiver regenerates what it should have got
-from the sequence alone and remembers nothing between frames: a frame that
-arrives late still verifies on its own, and loss is the gap between the sequence
-that arrived and the one expected, per VL, counted once at the frame that reveals
-it.
+The workstation generates the traffic and the VMC answers it, so the frame and
+the transform are dpdk_vmc's, field for field. The workstation sends
+
+```
+[seq 8][PRBS 1459]
+```
+
+and gets back
+
+```
+[seq 8][SplitMix XOR 64][CRC32C 4][PRBS ...][last byte]
+```
+
+- the sequence is a raw host-order 64-bit word, which is what
+  `*seq_ptr = sequence_number` in the reference writes and what its receiver
+  reads straight back out. Not big-endian: reading it the other way round changes
+  which PRBS offset is regenerated, so this is the one field where a guess would
+  make every frame read as bad
+- the SplitMix zone is the original PRBS bytes XOR'd with `splitmix64` fed from
+  8 × the big-endian form of the sequence plus the block index, written
+  big-endian, eight bytes at a time
+- the CRC covers the sequence and that zone, is big-endian on the wire, and uses
+  the unit's own table rather than standard CRC-32C
+- the last payload byte is the DTN's: it writes its own sequence there as the
+  frame passes through, which is why both reference receivers leave it out of
+  their PRBS comparison and why this one does too
+
+dpdk_cmc applies the same transform plus one XOR'd byte; dpdk_vmc has no such
+byte, so the overhead is 68 where the CMC's is 69. That difference is the whole
+of what `splitmix_layout_t` in `common/SplitmixVerify.h` expresses, and both
+units go through the same verifier.
+
+Frames are 1509 bytes with nothing after the payload - a data-plane frame is
+exactly its IP total_length long. That is what dpdk_vmc's frames are once the
+switch has stripped their 802.1Q tag, which is to say it is what the VMC already
+answers. The management path is different and keeps its trailing AFDX byte: the
+reference configuration carries one and so does the device's own health monitor.
+
+The PRBS stream is generated once at the start of a run (`common/Prbs31.c`,
+shared with the CMC test) and read at an offset the sequence decides - never per
+frame. So the receiver regenerates what it should have got from the sequence
+alone and remembers nothing between frames: a frame that arrives late still
+verifies on its own, and loss is the gap between the sequence that arrived and
+the one expected, per VL, counted once at the frame that reveals it.
 
 Each VL keeps its own sequence, because each is its own AFDX stream with its own
-BAG, and because the DTN may reorder between VLs but not within one. Frames are
-1513 bytes with the trailing AFDX sequence byte outside the IP length, which is
-the convention every other frame on this rig follows, and the source IP names the
-copper port they came from.
+BAG, and because the DTN may reorder between VLs but not within one. The source
+IP names the copper port the frame came from.
 
 BAG is 1 ms on every VL record - one frame per VL per millisecond - and 100
-Mbit/s of 1513-byte frames over sixty VLs works out at about 138 a second each,
+Mbit/s of 1509-byte frames over sixty VLs works out at about 138 a second each,
 comfortably inside it. `dtn_legs_rate_plan` says so before the run rather than
 leaving a policed rate to look like loss during it.
 

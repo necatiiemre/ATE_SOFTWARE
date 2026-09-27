@@ -63,6 +63,8 @@ typedef struct {
     uint64_t rx_bytes;
     uint64_t good;
     uint64_t bad;
+    uint64_t splitmix_fail;   /**< the SplitMix zone did not regenerate */
+    uint64_t crc_fail;        /**< the CRC over the sequence and that zone */
     uint64_t bit_errors;
     uint64_t lost;          /**< gaps in a VL's sequence */
     uint64_t wrong_length;  /**< a return VL carrying something else */

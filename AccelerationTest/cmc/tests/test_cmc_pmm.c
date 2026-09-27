@@ -9,7 +9,7 @@
  */
 
 #include "AppConfig.h"
-#include "CmcPayloadVerify.h"
+#include "PayloadVerify.h"
 #include "CmcPmm.h"
 #include "CmcStats.h"
 

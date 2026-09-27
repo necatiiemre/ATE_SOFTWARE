@@ -28,9 +28,9 @@
 #include "AppConfig.h"
 #include "CmcDataPlane.h"
 #include "CmcPacket.h"
-#include "CmcPayloadVerify.h"
+#include "PayloadVerify.h"
 #include "CmcStats.h"
-#include "CmcVerify.h"
+#include "SplitmixVerify.h"
 #include "Log.h"
 #include "RawSocket.h"
 
@@ -98,7 +98,7 @@ struct unit_ctx {
     uint64_t                seen_own_echo;
 };
 
-/* What the CMC does, written out from the spec in CmcVerify.h rather than
+/* What the CMC does, written out from the spec in SplitmixVerify.h rather than
  * called from it - the XOR chain is applied one constant at a time, so the
  * folded mask the verifier uses is exercised rather than assumed. */
 static void apply_transform(uint8_t *payload, const uint8_t *prbs_exp, uint64_t seq)
@@ -142,7 +142,7 @@ static void *unit_thread_fn(void *arg)
                 const uint16_t offset = (uint16_t)(vl - c->tx_vl_start);
                 const uint16_t back   = (uint16_t)(c->rx_vl_start + offset);
                 uint8_t *payload = buf + payload_off;
-                const uint64_t seq = cmc_payload_seq(payload);
+                const uint64_t seq = splitmix_payload_seq(payload);
 
                 /* The VL id, in both the places it is carried. */
                 buf[4] = (uint8_t)(back >> 8);
