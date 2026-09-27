@@ -328,6 +328,62 @@ static bool wait_for_unit(size_t link_count, unsigned timeout_s)
     return false;
 }
 
+/**
+ * Let the unit settle before configuring it.
+ *
+ * The health monitor appearing on copper says the DTN is alive; it does not say
+ * it has finished coming up. The operator powers it by hand, so the test waits
+ * a fixed while after that first packet rather than racing the end of the boot -
+ * a configuration written into a device still starting is a configuration that
+ * may not stick, and the failure looks like a device that ignored it.
+ *
+ * The wait keeps reading: the links carry the unit's health monitor throughout,
+ * and letting it pile up in the socket buffer would only mean stale frames to
+ * work through afterwards. It also counts what arrived, so a unit that says one
+ * thing and then goes quiet again is visible before the configuration goes out
+ * rather than after.
+ *
+ * @return false if the operator asked to stop during the wait
+ */
+static bool settle_before_config(size_t link_count, unsigned seconds)
+{
+    if (seconds == 0)
+        return true;
+
+    const uint64_t until = hm_now_ms() + (uint64_t)seconds * 1000u;
+    uint64_t frames = 0;
+    unsigned last_report = 0;
+
+    log_line("letting the unit settle for %u s before configuring it", seconds);
+
+    while (hm_now_ms() < until) {
+        if (safe_shutdown_requested())
+            return false;
+
+        size_t which = 0;
+        int n = raw_socket_recv_any(g_links, link_count, g_rx, sizeof g_rx, 200, &which);
+
+        while (n > 0) {
+            frames++;
+            n = raw_socket_recv_nowait(&g_links[which], g_rx, sizeof g_rx);
+        }
+
+        /* A line a second, so a ten-second silence on the terminal is not
+         * mistaken for the program having stopped. */
+        const unsigned left = (unsigned)((until - hm_now_ms() + 999) / 1000);
+        if (left != last_report) {
+            last_report = left;
+            printf("\r  settling: %2u s left, %llu frame(s) from the unit   ",
+                   left, (unsigned long long)frames);
+            fflush(stdout);
+        }
+    }
+    putchar('\n');
+    log_line("settled: %llu frame(s) from the unit in %u s",
+             (unsigned long long)frames, seconds);
+    return true;
+}
+
 static bool send_configuration(raw_socket_t *config_sock, int frame_count, unsigned gap_ms)
 {
     for (int i = 0; i < frame_count; i++) {
@@ -425,8 +481,12 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                  * the configuration that is about to go out wants a quiet wire. */
                 dtn_legs_pause(g_legs, true);
             } else {
-                /* It rebooted, so its VL table is gone. Put it back. */
-                log_line("unit is back - re-sending the configuration");
+                /* It rebooted, so its VL table is gone. Put it back - after the
+                 * same settle the first configuration waits through, because it
+                 * is the same situation: talking is not the same as ready. */
+                log_line("unit is back");
+                settle_before_config(link_count, timing->config_settle_s);
+                log_line("re-sending the configuration");
                 if (send_configuration(config_sock, frame_count, timing->frame_gap_ms))
                     log_line("configuration restored after event %u", interruptions);
                 else
@@ -528,6 +588,9 @@ unit_result_t dtn_test_run(void)
            round.management ? "  (round + DTN management VLs)" : "  (round only)");
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
     printf("  config out  : %s (DTN port %u)\n", config_link->iface, config_link->dtn_port);
+    printf("  power       : switch the DTN on by hand; the test waits for its\n"
+           "                health monitor, then %u s more before configuring\n",
+           timing->config_settle_s);
     printf("  listening   :");
     for (size_t i = 0; i < link_count; i++)
         printf(" %s (DTN port %u)%s", copper[i].iface, copper[i].dtn_port,
@@ -622,6 +685,11 @@ unit_result_t dtn_test_run(void)
 
     if (!wait_for_unit(link_count, timing->device_ready_timeout_s)) {
         result = safe_shutdown_requested() ? UNIT_RESULT_ABORTED : UNIT_RESULT_ERROR;
+        goto done;
+    }
+
+    if (!settle_before_config(link_count, timing->config_settle_s)) {
+        result = UNIT_RESULT_ABORTED;
         goto done;
     }
 

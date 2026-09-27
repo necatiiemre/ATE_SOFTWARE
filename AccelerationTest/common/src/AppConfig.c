@@ -16,6 +16,7 @@ static const timing_config_t g_timing = {
     .device_ready_timeout_s  = 90,
     .status_reply_timeout_ms = 2000,
     .heartbeat_timeout_ms    = 5000,
+    .config_settle_s        = 10,
     .display_interval_ms     = 1000,
 };
 

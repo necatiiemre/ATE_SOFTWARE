@@ -31,6 +31,17 @@ typedef struct {
     unsigned device_ready_timeout_s;  /**< how long to wait for the unit to come up */
     unsigned status_reply_timeout_ms;
     unsigned heartbeat_timeout_ms;    /**< silence that counts as "unit lost" */
+    /**
+     * How long to let the unit settle after it starts talking, before the
+     * configuration goes out.
+     *
+     * The operator powers the DTN by hand. Its health monitor appearing on
+     * copper is the first sign it is alive, but not that it has finished coming
+     * up - so the configuration waits a while after that rather than racing the
+     * end of the boot. The same wait applies when the unit comes back after
+     * going quiet mid-run, which is the same situation.
+     */
+    unsigned config_settle_s;
     unsigned display_interval_ms;     /**< how often the live table is redrawn */
 } timing_config_t;
 
