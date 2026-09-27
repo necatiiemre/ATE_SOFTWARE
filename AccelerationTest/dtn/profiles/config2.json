@@ -1,6 +1,6 @@
 {
   "name": "config2",
-  "description": "Round 2 of 3 - fibre ports 6-11 paired with 22-27, HM out of ports 15 and 31",
+  "description": "Round 2 of 3 - config1 ten ports along: fibre 10-13 paired with 14-17, the VMC on ports 18 and 19, and the copper legs 32<->18 and 33<->19",
   "vl_block_size": 10,
   "link_groups": [
     {
@@ -8,28 +8,20 @@
       "vl_id_base": 1024,
       "links": [
         [
-          6,
-          22
-        ],
-        [
-          7,
-          23
-        ],
-        [
-          8,
-          24
-        ],
-        [
-          9,
-          25
-        ],
-        [
           10,
-          26
+          14
         ],
         [
           11,
-          27
+          15
+        ],
+        [
+          12,
+          16
+        ],
+        [
+          13,
+          17
         ]
       ]
     },
@@ -38,52 +30,76 @@
       "vl_id_base": 2024,
       "links": [
         [
-          22,
-          6
-        ],
-        [
-          23,
-          7
-        ],
-        [
-          24,
-          8
-        ],
-        [
-          25,
-          9
-        ],
-        [
-          26,
+          14,
           10
         ],
         [
-          27,
+          15,
           11
+        ],
+        [
+          16,
+          12
+        ],
+        [
+          17,
+          13
         ]
       ]
     }
   ],
   "health_monitor": [
     {
-      "src": 15,
-      "dst": 33,
+      "comment": "the VMC's health monitor, port 18 out to the 1G copper link",
+      "src": 18,
+      "dst": 32,
       "vl": 100,
-      "flags": 13
+      "flags": 9
     },
     {
-      "src": 31,
+      "comment": "the VMC's health monitor, port 19 out to the 100M copper link",
+      "src": 19,
       "dst": 33,
       "vl": 101,
-      "flags": 13
+      "flags": 9
     }
   ],
-  "health_monitor_flags_note": "flags 0xD matches VL 4488 in the main software, the VL that carries health monitor data (HEALTH_MONITOR_RESPONSE_VL_IDX). Every other reference VL uses 0x9.",
+  "health_monitor_flags_note": "flags 0x9 (ENABLE|RESERVED), which is what every record in the captured configuration carries, taps included. 0xD - the extra PRIORITY bit - appears only on VL 4488 in the reference blob, so it belongs to that VL and not to taps in general.",
   "dtn_health_monitor": {
     "comment": "the DTN's own, out of the internal management port; VL 38 is also written into the end-system block",
     "src": 34,
-    "dst": 33,
+    "dst": 32,
     "vl": 38,
     "flags": 13
-  }
+  },
+  "copper_legs": [
+    {
+      "comment": "workstation -> VMC through fibre port 18",
+      "vl_first": 3024,
+      "vl_count": 60,
+      "src": 32,
+      "dst": 18
+    },
+    {
+      "comment": "VMC -> workstation through fibre port 18",
+      "vl_first": 4024,
+      "vl_count": 60,
+      "src": 18,
+      "dst": 32
+    },
+    {
+      "comment": "workstation -> VMC through fibre port 19",
+      "vl_first": 5024,
+      "vl_count": 60,
+      "src": 33,
+      "dst": 19
+    },
+    {
+      "comment": "VMC -> workstation through fibre port 19",
+      "vl_first": 6024,
+      "vl_count": 60,
+      "src": 19,
+      "dst": 33
+    }
+  ]
 }

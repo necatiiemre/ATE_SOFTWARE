@@ -12,10 +12,11 @@
  * so they are checked the same way: take each captured record, substitute the
  * ports that round uses, and nothing else may differ.
  *
- * config1 is no longer that table. It pairs four adjacent fibre ports, taps the
- * VMC on ports 8 and 9 into both copper links, and adds 240 records for the
- * copper legs. Nothing was captured of it, so the claim made about it here is
- * the one that can be made without hardware: it expands to exactly the routing
+ * config1 and config2 are no longer that table. Each pairs four adjacent fibre
+ * ports, taps the VMC on the next two into both copper links, and adds 240
+ * records for the copper legs - config1 on ports 0-9, config2 ten along on
+ * 10-19. Nothing was captured of either, so the claim made about them here is
+ * the one that can be made without hardware: each expands to exactly the routing
  * its profile declares, and the framing around it is still right.
  *
  * We send one record more than the capture does: DTN_HEALTH_MONITOR_VL, the
@@ -125,10 +126,10 @@ typedef struct {
     uint8_t     tap[2];     /**< where the fibre-side unit's health monitor taps */
 } round_ports_t;
 
-/* config1 is not here: it is no longer the captured table with different ports,
- * so there is nothing to substitute. It has its own check further down. */
+/* config1 and config2 are not here: they are no longer the captured table with
+ * different ports, so there is nothing to substitute. They have their own check
+ * further down. */
 static const round_ports_t g_rounds[] = {
-    {"config2",  6, 22, {15, 31}},
     {"config3", 10, 26, { 0, 16}},
 };
 
@@ -198,15 +199,19 @@ static int check_round(const round_ports_t *r)
     return 0;
 }
 
-/* config1, against the routing its own profile declares.
+/* A round with copper legs, against the routing its own profile declares.
  *
- * Nothing was captured of this configuration, so the check is not "it matches a
- * blob" but "every record says what the profile says it should": the right VL id
- * on the right port pair, in the right order, with the flags the device expects.
- * That is what catches a fat-fingered port number or a VL run that overlaps
- * another, which is the mistake this table invites.
+ * config1 and config2 are the same round on different ports, so one check serves
+ * both: give it where the fibre pairs start and where the VMC's two ports are,
+ * and it builds the whole table the profile should have produced.
+ *
+ * Nothing was captured of either, so the check is not "it matches a blob" but
+ * "every record says what the profile says it should": the right VL id on the
+ * right port pair, in the right order, with the flags the device expects. That is
+ * what catches a fat-fingered port number or a VL run that overlaps another,
+ * which is the mistake this table invites.
  */
-static int check_config1(void)
+static int check_legs_round(const char *name, uint8_t fibre_base, uint8_t vmc_base)
 {
     const vl_profile_t *profiles;
     const vl_profile_t *p = NULL;
@@ -214,45 +219,48 @@ static int check_config1(void)
 
     profiles = vl_profile_all(&n);
     for (size_t i = 0; i < n; i++)
-        if (strcmp(profiles[i].name, "config1") == 0)
+        if (strcmp(profiles[i].name, name) == 0)
             p = &profiles[i];
     if (!p) {
-        puts("[FAIL] there is no config1 profile");
+        printf("[FAIL] there is no %s profile\n", name);
         return 1;
     }
 
     static dtn_vl_t rec[VL_PROFILE_MAX_RECORDS];
     int count = vl_profile_expand(p, rec, VL_PROFILE_MAX_RECORDS);
 
-    /* What the round is: four fibre pairs both ways at ten VLs each, two taps,
-     * the DTN's own health monitor, and four copper legs of sixty. */
+    /* Four fibre pairs both ways at ten VLs each, two taps, the DTN's own health
+     * monitor, and four copper legs of sixty. */
     const int want_count = 4 * 10 * 2 + 2 + 1 + 4 * 60;
 
     if (count != want_count) {
-        printf("[FAIL] config1 expands to %d records, expected %d\n", count, want_count);
+        printf("[FAIL] %s expands to %d records, expected %d\n", name, count, want_count);
         return 1;
     }
 
-    /* Every record, in order, as the profile declares it. */
     struct { uint16_t vl; uint8_t src, dst; uint8_t flags; } want[VL_PROFILE_MAX_RECORDS];
     int w = 0;
 
-    static const uint8_t fwd[4][2] = {{0,4},{1,5},{2,6},{3,7}};
     for (int l = 0; l < 4; l++)
         for (int k = 0; k < 10; k++)
             want[w++] = (typeof(want[0])){(uint16_t)(1024 + l * 10 + k),
-                                          fwd[l][0], fwd[l][1], 0x9};
+                                          (uint8_t)(fibre_base + l),
+                                          (uint8_t)(fibre_base + 4 + l), 0x9};
     for (int l = 0; l < 4; l++)
         for (int k = 0; k < 10; k++)
             want[w++] = (typeof(want[0])){(uint16_t)(2024 + l * 10 + k),
-                                          fwd[l][1], fwd[l][0], 0x9};
+                                          (uint8_t)(fibre_base + 4 + l),
+                                          (uint8_t)(fibre_base + l), 0x9};
 
-    want[w++] = (typeof(want[0])){100, 8, 32, 0x9};    /* the VMC's health monitor */
-    want[w++] = (typeof(want[0])){101, 9, 33, 0x9};
+    want[w++] = (typeof(want[0])){100, vmc_base,           32, 0x9};
+    want[w++] = (typeof(want[0])){101, (uint8_t)(vmc_base + 1), 33, 0x9};
     want[w++] = (typeof(want[0])){DTN_HEALTH_MONITOR_VL, 34, 32, 0xD};
 
-    static const uint16_t leg_first[4] = {3024, 4024, 5024, 6024};
-    static const uint8_t  leg_ports[4][2] = {{32,8},{8,32},{33,9},{9,33}};
+    const uint16_t leg_first[4] = {3024, 4024, 5024, 6024};
+    const uint8_t  leg_ports[4][2] = {
+        {32, vmc_base}, {vmc_base, 32},
+        {33, (uint8_t)(vmc_base + 1)}, {(uint8_t)(vmc_base + 1), 33},
+    };
     for (int g = 0; g < 4; g++)
         for (int k = 0; k < 60; k++)
             want[w++] = (typeof(want[0])){(uint16_t)(leg_first[g] + k),
@@ -268,20 +276,20 @@ static int check_config1(void)
 
         if (rec[i].vl_id != want[i].vl || rec[i].src_port != want[i].src ||
             rec[i].dest_mask != mask || rec[i].flags != want[i].flags) {
-            printf("[FAIL] config1 record %d: VL %u port %u -> mask %llx flags 0x%X, "
+            printf("[FAIL] %s record %d: VL %u port %u -> mask %llx flags 0x%X, "
                    "expected VL %u port %u -> port %u flags 0x%X\n",
-                   i, rec[i].vl_id, rec[i].src_port,
+                   name, i, rec[i].vl_id, rec[i].src_port,
                    (unsigned long long)rec[i].dest_mask, rec[i].flags,
                    want[i].vl, want[i].src, want[i].dst, want[i].flags);
             return 1;
         }
     }
 
-    /* The routing has to be sound on the hardware as well as on paper: no port
-     * carrying fibre traffic and health-monitor data at once, no repeated VL. */
+    /* Sound on the hardware as well as on paper: no port carrying fibre traffic
+     * and health-monitor data at once, no repeated VL. */
     char reason[128];
     if (!vl_profile_validate(rec, (size_t)count, reason, sizeof reason)) {
-        printf("[FAIL] config1 does not validate: %s\n", reason);
+        printf("[FAIL] %s does not validate: %s\n", name, reason);
         return 1;
     }
 
@@ -292,12 +300,15 @@ static int check_config1(void)
                                          NULL, 0, -1, &DTN_CONFIG_DEFAULT,
                                          g_frames, DTN_MAX_CONFIG_FRAMES);
     if (frames < 0) {
-        puts("[FAIL] config1 does not fit in configuration frames");
+        printf("[FAIL] %s does not fit in configuration frames\n", name);
         return 1;
     }
 
-    printf("[ OK ] config1  %d records, %d frames: fibre 0-3 <-> 4-7, VMC taps on "
-           "8 and 9, copper legs 32<->8 and 33<->9\n", count, frames);
+    printf("[ OK ] %s  %d records, %d frames: fibre %u-%u <-> %u-%u, VMC taps on "
+           "%u and %u, copper legs 32<->%u and 33<->%u\n",
+           name, count, frames, fibre_base, fibre_base + 3,
+           fibre_base + 4, fibre_base + 7, vmc_base, vmc_base + 1,
+           vmc_base, vmc_base + 1);
     return 0;
 }
 
@@ -449,7 +460,8 @@ int main(void)
     int failures = check_records(count) || check_frames(frames);
     for (size_t i = 0; i < sizeof g_rounds / sizeof g_rounds[0]; i++)
         failures += check_round(&g_rounds[i]);
-    failures += check_config1();
+    failures += check_legs_round("config1", 0, 8);
+    failures += check_legs_round("config2", 10, 18);
 
     if (failures) {
         puts("FAILED: a round does not match the capture");

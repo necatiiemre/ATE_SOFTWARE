@@ -13,8 +13,7 @@
  * worth being able to read one without decoding a macro.
  */
 
-/* config2 and config3 still have the six-pair shape, so a macro still earns its
- * place for them. */
+/* config3 still has the six-pair shape, so a macro still earns its place. */
 #define SIX_PAIRS(a, b)                                                          \
     {                                                                            \
         {(a) + 0, (b) + 0, 1024, 10}, {(a) + 1, (b) + 1, 1034, 10},              \
@@ -46,16 +45,24 @@ static const scenario_t g_scenarios[] = {
         .tap_count = 0,
     },
 
-    /* config2 and config3 - unchanged. */
+    /* ----------------------------------------------------------------
+     * config2: config1 ten ports along. Ports 18 and 19 are the VMC's in this
+     * round, so no taps here either.
+     * ---------------------------------------------------------------- */
     {
         .name = "config2",
-        .description = "fibre ports 6-11 <-> 22-27,  taps from ports 15 and 31",
-        .link_count = 12,
-        .links = SIX_PAIRS(6, 22),
-        .tap_count = 2,
-        .taps = {{15, 33, 100}, {31, 33, 101}},
+        .description = "fibre 10-13 <-> 14-17 (ports 18/19 belong to the VMC)",
+        .link_count = 8,
+        .links = {
+            {10, 14, 1024, 10}, {11, 15, 1034, 10},
+            {12, 16, 1044, 10}, {13, 17, 1054, 10},
+            {14, 10, 2024, 10}, {15, 11, 2034, 10},
+            {16, 12, 2044, 10}, {17, 13, 2054, 10},
+        },
+        .tap_count = 0,
     },
-    /* Round 3 moves the taps: ports 15 and 31 carry fibre traffic here. */
+    /* config3 - unchanged. Its taps moved because ports 15 and 31 carry fibre
+     * traffic in that round. */
     {
         .name = "config3",
         .description = "fibre ports 10-15 <-> 26-31, taps from ports 0 and 16",

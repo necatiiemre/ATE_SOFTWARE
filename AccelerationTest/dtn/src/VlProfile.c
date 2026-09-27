@@ -5,19 +5,19 @@
 
 /* Fibre links, per round, in each direction.
  *
- * config1 pairs four adjacent ports - 0 with 4, 1 with 5 and so on - and leaves
- * ports 8 and 9 to the VMC: the taps bring the VMC's health monitor out of them,
- * and the copper legs carry the workstation's traffic through them. config2 and
- * config3 still have the six-pair shape they were written with; they get their
- * own ports when their turn comes.
+ * config1 and config2 are the same round on different ports: four adjacent pairs
+ * with the next two ports left to the VMC - 0-9 for config1, 10-19 for config2.
+ * The taps bring the VMC's health monitor out of those two, and the copper legs
+ * carry the workstation's traffic through them. config3 still has the six-pair
+ * shape it was written with; it gets its own ports when its turn comes.
  *
  * Each round is written out on its own rather than generated from a shared
  * macro. They no longer have a shape in common, and one that did would hide
  * which round changed. */
 static const vl_link_t C1_FWD[] = {{0,4},{1,5},{2,6},{3,7}};
 static const vl_link_t C1_REV[] = {{4,0},{5,1},{6,2},{7,3}};
-static const vl_link_t C2_FWD[] = {{6,22},{7,23},{8,24},{9,25},{10,26},{11,27}};
-static const vl_link_t C2_REV[] = {{22,6},{23,7},{24,8},{25,9},{26,10},{27,11}};
+static const vl_link_t C2_FWD[] = {{10,14},{11,15},{12,16},{13,17}};
+static const vl_link_t C2_REV[] = {{14,10},{15,11},{16,12},{17,13}};
 static const vl_link_t C3_FWD[] = {{10,26},{11,27},{12,28},{13,29},{14,30},{15,31}};
 static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,15}};
 
@@ -232,21 +232,40 @@ static const vl_profile_t g_profiles[] = {
     },
 
     /* ----------------------------------------------------------------
-     * config2 - still the shape it was written with.
+     * config2 - config1 ten ports along, and nothing else changed.
+     *
+     *   fibre     10 <-> 14, 11 <-> 15, 12 <-> 16, 13 <-> 17
+     *   ports 18/19 the VMC
+     *   the VL ids are config1's: the two rounds never run at once, and
+     *   keeping them the same means one less thing that differs between a
+     *   round that works and a round that does not.
      * ---------------------------------------------------------------- */
     {
         .name = "config2",
-        .description = "fibre ports 6-11 <-> 22-27,  HM from ports 15 and 31",
+        .description = "fibre 10-13 <-> 14-17, VMC on 18/19, copper legs 32<->18 and 33<->19",
         .group_count = 2,
         .groups = {FIBRE_GROUP(1024, C2_FWD), FIBRE_GROUP(2024, C2_REV)},
+
         .hm_count = 2,
         .hm = {
-            {.vl_id = 100, .src_port = 15, .dst_port = 33, .flags = HM_FLAGS},
-            {.vl_id = 101, .src_port = 31, .dst_port = 33, .flags = HM_FLAGS},
+            {.vl_id = 100, .src_port = 18, .dst_port = 32, .flags = HM_FLAGS},
+            {.vl_id = 101, .src_port = 19, .dst_port = 33, .flags = HM_FLAGS},
         },
-        .comm_count = 0,
+
+        .comm_count = 4,
+        .comms = {
+            {.vl_first = 3024, .vl_count = 60, .src_port = 32, .dst_port = 18,
+             .label = "workstation -> VMC, port 18"},
+            {.vl_first = 4024, .vl_count = 60, .src_port = 18, .dst_port = 32,
+             .label = "VMC -> workstation, port 18"},
+            {.vl_first = 5024, .vl_count = 60, .src_port = 33, .dst_port = 19,
+             .label = "workstation -> VMC, port 19"},
+            {.vl_first = 6024, .vl_count = 60, .src_port = 19, .dst_port = 33,
+             .label = "VMC -> workstation, port 19"},
+        },
+
         .dtn_health_monitor = true,
-        .dtn_hm_port = DTN_HEALTH_MONITOR_PORT,
+        .dtn_hm_port = 32,
         .management = false,
     },
 
