@@ -3,14 +3,27 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Fibre links, six pairs per round in each direction. Round 3 overlaps round 2
- * on ports 10-11 and 26-27; together the three rounds cover fibre ports 0-31. */
-static const vl_link_t C1_FWD[] = {{0,16},{1,17},{2,18},{3,19},{4,20},{5,21}};
-static const vl_link_t C1_REV[] = {{16,0},{17,1},{18,2},{19,3},{20,4},{21,5}};
+/* Fibre links, per round, in each direction.
+ *
+ * config1 pairs four adjacent ports - 0 with 4, 1 with 5 and so on - and leaves
+ * ports 8 and 9 to the VMC: the taps bring the VMC's health monitor out of them,
+ * and the copper legs carry the workstation's traffic through them. config2 and
+ * config3 still have the six-pair shape they were written with; they get their
+ * own ports when their turn comes.
+ *
+ * Each round is written out on its own rather than generated from a shared
+ * macro. They no longer have a shape in common, and one that did would hide
+ * which round changed. */
+static const vl_link_t C1_FWD[] = {{0,4},{1,5},{2,6},{3,7}};
+static const vl_link_t C1_REV[] = {{4,0},{5,1},{6,2},{7,3}};
 static const vl_link_t C2_FWD[] = {{6,22},{7,23},{8,24},{9,25},{10,26},{11,27}};
 static const vl_link_t C2_REV[] = {{22,6},{23,7},{24,8},{25,9},{26,10},{27,11}};
 static const vl_link_t C3_FWD[] = {{10,26},{11,27},{12,28},{13,29},{14,30},{15,31}};
 static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,15}};
+
+/* The captured configuration's links, kept because the capture is kept. */
+static const vl_link_t REF_FWD[] = {{0,16},{1,17},{2,18},{3,19},{4,20},{5,21}};
+static const vl_link_t REF_REV[] = {{16,0},{17,1},{18,2},{19,3},{20,4},{21,5}};
 
 /* Every record of the captured configuration carries 0x9, the health-monitor
  * taps included. 0xD - the extra PRIORITY bit - appears only on the DTN's own
@@ -160,32 +173,168 @@ const dtn_vl_t *vl_profile_management(size_t *count)
     return decoded;
 }
 
-#define ROUND(nm, desc, fwd, rev, hm0, hm1)                              \
-    {                                                                    \
-        .name = nm, .description = desc,                                 \
-        .group_count = 2,                                                \
-        .groups = {                                                      \
-            {.vl_base = 1024, .vls_per_link = 10, .link_count = 6, .links = fwd}, \
-            {.vl_base = 2024, .vls_per_link = 10, .link_count = 6, .links = rev}, \
-        },                                                               \
-        .hm_count = 2,                                                   \
-        .hm = {                                                          \
-            {.vl_id = 100, .src_port = hm0, .dst_port = 33, .flags = HM_FLAGS}, \
-            {.vl_id = 101, .src_port = hm1, .dst_port = 33, .flags = HM_FLAGS}, \
-        },                                                               \
-        .dtn_health_monitor = true,                                      \
-        .management = false,                                             \
-    }
+/* ------------------------------------------------------------------ */
+/* The rounds                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Ten VLs per fibre link, forward numbering from 1024 and reverse from 2024,
+ * which is the scheme the capture uses and the fibre emulator mirrors. */
+/* The parameter is not called `links`: the preprocessor replaces that token
+ * wherever it appears, `.links` included, and the designator becomes nonsense. */
+#define FIBRE_GROUP(base, tbl) \
+    {.vl_base = (base), .vls_per_link = 10, \
+     .link_count = (uint8_t)(sizeof (tbl) / sizeof (tbl)[0]), .links = (tbl)}
 
 static const vl_profile_t g_profiles[] = {
-    ROUND("config1", "fibre ports 0-5 <-> 16-21,   HM from ports 15 and 31",
-          C1_FWD, C1_REV, 15, 31),
-    ROUND("config2", "fibre ports 6-11 <-> 22-27,  HM from ports 15 and 31",
-          C2_FWD, C2_REV, 15, 31),
-    /* Round 3 moves the health monitor: ports 15 and 31 carry fibre traffic here. */
-    ROUND("config3", "fibre ports 10-15 <-> 26-31, HM from ports 0 and 16",
-          C3_FWD, C3_REV, 0, 16),
+    /* ----------------------------------------------------------------
+     * config1
+     *
+     *   fibre     0 <-> 4, 1 <-> 5, 2 <-> 6, 3 <-> 7
+     *   ports 8/9 the VMC: its health monitor out to copper on VL 100 and 101,
+     *             and the workstation's traffic through them on the copper legs
+     *   copper 32 port 8's leg, the DTN's own health monitor, and tap VL 100
+     *   copper 33 port 9's leg and tap VL 101
+     *
+     * 80 + 2 + 1 + 240 = 323 records, which is four switch datagrams rather
+     * than the capture's two.
+     * ---------------------------------------------------------------- */
+    {
+        .name = "config1",
+        .description = "fibre 0-3 <-> 4-7, VMC on 8/9, copper legs 32<->8 and 33<->9",
+        .group_count = 2,
+        .groups = {FIBRE_GROUP(1024, C1_FWD), FIBRE_GROUP(2024, C1_REV)},
+
+        /* The VMC's health monitor, one port per copper link. */
+        .hm_count = 2,
+        .hm = {
+            {.vl_id = 100, .src_port = 8, .dst_port = 32, .flags = HM_FLAGS},
+            {.vl_id = 101, .src_port = 9, .dst_port = 33, .flags = HM_FLAGS},
+        },
+
+        /* The copper legs. Sixty VLs each way on each port: out of the copper
+         * port, through the DTN, out of the fibre port to the VMC - and the
+         * answer back in at the same fibre port and out of the same copper one. */
+        .comm_count = 4,
+        .comms = {
+            {.vl_first = 3024, .vl_count = 60, .src_port = 32, .dst_port =  8,
+             .label = "workstation -> VMC, port 8"},
+            {.vl_first = 4024, .vl_count = 60, .src_port =  8, .dst_port = 32,
+             .label = "VMC -> workstation, port 8"},
+            {.vl_first = 5024, .vl_count = 60, .src_port = 33, .dst_port =  9,
+             .label = "workstation -> VMC, port 9"},
+            {.vl_first = 6024, .vl_count = 60, .src_port =  9, .dst_port = 33,
+             .label = "VMC -> workstation, port 9"},
+        },
+
+        .dtn_health_monitor = true,
+        .dtn_hm_port = 32,
+        .management = false,
+    },
+
+    /* ----------------------------------------------------------------
+     * config2 - still the shape it was written with.
+     * ---------------------------------------------------------------- */
+    {
+        .name = "config2",
+        .description = "fibre ports 6-11 <-> 22-27,  HM from ports 15 and 31",
+        .group_count = 2,
+        .groups = {FIBRE_GROUP(1024, C2_FWD), FIBRE_GROUP(2024, C2_REV)},
+        .hm_count = 2,
+        .hm = {
+            {.vl_id = 100, .src_port = 15, .dst_port = 33, .flags = HM_FLAGS},
+            {.vl_id = 101, .src_port = 31, .dst_port = 33, .flags = HM_FLAGS},
+        },
+        .comm_count = 0,
+        .dtn_health_monitor = true,
+        .dtn_hm_port = DTN_HEALTH_MONITOR_PORT,
+        .management = false,
+    },
+
+    /* ----------------------------------------------------------------
+     * config3 - likewise. Its taps are on 0 and 16 because ports 15 and 31
+     * carry fibre traffic in this round.
+     * ---------------------------------------------------------------- */
+    {
+        .name = "config3",
+        .description = "fibre ports 10-15 <-> 26-31, HM from ports 0 and 16",
+        .group_count = 2,
+        .groups = {FIBRE_GROUP(1024, C3_FWD), FIBRE_GROUP(2024, C3_REV)},
+        .hm_count = 2,
+        .hm = {
+            {.vl_id = 100, .src_port = 0,  .dst_port = 33, .flags = HM_FLAGS},
+            {.vl_id = 101, .src_port = 16, .dst_port = 33, .flags = HM_FLAGS},
+        },
+        .comm_count = 0,
+        .dtn_health_monitor = true,
+        .dtn_hm_port = DTN_HEALTH_MONITOR_PORT,
+        .management = false,
+    },
 };
+
+/* The captured configuration. Not in the menu: it is the thing the encoder is
+ * checked against, not a round anybody runs. */
+static const vl_profile_t g_reference = {
+    .name = "reference",
+    .description = "the captured configuration: fibre 0-5 <-> 16-21, taps 15 and 31",
+    .group_count = 2,
+    .groups = {FIBRE_GROUP(1024, REF_FWD), FIBRE_GROUP(2024, REF_REV)},
+    .hm_count = 2,
+    .hm = {
+        {.vl_id = 100, .src_port = 15, .dst_port = 33, .flags = HM_FLAGS},
+        {.vl_id = 101, .src_port = 31, .dst_port = 33, .flags = HM_FLAGS},
+    },
+    .comm_count = 0,
+    .dtn_health_monitor = true,
+    .dtn_hm_port = DTN_HEALTH_MONITOR_PORT,
+    .management = false,
+};
+
+const vl_profile_t *vl_profile_reference(void)
+{
+    return &g_reference;
+}
+
+vl_kind_t vl_profile_kind_of(const vl_profile_t *profile, uint16_t vl_id)
+{
+    for (uint8_t h = 0; h < profile->hm_count; h++)
+        if (profile->hm[h].vl_id == vl_id)
+            return VL_KIND_HM_TAP;
+
+    if (profile->dtn_health_monitor && vl_id == DTN_HEALTH_MONITOR_VL)
+        return VL_KIND_DTN_HM;
+
+    for (uint8_t c = 0; c < profile->comm_count; c++) {
+        const vl_run_t *run = &profile->comms[c];
+
+        if (vl_id >= run->vl_first && vl_id < run->vl_first + run->vl_count)
+            return VL_KIND_COMM;
+    }
+
+    for (uint8_t g = 0; g < profile->group_count; g++) {
+        const vl_link_group_t *group = &profile->groups[g];
+        const uint16_t span = (uint16_t)(group->link_count * group->vls_per_link);
+
+        if (vl_id >= group->vl_base && vl_id < group->vl_base + span)
+            return VL_KIND_FIBRE;
+    }
+
+    /* VL 4419-4490, whether or not this profile asked for them. */
+    if (vl_id >= 4419 && vl_id <= 4490)
+        return VL_KIND_MANAGEMENT;
+
+    return VL_KIND_UNKNOWN;
+}
+
+const char *vl_profile_comm_label(const vl_profile_t *profile, uint16_t vl_id)
+{
+    for (uint8_t c = 0; c < profile->comm_count; c++) {
+        const vl_run_t *run = &profile->comms[c];
+
+        if (vl_id >= run->vl_first && vl_id < run->vl_first + run->vl_count)
+            return run->label;
+    }
+    return NULL;
+}
 
 const vl_profile_t *vl_profile_all(size_t *count)
 {
@@ -238,9 +387,23 @@ int vl_profile_expand(const vl_profile_t *profile, dtn_vl_t *out, size_t cap)
         if (n == cap)
             return -1;
         dtn_vl_init(&out[n], DTN_HEALTH_MONITOR_VL, DTN_PORT_MANAGEMENT,
-                    1ull << DTN_HEALTH_MONITOR_PORT);
+                    1ull << profile->dtn_hm_port);
         out[n].flags = FLAGS_NORMAL | DTN_VL_FLAG_PRIORITY;
         n++;
+    }
+
+    /* The copper legs, last. They are records the capture never had, so where
+     * they sit in the table is ours to choose, and the end is the one place
+     * that leaves everything before them where it was. */
+    for (uint8_t c = 0; c < profile->comm_count; c++) {
+        const vl_run_t *run = &profile->comms[c];
+
+        for (uint16_t k = 0; k < run->vl_count; k++) {
+            if (n == cap)
+                return -1;
+            dtn_vl_init(&out[n++], (uint16_t)(run->vl_first + k),
+                        run->src_port, 1ull << run->dst_port);
+        }
     }
 
     if (profile->management) {

@@ -1,15 +1,22 @@
 /*
- * Byte-exact check of all three rounds against the captured configuration.
+ * The captured configuration, and the rounds that still have its shape.
  *
- * tests/fixtures/config1_switch.bin holds the two switch datagrams of the
- * config1 capture - the UDP payload plus the trailing AFDX sequence byte, which
- * is how the capture was read out.
+ * fixtures/config1_switch.bin holds the two switch datagrams of the capture -
+ * the UDP payload plus the trailing AFDX sequence byte, which is how it was read
+ * out. It is the only evidence there is that the encoder emits frames real
+ * hardware accepts, so it is checked byte for byte against the profile that
+ * reproduces it: vl_profile_reference(), which is not in the menu and does not
+ * change when the rounds do.
  *
- * Only round 1 was captured. Rounds 2 and 3 are the same table with the fibre
- * ports moved, so they are checked against the capture too: take each captured
- * record, substitute the ports that round uses, and nothing else may differ.
- * That is the whole claim being made about them, stated as a test rather than
- * left in a comment.
+ * config2 and config3 are still the captured table with the fibre ports moved,
+ * so they are checked the same way: take each captured record, substitute the
+ * ports that round uses, and nothing else may differ.
+ *
+ * config1 is no longer that table. It pairs four adjacent fibre ports, taps the
+ * VMC on ports 8 and 9 into both copper links, and adds 240 records for the
+ * copper legs. Nothing was captured of it, so the claim made about it here is
+ * the one that can be made without hardware: it expands to exactly the routing
+ * its profile declares, and the framing around it is still right.
  *
  * We send one record more than the capture does: DTN_HEALTH_MONITOR_VL, the
  * device's own health monitor out to copper, which the capture leaves out. So
@@ -118,8 +125,9 @@ typedef struct {
     uint8_t     tap[2];     /**< where the fibre-side unit's health monitor taps */
 } round_ports_t;
 
+/* config1 is not here: it is no longer the captured table with different ports,
+ * so there is nothing to substitute. It has its own check further down. */
 static const round_ports_t g_rounds[] = {
-    {"config1",  0, 16, {15, 31}},
     {"config2",  6, 22, {15, 31}},
     {"config3", 10, 26, { 0, 16}},
 };
@@ -187,6 +195,109 @@ static int check_round(const round_ports_t *r)
     printf("[ OK ] %s  %d records: the capture with ports %u-%u <-> %u-%u, "
            "taps %u and %u\n", r->name, count, r->fwd_base, r->fwd_base + 5,
            r->rev_base, r->rev_base + 5, r->tap[0], r->tap[1]);
+    return 0;
+}
+
+/* config1, against the routing its own profile declares.
+ *
+ * Nothing was captured of this configuration, so the check is not "it matches a
+ * blob" but "every record says what the profile says it should": the right VL id
+ * on the right port pair, in the right order, with the flags the device expects.
+ * That is what catches a fat-fingered port number or a VL run that overlaps
+ * another, which is the mistake this table invites.
+ */
+static int check_config1(void)
+{
+    const vl_profile_t *profiles;
+    const vl_profile_t *p = NULL;
+    size_t n;
+
+    profiles = vl_profile_all(&n);
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(profiles[i].name, "config1") == 0)
+            p = &profiles[i];
+    if (!p) {
+        puts("[FAIL] there is no config1 profile");
+        return 1;
+    }
+
+    static dtn_vl_t rec[VL_PROFILE_MAX_RECORDS];
+    int count = vl_profile_expand(p, rec, VL_PROFILE_MAX_RECORDS);
+
+    /* What the round is: four fibre pairs both ways at ten VLs each, two taps,
+     * the DTN's own health monitor, and four copper legs of sixty. */
+    const int want_count = 4 * 10 * 2 + 2 + 1 + 4 * 60;
+
+    if (count != want_count) {
+        printf("[FAIL] config1 expands to %d records, expected %d\n", count, want_count);
+        return 1;
+    }
+
+    /* Every record, in order, as the profile declares it. */
+    struct { uint16_t vl; uint8_t src, dst; uint8_t flags; } want[VL_PROFILE_MAX_RECORDS];
+    int w = 0;
+
+    static const uint8_t fwd[4][2] = {{0,4},{1,5},{2,6},{3,7}};
+    for (int l = 0; l < 4; l++)
+        for (int k = 0; k < 10; k++)
+            want[w++] = (typeof(want[0])){(uint16_t)(1024 + l * 10 + k),
+                                          fwd[l][0], fwd[l][1], 0x9};
+    for (int l = 0; l < 4; l++)
+        for (int k = 0; k < 10; k++)
+            want[w++] = (typeof(want[0])){(uint16_t)(2024 + l * 10 + k),
+                                          fwd[l][1], fwd[l][0], 0x9};
+
+    want[w++] = (typeof(want[0])){100, 8, 32, 0x9};    /* the VMC's health monitor */
+    want[w++] = (typeof(want[0])){101, 9, 33, 0x9};
+    want[w++] = (typeof(want[0])){DTN_HEALTH_MONITOR_VL, 34, 32, 0xD};
+
+    static const uint16_t leg_first[4] = {3024, 4024, 5024, 6024};
+    static const uint8_t  leg_ports[4][2] = {{32,8},{8,32},{33,9},{9,33}};
+    for (int g = 0; g < 4; g++)
+        for (int k = 0; k < 60; k++)
+            want[w++] = (typeof(want[0])){(uint16_t)(leg_first[g] + k),
+                                          leg_ports[g][0], leg_ports[g][1], 0x9};
+
+    if (w != want_count) {
+        printf("[FAIL] the test's own expectation is %d records, not %d\n", w, want_count);
+        return 1;
+    }
+
+    for (int i = 0; i < count; i++) {
+        const uint64_t mask = 1ull << want[i].dst;
+
+        if (rec[i].vl_id != want[i].vl || rec[i].src_port != want[i].src ||
+            rec[i].dest_mask != mask || rec[i].flags != want[i].flags) {
+            printf("[FAIL] config1 record %d: VL %u port %u -> mask %llx flags 0x%X, "
+                   "expected VL %u port %u -> port %u flags 0x%X\n",
+                   i, rec[i].vl_id, rec[i].src_port,
+                   (unsigned long long)rec[i].dest_mask, rec[i].flags,
+                   want[i].vl, want[i].src, want[i].dst, want[i].flags);
+            return 1;
+        }
+    }
+
+    /* The routing has to be sound on the hardware as well as on paper: no port
+     * carrying fibre traffic and health-monitor data at once, no repeated VL. */
+    char reason[128];
+    if (!vl_profile_validate(rec, (size_t)count, reason, sizeof reason)) {
+        printf("[FAIL] config1 does not validate: %s\n", reason);
+        return 1;
+    }
+
+    /* And it has to fit in frames. 323 records is four switch datagrams where
+     * the capture needed two, which is the part of this change most likely to
+     * run into a limit. */
+    int frames = dtn_build_config_frames(rec, (size_t)count,
+                                         NULL, 0, -1, &DTN_CONFIG_DEFAULT,
+                                         g_frames, DTN_MAX_CONFIG_FRAMES);
+    if (frames < 0) {
+        puts("[FAIL] config1 does not fit in configuration frames");
+        return 1;
+    }
+
+    printf("[ OK ] config1  %d records, %d frames: fibre 0-3 <-> 4-7, VMC taps on "
+           "8 and 9, copper legs 32<->8 and 33<->9\n", count, frames);
     return 0;
 }
 
@@ -307,25 +418,21 @@ int main(void)
         return 1;
     }
 
-    size_t profile_count;
-    const vl_profile_t *profiles = vl_profile_all(&profile_count);
-    const vl_profile_t *config1 = NULL;
+    const vl_profile_t *reference = vl_profile_reference();
 
-    for (size_t i = 0; i < profile_count; i++)
-        if (strcmp(profiles[i].name, "config1") == 0)
-            config1 = &profiles[i];
-    if (!config1) {
-        puts("[FAIL] there is no config1 profile");
+    if (reference->management) {
+        puts("[FAIL] the reference profile carries the full management path; "
+             "the capture does not");
         return 1;
     }
-    if (config1->management) {
-        puts("[FAIL] config1 carries the full management path; the capture does not");
+    if (reference->comm_count != 0) {
+        puts("[FAIL] the reference profile carries copper legs; the capture does not");
         return 1;
     }
 
-    int count = vl_profile_expand(config1, g_records, VL_PROFILE_MAX_RECORDS);
+    int count = vl_profile_expand(reference, g_records, VL_PROFILE_MAX_RECORDS);
     if (count < 0) {
-        puts("[FAIL] config1 does not fit in the VL table");
+        puts("[FAIL] the reference profile does not fit in the VL table");
         return 1;
     }
 
@@ -342,12 +449,13 @@ int main(void)
     int failures = check_records(count) || check_frames(frames);
     for (size_t i = 0; i < sizeof g_rounds / sizeof g_rounds[0]; i++)
         failures += check_round(&g_rounds[i]);
+    failures += check_config1();
 
     if (failures) {
         puts("FAILED: a round does not match the capture");
         return 1;
     }
-    puts("PASS: all three rounds reproduce the capture, plus the DTN's "
+    puts("PASS: the capture is reproduced byte for byte, plus the DTN's "
          "health monitor");
     return 0;
 }

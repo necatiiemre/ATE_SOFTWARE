@@ -43,6 +43,21 @@ const char *app_config_iface_for_port(uint8_t dtn_port);
 const timing_config_t *app_config_timing(void);
 
 /**
+ * @brief The copper legs' target rate, in Mbit/s.
+ *
+ * config1 carries the workstation's traffic through the DTN to the VMC and back,
+ * on both copper links. Both legs get the same figure: DTN port 33 is the 100M
+ * link, so 100 is its ceiling, and holding the 1G leg to the same rate is what
+ * keeps the two comparable - a difference between them is then the unit's rather
+ * than the cable's.
+ *
+ * Nothing generates this traffic yet. The routing is in the configuration and
+ * the generator is the next piece; the number is here so the decision is not
+ * only in a conversation.
+ */
+double app_config_dtn_leg_mbps(void);
+
+/**
  * @brief Whether to append the DTN's own management VLs to a round.
  *
  * Off by default, which makes the configuration byte-identical to the capture:

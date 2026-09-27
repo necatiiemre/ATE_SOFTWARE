@@ -183,6 +183,62 @@ the reference blob: the vendor line for VL 620 encodes to that record exactly.
 
 ## The three rounds
 
+config1 has been re-cut for the new rig; config2 and config3 still have the shape
+they were written with and get their own ports when their turn comes. Each round
+is now written out on its own rather than generated from a shared macro: they no
+longer have a shape in common, and one that did would hide which round changed.
+
+### config1
+
+```
+fibre         0 <-> 4,  1 <-> 5,  2 <-> 6,  3 <-> 7     VL 1024-1063 / 2024-2063
+VMC's HM      port 8 -> copper 32   VL 100
+              port 9 -> copper 33   VL 101
+DTN's own HM  port 34 -> copper 32  VL 38
+copper legs   copper 32 -> port 8   VL 3024-3083   workstation -> VMC
+              port 8 -> copper 32   VL 4024-4083   VMC -> workstation
+              copper 33 -> port 9   VL 5024-5083   workstation -> VMC
+              port 9 -> copper 33   VL 6024-6083   VMC -> workstation
+```
+
+323 records, which is four switch datagrams where the capture needed two, and six
+frames in all.
+
+Ports 8 and 9 are the VMC's. Three things happen on them and they are easy to
+confuse: the VMC's own health monitor comes *out* of them on VL 100 and 101, the
+workstation's traffic goes *in* through them on the outbound legs, and the VMC's
+answer comes back *in* at the same port and out of the same copper link. The
+opposite directions are why a port can be a tap source and a leg destination at
+once without the validator objecting.
+
+The copper legs are the point of the round: one flow proves the DTN forwards
+copper to fibre and back *and* that the VMC at the far end is alive, rather than
+two separate tests that each prove half of it. The workstation generates PRBS on
+the outbound legs and checks it on the inbound ones - that generator is the next
+piece of work; what is in place now is the routing.
+
+Both legs are held to 100 Mbit/s (`app_config_dtn_leg_mbps`). DTN port 33 is the
+100M link, so that is its ceiling, and matching the 1G leg to it is what keeps the
+two comparable: a difference between them is then the unit's rather than the
+cable's.
+
+### The capture is no longer config1
+
+The captured configuration - six fibre pairs 0-5 to 16-21, taps from ports 15 and
+31, the DTN's own health monitor out of port 33 - is the only evidence there is
+that the encoder emits frames real hardware accepts. Now that config1 has moved,
+that capture lives on as `vl_profile_reference()`: a profile that is not in the
+menu, does not change when the rounds do, and is what `test_rounds` checks byte
+for byte. config2 and config3 are still the captured table with the ports moved,
+so they are still checked that way too; config1 gets a structural check instead -
+every record is the VL id and port pair its profile declares, the routing
+validates, and it still fits in frames.
+
+Without that split, re-cutting a round would have quietly thrown away the only
+hardware-validated proof in the repository.
+
+### The rounds as they stand
+
 The unit under test on the other side has 12 ports, the DTN has 32 fibre ports,
 so the fibre links are covered in three rounds. Each round pairs six low ports
 with six high ports in both directions, 10 VLs per direction, plus two

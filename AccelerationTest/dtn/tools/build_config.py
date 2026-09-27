@@ -37,6 +37,22 @@ def records_from_json(spec):
         if "flags" in hm:
             r.flags = hm["flags"]
         records.append(r)
+    # The DTN's own health monitor, out of the internal management port. The
+    # captured configuration does not carry this record; the profiles do, and so
+    # does this, or the two descriptions would disagree by one record.
+    own = spec.get("dtn_health_monitor")
+    if own:
+        r = VlRecord(own["vl"], own["src"], {own["dst"]})
+        if "flags" in own:
+            r.flags = own["flags"]
+        records.append(r)
+    # The copper legs of the workstation - DTN - VMC path: a contiguous run of
+    # VLs from one port to one other, in one direction.
+    for leg in spec.get("copper_legs", []):
+        vl = leg["vl_first"]
+        for _ in range(leg["vl_count"]):
+            records.append(VlRecord(vl, leg["src"], {leg["dst"]}))
+            vl += 1
     records.sort(key=lambda r: r.vl_id)
     return records
 

@@ -66,9 +66,16 @@ static const vl_profile_t *select_profile(void)
     return choice == 0 ? NULL : &profiles[choice - 1];
 }
 
-/* Show the routing in three groups: the fibre links under test, the taps that
- * bring the fibre-side unit's health monitor out to copper, and the DTN's own
- * management path. Consecutive VLs with the same endpoints collapse into a run. */
+/* Show the routing in groups: the fibre links under test, the taps that bring
+ * the VMC's health monitor out to copper, the copper legs of the
+ * workstation - DTN - VMC path, and the DTN's own management path. Consecutive
+ * VLs with the same endpoints collapse into a run.
+ *
+ * Which group a record belongs to is asked of the profile, not guessed from its
+ * ports: a copper leg's return run is fibre in and copper out, which is exactly
+ * what a tap looks like, and the two would be shown as one thing. */
+static const vl_profile_t *g_display_profile;
+
 static int first_destination(const dtn_vl_t *record)
 {
     for (int p = 0; p < DTN_PORT_COUNT; p++)
@@ -77,15 +84,27 @@ static int first_destination(const dtn_vl_t *record)
     return -1;
 }
 
+static vl_kind_t kind_of(const dtn_vl_t *record)
+{
+    if (!g_display_profile)
+        return VL_KIND_UNKNOWN;
+    return vl_profile_kind_of(g_display_profile, record->vl_id);
+}
+
 static bool is_management(const dtn_vl_t *record)
 {
-    return record->src_port >= 32 || first_destination(record) == 34;
+    return kind_of(record) == VL_KIND_MANAGEMENT ||
+           kind_of(record) == VL_KIND_DTN_HM;
 }
 
 static bool is_hm_tap(const dtn_vl_t *record)
 {
-    int dst = first_destination(record);
-    return !is_management(record) && (dst == 32 || dst == 33);
+    return kind_of(record) == VL_KIND_HM_TAP;
+}
+
+static bool is_comm(const dtn_vl_t *record)
+{
+    return kind_of(record) == VL_KIND_COMM;
 }
 
 static void print_group(const char *title, const dtn_vl_t *records, size_t count,
@@ -126,14 +145,20 @@ static void print_group(const char *title, const dtn_vl_t *records, size_t count
 
 static bool is_fibre_link(const dtn_vl_t *record)
 {
-    return !is_management(record) && !is_hm_tap(record);
+    return kind_of(record) == VL_KIND_FIBRE ||
+           kind_of(record) == VL_KIND_UNKNOWN;
 }
 
-static void print_routing(const dtn_vl_t *records, size_t count)
+static void print_routing(const vl_profile_t *profile,
+                          const dtn_vl_t *records, size_t count)
 {
+    g_display_profile = profile;
+
     print_group("fibre links under test", records, count, is_fibre_link, true);
-    print_group("health-monitor taps (fibre-side unit -> copper)",
+    print_group("health-monitor taps (VMC -> copper)",
                 records, count, is_hm_tap, true);
+    print_group("copper legs (workstation -> DTN -> VMC and back)",
+                records, count, is_comm, true);
     print_group("DTN management path (its own health monitor and status replies)",
                 records, count, is_management, false);
 }
@@ -464,7 +489,7 @@ unit_result_t dtn_test_run(void)
     for (size_t i = 0; i < link_count; i++)
         printf(" %s (DTN port %u)%s", copper[i].iface, copper[i].dtn_port,
                i + 1 < link_count ? "," : "\n");
-    print_routing(g_records, (size_t)count);
+    print_routing(&round, g_records, (size_t)count);
 
     if (!prompt_yes_no("\nStart the test", false)) {
         log_close();

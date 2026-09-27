@@ -27,9 +27,11 @@
 #define VL_PROFILE_MAX_LINKS   16
 #define VL_PROFILE_MAX_GROUPS  2
 #define VL_PROFILE_MAX_HM      4
-/* A round is 122 records, plus the DTN's own health monitor; the full
- * management path adds 72 more. */
-#define VL_PROFILE_MAX_RECORDS 256
+#define VL_PROFILE_MAX_COMMS   4
+/* The biggest round is the fibre links, two taps, the DTN's own health monitor
+ * and the copper legs: 80 + 2 + 1 + 240 for config1. The full management path
+ * adds 72 more. */
+#define VL_PROFILE_MAX_RECORDS 512
 
 /** One directed fibre link, source port to destination port. */
 typedef struct {
@@ -57,6 +59,27 @@ typedef struct {
     uint8_t  flags;      /**< flag nibble; 0x9, as in the capture */
 } vl_hm_t;
 
+/**
+ * @brief One leg of the workstation - DTN - VMC path.
+ *
+ * Neither a fibre link nor a tap. The workstation generates PRBS traffic on a
+ * copper port, the DTN carries it out of a fibre port to the VMC, and the VMC's
+ * answer comes back in at that same fibre port and out of the same copper port.
+ * Each direction is one of these: a contiguous run of VLs from one port to one
+ * other.
+ *
+ * The three-way path is the point of it - the workstation proves the DTN
+ * forwards copper to fibre and back, and the VMC at the far end proves the
+ * fibre side is alive, in one flow rather than two separate tests.
+ */
+typedef struct {
+    uint16_t    vl_first;
+    uint16_t    vl_count;
+    uint8_t     src_port;
+    uint8_t     dst_port;
+    const char *label;     /**< what the routing display calls it */
+} vl_run_t;
+
 typedef struct {
     const char      *name;
     const char      *description;
@@ -64,11 +87,20 @@ typedef struct {
     vl_link_group_t  groups[VL_PROFILE_MAX_GROUPS];
     uint8_t          hm_count;
     vl_hm_t          hm[VL_PROFILE_MAX_HM];
+    /* The copper legs: the workstation's traffic out to the VMC and back. */
+    uint8_t          comm_count;
+    vl_run_t         comms[VL_PROFILE_MAX_COMMS];
+
     /* One record for DTN_HEALTH_MONITOR_VL, management port out to copper, so
      * the DTN's own health monitor has a way off the box. The capture's 122
      * records do not carry it; on by default because both health monitors are
      * wanted during a run. */
     bool             dtn_health_monitor;
+    /* Which copper port it leaves by. Per round, because it is a choice rather
+     * than a property of the device: the capture sends it out of 33, and config1
+     * sends it out of 32 so that the 100M link is left to the tap and the copper
+     * leg that share it. */
+    uint8_t          dtn_hm_port;
 
     /* Append VL 4419-4490 so the DTN keeps the whole management path the
      * reference configuration gives it. Off by default - it belongs to
@@ -100,6 +132,39 @@ const uint8_t *vl_profile_protocol_block(size_t *len);
 
 /** The built-in profiles, in menu order. */
 const vl_profile_t *vl_profile_all(size_t *count);
+
+/**
+ * @brief The captured configuration, as its own profile.
+ *
+ * Not in the menu. This is the configuration real hardware was seen to accept -
+ * six fibre pairs 0-5 to 16-21, two taps from ports 15 and 31, the DTN's own
+ * health monitor out of port 33 - and it is the only byte-exact evidence there
+ * is that the encoder emits valid frames. The rounds change as the rig changes;
+ * this does not, so the evidence survives them.
+ */
+const vl_profile_t *vl_profile_reference(void);
+
+/** What a VL id is, for the routing display. */
+typedef enum {
+    VL_KIND_FIBRE = 0,   /**< a fibre link under test */
+    VL_KIND_HM_TAP,      /**< the VMC's health monitor, fibre in, copper out */
+    VL_KIND_DTN_HM,      /**< the DTN's own, management port out to copper */
+    VL_KIND_COMM,        /**< a copper leg of the workstation - DTN - VMC path */
+    VL_KIND_MANAGEMENT,  /**< VL 4419-4490 */
+    VL_KIND_UNKNOWN
+} vl_kind_t;
+
+/**
+ * @brief Which of those a VL id is, according to the profile that made it.
+ *
+ * Asked of the profile rather than guessed from the ports, because the ports no
+ * longer say: a copper leg's return run is fibre in and copper out, which is
+ * exactly what a tap looks like.
+ */
+vl_kind_t vl_profile_kind_of(const vl_profile_t *profile, uint16_t vl_id);
+
+/** The label a copper leg was given, or NULL if that VL is not one. */
+const char *vl_profile_comm_label(const vl_profile_t *profile, uint16_t vl_id);
 
 /**
  * @brief Expand a profile into VL records, in the order the capture writes them.

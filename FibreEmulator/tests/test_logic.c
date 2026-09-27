@@ -220,7 +220,14 @@ static void test_scenarios(void)
     check(count == 3, "three scenarios");
     for (size_t s = 0; s < count; s++) {
         int flows = scenario_expand(&scenarios[s], g_flows, SCENARIO_MAX_FLOWS);
-        check(flows == 122, "12 links of 10 VLs plus 2 taps");
+
+        /* Derived from the scenario rather than hardcoded: the rounds no longer
+         * share a shape, and a fixed number here would only say which round was
+         * written first. */
+        int want = scenarios[s].tap_count;
+        for (uint8_t l = 0; l < scenarios[s].link_count; l++)
+            want += scenarios[s].links[l].vl_count;
+        check(flows == want, "one flow per VL of every link, plus one per tap");
         if (flows < 0)
             continue;
 
@@ -229,7 +236,28 @@ static void test_scenarios(void)
 
         int tx_ports = __builtin_popcount(tx_mask);
         int rx_ports = __builtin_popcount(rx_mask);
-        check(tx_ports >= 4 && rx_ports >= 4, "at least four server ports each way");
+        check(tx_ports >= 1 && rx_ports >= 1,
+              "a scenario opens at least one server port each way");
+
+        /* Which ports, exactly: every link's source has to be on the transmit
+         * mask and every returning link's destination on the receive one, and
+         * nothing else may be. Opening a port the round does not use costs an
+         * mbuf pool and hides a mapping mistake. */
+        uint16_t want_tx = 0, want_rx = 0;
+        for (uint8_t l = 0; l < scenarios[s].link_count; l++) {
+            int tx = fibre_server_port(scenarios[s].links[l].src);
+            int rx = fibre_rx_server_port(scenarios[s].links[l].dst);
+
+            if (tx >= 0) want_tx |= (uint16_t)(1u << tx);
+            if (rx >= 0) want_rx |= (uint16_t)(1u << rx);
+        }
+        for (uint8_t t = 0; t < scenarios[s].tap_count; t++) {
+            int tx = fibre_server_port(scenarios[s].taps[t].src);
+
+            if (tx >= 0) want_tx |= (uint16_t)(1u << tx);
+        }
+        check(tx_mask == want_tx, "the transmit ports are the round's, and no others");
+        check(rx_mask == want_rx, "and so are the receive ports");
 
         /* Every VL must be unique, and every link's VLANs must follow the map. */
         for (int i = 0; i < flows; i++) {

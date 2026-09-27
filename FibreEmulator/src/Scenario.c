@@ -5,31 +5,65 @@
 #include <string.h>
 
 /* Ten VLs per direction, matching the acceleration test's rounds: the forward
- * direction numbers from 1024 and the reverse from 2024. */
-#define ROUND(nm, desc, a, b, tap0, tap1)                                        \
+ * direction numbers from 1024 and the reverse from 2024.
+ *
+ * Each round is written out on its own rather than generated from a shared
+ * macro, because they no longer have a shape in common - and because the round
+ * on this side has to be edited in step with the one on the other, so it is
+ * worth being able to read one without decoding a macro.
+ */
+
+/* config2 and config3 still have the six-pair shape, so a macro still earns its
+ * place for them. */
+#define SIX_PAIRS(a, b)                                                          \
     {                                                                            \
-        .name = nm, .description = desc,                                         \
-        .link_count = 12,                                                        \
-        .links = {                                                               \
-            {a + 0, b + 0, 1024, 10}, {a + 1, b + 1, 1034, 10},                  \
-            {a + 2, b + 2, 1044, 10}, {a + 3, b + 3, 1054, 10},                  \
-            {a + 4, b + 4, 1064, 10}, {a + 5, b + 5, 1074, 10},                  \
-            {b + 0, a + 0, 2024, 10}, {b + 1, a + 1, 2034, 10},                  \
-            {b + 2, a + 2, 2044, 10}, {b + 3, a + 3, 2054, 10},                  \
-            {b + 4, a + 4, 2064, 10}, {b + 5, a + 5, 2074, 10},                  \
-        },                                                                       \
-        .tap_count = 2,                                                          \
-        .taps = {{tap0, 33, 100}, {tap1, 33, 101}},                              \
+        {(a) + 0, (b) + 0, 1024, 10}, {(a) + 1, (b) + 1, 1034, 10},              \
+        {(a) + 2, (b) + 2, 1044, 10}, {(a) + 3, (b) + 3, 1054, 10},              \
+        {(a) + 4, (b) + 4, 1064, 10}, {(a) + 5, (b) + 5, 1074, 10},              \
+        {(b) + 0, (a) + 0, 2024, 10}, {(b) + 1, (a) + 1, 2034, 10},              \
+        {(b) + 2, (a) + 2, 2044, 10}, {(b) + 3, (a) + 3, 2054, 10},              \
+        {(b) + 4, (a) + 4, 2064, 10}, {(b) + 5, (a) + 5, 2074, 10},              \
     }
 
 static const scenario_t g_scenarios[] = {
-    ROUND("config1", "fibre ports 0-5 <-> 16-21,   taps from ports 15 and 31",
-          0, 16, 15, 31),
-    ROUND("config2", "fibre ports 6-11 <-> 22-27,  taps from ports 15 and 31",
-          6, 22, 15, 31),
+    /* ----------------------------------------------------------------
+     * config1: four pairs of adjacent fibre ports.
+     *
+     * No taps. DTN ports 8 and 9 are cabled to the VMC in this round, not to
+     * this emulator: the taps carry the VMC's health monitor and the copper legs
+     * carry the workstation's traffic, and both of those happen on wires this
+     * program is not on. Injecting them here would report traffic sent that
+     * nothing could have carried.
+     * ---------------------------------------------------------------- */
+    {
+        .name = "config1",
+        .description = "fibre 0-3 <-> 4-7 (ports 8/9 belong to the VMC)",
+        .link_count = 8,
+        .links = {
+            {0, 4, 1024, 10}, {1, 5, 1034, 10}, {2, 6, 1044, 10}, {3, 7, 1054, 10},
+            {4, 0, 2024, 10}, {5, 1, 2034, 10}, {6, 2, 2044, 10}, {7, 3, 2054, 10},
+        },
+        .tap_count = 0,
+    },
+
+    /* config2 and config3 - unchanged. */
+    {
+        .name = "config2",
+        .description = "fibre ports 6-11 <-> 22-27,  taps from ports 15 and 31",
+        .link_count = 12,
+        .links = SIX_PAIRS(6, 22),
+        .tap_count = 2,
+        .taps = {{15, 33, 100}, {31, 33, 101}},
+    },
     /* Round 3 moves the taps: ports 15 and 31 carry fibre traffic here. */
-    ROUND("config3", "fibre ports 10-15 <-> 26-31, taps from ports 0 and 16",
-          10, 26, 0, 16),
+    {
+        .name = "config3",
+        .description = "fibre ports 10-15 <-> 26-31, taps from ports 0 and 16",
+        .link_count = 12,
+        .links = SIX_PAIRS(10, 26),
+        .tap_count = 2,
+        .taps = {{0, 33, 100}, {16, 33, 101}},
+    },
 };
 
 const scenario_t *scenario_all(size_t *count)
