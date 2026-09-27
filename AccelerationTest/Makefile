@@ -54,7 +54,7 @@ $(BUILD)/cmc/src/health_monitor/%.o: cmc/src/health_monitor/%.c
 # Tests. Each unit's tests live with it, and run from its folder so that the
 # fixtures they read are beside them.
 
-DTN_TESTS := test_reference test_rounds test_profiles test_health
+DTN_TESTS := test_reference test_rounds test_profiles test_health test_dtn_legs
 VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
 CMC_TESTS := test_cmc_packet test_cmc_dataplane test_cmc_pmm test_cmc_health
 
@@ -90,7 +90,9 @@ $(BUILD)/cmc/%: cmc/tests/%.c $(LIB_OBJ)
 # unit, which is the only thing here that exercises the sockets and the threads
 # rather than the functions under them.
 .PHONY: smoke
-smoke: $(BUILD)/cmc/smoke_cmc_loopback
+smoke: $(BUILD)/cmc/smoke_cmc_loopback $(BUILD)/dtn/smoke_dtn_legs
+	@$(BUILD)/dtn/smoke_dtn_legs
+	@echo
 	@$(BUILD)/cmc/smoke_cmc_loopback
 
 # Every global symbol the CMC health-monitor copies define, against every other

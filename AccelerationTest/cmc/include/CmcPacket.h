@@ -29,6 +29,8 @@
 #ifndef CMC_PACKET_H
 #define CMC_PACKET_H
 
+#include "Prbs31.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -62,53 +64,16 @@
 /* PRBS-31                                                            */
 /* ------------------------------------------------------------------ */
 
-/* x^31 + x^28 + 1, walked one bit at a time and packed eight bits to a byte,
- * most significant first - the reference's generator, kept bit for bit so the
- * stream this produces is the stream the CMC is checked against. */
-#define CMC_PRBS31_PERIOD   0x7FFFFFFF
-#define CMC_PRBS_CACHE_SIZE ((size_t)(CMC_PRBS31_PERIOD / 8) + 1)   /* ~268 MB */
+/* The stream itself is in common/Prbs31.h - it is the same stream the DTN's
+ * copper legs use, so it lives with neither unit. What is CMC-specific is only
+ * how much of it a packet takes: the stride. */
+#define CMC_PRBS_INITIAL_STATE PRBS31_INITIAL_STATE
+#define CMC_PRBS_CACHE_SIZE    PRBS31_CACHE_SIZE
+#define CMC_PRBS_STRIDE        CMC_NUM_PRBS_BYTES
 
-/* One period plus a packet: the offset a sequence reads at wraps with the
- * period, which is not a whole number of packets, so the last packet of each
- * period starts inside the period and runs past its end. The repeat absorbs
- * that, and every read becomes a plain memcpy. */
-#define CMC_PRBS_BUFFER_SIZE (CMC_PRBS_CACHE_SIZE + CMC_NUM_PRBS_BYTES)
-
-/** The initial state for the one server port the reference runs on. */
-#define CMC_PRBS_INITIAL_STATE 0x0000000Fu
-
-/**
- * @brief The whole PRBS-31 period, plus one packet's worth repeated.
- *
- * The repeat at the end is what lets a read near the end of the period run off
- * the edge without wrapping by hand: the reference calls it the extended
- * cache, and every read is a plain memcpy because of it.
- */
-typedef struct {
-    uint8_t *bytes;           /**< CMC_PRBS_CACHE_SIZE + CMC_NUM_PRBS_BYTES */
-    uint32_t initial_state;
-    bool     ready;
-} cmc_prbs_cache_t;
-
-/**
- * @brief Generate @p len bytes of the stream from @p state; return the state after.
- *
- * The cache is one call of this over the whole period. Exposed so a test can
- * check the first bytes without waiting for a quarter of a gigabyte.
- */
-uint32_t cmc_prbs_fill(uint8_t *out, size_t len, uint32_t state);
-
-/**
- * @brief Generate the stream. Takes a while and allocates ~268 MB.
- * @param progress called every 10 MB, so a minute of silence looks like work
- */
-bool cmc_prbs_cache_init(cmc_prbs_cache_t *cache, uint32_t initial_state,
+/** The cache, with the CMC's stride. */
+bool cmc_prbs_cache_init(prbs31_cache_t *cache, uint32_t initial_state,
                          void (*progress)(size_t done, size_t total));
-
-void cmc_prbs_cache_free(cmc_prbs_cache_t *cache);
-
-/** Where this sequence's PRBS bytes start. At least CMC_NUM_PRBS_BYTES follow. */
-const uint8_t *cmc_prbs_at(const cmc_prbs_cache_t *cache, uint64_t seq);
 
 /* ------------------------------------------------------------------ */
 /* The frame                                                          */
@@ -146,7 +111,7 @@ size_t cmc_packet_build(uint8_t *frame, const cmc_packet_config_t *cfg);
  * reference writes and what its receiver reads back.
  */
 void cmc_packet_fill_payload(uint8_t *frame, bool vlan_tagged,
-                             const cmc_prbs_cache_t *cache, uint64_t seq);
+                             const prbs31_cache_t *cache, uint64_t seq);
 
 /**
  * @brief The trailing DTN_SEQ byte for a sequence.

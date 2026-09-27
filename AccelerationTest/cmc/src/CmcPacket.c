@@ -4,87 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* PRBS-31                                                            */
-/* ------------------------------------------------------------------ */
-
-/* The reference's generator, unchanged. It taps bits 0 and 3 of a 31-bit
- * state, shifts right and feeds the new bit in at bit 30. Written the obvious
- * way rather than the fast way: it runs once, for a quarter of a gigabyte, and
- * being recognisably the same loop as dpdk_cmc's matters more than the minute
- * it takes. */
-static inline uint32_t prbs31_next(uint32_t *state)
-{
-    uint32_t output = *state & 0x01;
-    uint32_t new_bit = ((*state & 0x01) ^ ((*state >> 3) & 0x01)) & 0x01;
-
-    *state = (new_bit << 30 | (*state >> 1)) & 0x7FFFFFFF;
-    return output;
-}
-
-uint32_t cmc_prbs_fill(uint8_t *out, size_t len, uint32_t state)
-{
-    for (size_t i = 0; i < len; i++) {
-        uint8_t byte = 0;
-
-        for (int bit = 0; bit < 8; bit++)
-            byte = (uint8_t)((byte << 1) | prbs31_next(&state));
-        out[i] = byte;
-    }
-    return state;
-}
-
-bool cmc_prbs_cache_init(cmc_prbs_cache_t *cache, uint32_t initial_state,
+bool cmc_prbs_cache_init(prbs31_cache_t *cache, uint32_t initial_state,
                          void (*progress)(size_t done, size_t total))
 {
-    if (!cache)
-        return false;
-
-    memset(cache, 0, sizeof *cache);
-
-    cache->bytes = malloc(CMC_PRBS_BUFFER_SIZE);
-    if (!cache->bytes)
-        return false;
-
-    cache->initial_state = initial_state;
-
-    /* Generated in 10 MB chunks so the progress callback has something to say;
-     * the stream is the same as one call over the whole period, because the
-     * state is carried across. */
-    const size_t chunk = 10u * 1024u * 1024u;
-    uint32_t state = initial_state;
-
-    for (size_t done = 0; done < CMC_PRBS_CACHE_SIZE; done += chunk) {
-        const size_t n = (CMC_PRBS_CACHE_SIZE - done < chunk)
-                             ? CMC_PRBS_CACHE_SIZE - done : chunk;
-
-        state = cmc_prbs_fill(cache->bytes + done, n, state);
-        if (progress)
-            progress(done + n, CMC_PRBS_CACHE_SIZE);
-    }
-    memcpy(cache->bytes + CMC_PRBS_CACHE_SIZE, cache->bytes, CMC_NUM_PRBS_BYTES);
-
-    cache->ready = true;
-    return true;
-}
-
-void cmc_prbs_cache_free(cmc_prbs_cache_t *cache)
-{
-    if (!cache)
-        return;
-    free(cache->bytes);
-    cache->bytes = NULL;
-    cache->ready = false;
-}
-
-const uint8_t *cmc_prbs_at(const cmc_prbs_cache_t *cache, uint64_t seq)
-{
-    if (!cache || !cache->ready)
-        return NULL;
-
-    const uint64_t off = (seq * (uint64_t)CMC_NUM_PRBS_BYTES) % (uint64_t)CMC_PRBS_CACHE_SIZE;
-
-    return cache->bytes + off;
+    return prbs31_cache_init(cache, initial_state, CMC_PRBS_STRIDE, progress);
 }
 
 /* ------------------------------------------------------------------ */
@@ -187,7 +110,7 @@ size_t cmc_packet_build(uint8_t *frame, const cmc_packet_config_t *cfg)
 }
 
 void cmc_packet_fill_payload(uint8_t *frame, bool vlan_tagged,
-                             const cmc_prbs_cache_t *cache, uint64_t seq)
+                             const prbs31_cache_t *cache, uint64_t seq)
 {
     if (!frame || !cache || !cache->ready)
         return;
@@ -197,7 +120,7 @@ void cmc_packet_fill_payload(uint8_t *frame, bool vlan_tagged,
     /* A raw host-order 64-bit word, which is what the reference writes and
      * what its receiver reads straight back out. */
     memcpy(payload, &seq, sizeof seq);
-    memcpy(payload + CMC_SEQ_BYTES, cmc_prbs_at(cache, seq), CMC_NUM_PRBS_BYTES);
+    memcpy(payload + CMC_SEQ_BYTES, prbs31_at(cache, seq), CMC_NUM_PRBS_BYTES);
 }
 
 uint8_t cmc_dtn_seq(uint64_t seq)

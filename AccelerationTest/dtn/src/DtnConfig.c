@@ -141,6 +141,15 @@ int dtn_build_payload(const dtn_block_t *blocks, size_t count, uint8_t op,
 int dtn_build_frame(const uint8_t *payload, size_t len, uint8_t seq,
                     uint16_t vl_id, int vlan, uint8_t net, uint8_t *out, size_t cap)
 {
+    /* 33: the reference configuration goes out of the 100M copper port, and its
+     * source IP is part of what the hardware was seen to accept. */
+    return dtn_build_frame_from(33, payload, len, seq, vl_id, vlan, net, out, cap);
+}
+
+int dtn_build_frame_from(uint8_t src_port, const uint8_t *payload, size_t len,
+                         uint8_t seq, uint16_t vl_id, int vlan, uint8_t net,
+                         uint8_t *out, size_t cap)
+{
     size_t tagged = (vlan >= 0) ? VLAN_TAG_LEN : 0;
     size_t total  = ETH_HDR_LEN + tagged + IP_HDR_LEN + UDP_HDR_LEN + len + 1;
     size_t n = 0;
@@ -170,7 +179,7 @@ int dtn_build_frame(const uint8_t *payload, size_t len, uint8_t seq,
     ip[8] = 0x01;               /* TTL */
     ip[9] = 0x11;               /* UDP */
     ip[10] = 0x00; ip[11] = 0x00;
-    ip[12] = 10; ip[13] = 1; ip[14] = 33; ip[15] = 1;
+    ip[12] = 10; ip[13] = 1; ip[14] = src_port; ip[15] = 1;
     ip[16] = 0xe0; ip[17] = 0xe0;
     put_be16(ip + 18, vl_id);
     put_be16(ip + 10, ip_checksum(ip, IP_HDR_LEN));

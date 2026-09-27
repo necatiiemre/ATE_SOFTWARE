@@ -89,7 +89,7 @@ typedef struct cmc_data_plane cmc_data_plane_t;
 
 /** Allocate. The PRBS cache must already be generated; it is borrowed, not owned. */
 cmc_data_plane_t *cmc_data_plane_create(const cmc_config_t *config,
-                                        const cmc_prbs_cache_t *prbs,
+                                        const prbs31_cache_t *prbs,
                                         const cmc_sink_t *sink,
                                         volatile bool *stop);
 

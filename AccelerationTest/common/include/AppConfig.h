@@ -43,19 +43,24 @@ const char *app_config_iface_for_port(uint8_t dtn_port);
 const timing_config_t *app_config_timing(void);
 
 /**
- * @brief The copper legs' target rate, in Mbit/s.
+ * @brief What the DTN's copper legs put on the wire.
  *
  * config1 carries the workstation's traffic through the DTN to the VMC and back,
- * on both copper links. Both legs get the same figure: DTN port 33 is the 100M
- * link, so 100 is its ceiling, and holding the 1G leg to the same rate is what
- * keeps the two comparable - a difference between them is then the unit's rather
- * than the cable's.
+ * on both copper links. Both legs get the same rate: DTN port 33 is the 100M
+ * link, so 100 Mbit/s is its ceiling, and holding the 1G leg to the same figure
+ * is what keeps the two comparable - a difference between them is then the
+ * unit's rather than the cable's.
  *
- * Nothing generates this traffic yet. The routing is in the configuration and
- * the generator is the next piece; the number is here so the decision is not
- * only in a conversation.
+ * frame_bytes is the whole frame on the wire, the trailing AFDX sequence byte
+ * included. The VL records declare LMAX 1518, so that is the hard ceiling; 1513
+ * is what the reference DPDK applications send and leaves a little room under it.
  */
-double app_config_dtn_leg_mbps(void);
+typedef struct {
+    double   target_mbps;   /**< per leg */
+    uint16_t frame_bytes;   /**< on the wire, AFDX sequence byte included */
+} dtn_leg_config_t;
+
+const dtn_leg_config_t *app_config_dtn_legs(void);
 
 /**
  * @brief Whether to append the DTN's own management VLs to a round.

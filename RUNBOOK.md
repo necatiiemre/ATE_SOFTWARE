@@ -75,12 +75,12 @@ the encoders still emit valid frames and the decoders still read them.
 `cmc/src/health_monitor/`: those files are copies of `dpdk_cmc`'s, and it checks
 none of their symbols has started colliding with the rest of the binary.
 
-`sudo make smoke` runs the CMC data plane against the loopback interface with a
-thread standing in for the unit — sockets, threads, pacing and the whole
-verification loop, end to end, without any hardware. It is the one test that
-exercises the plumbing rather than the functions under it, so it is worth a run
-after touching anything in `cmc/src/CmcDataPlane.c`. It needs root and takes
-about fifteen seconds, most of that generating the PRBS stream twice.
+`sudo make smoke` runs the CMC data plane and the DTN's copper legs against the
+loopback interface, each with a thread standing in for the unit — sockets, threads, pacing and the whole
+verification loop, end to end, without any hardware. They are the only tests that
+exercise the plumbing rather than the functions under it, so they are worth a run
+after touching `cmc/src/CmcDataPlane.c` or `dtn/src/DtnLegs.c`. They need root and
+take about half a minute, most of that generating the PRBS stream.
 
 ---
 
@@ -111,8 +111,31 @@ sudo ./build/acceleration_test
 2. pick the round (`1`, `2` or `3`)
 3. read the routing it is about to write, then `y`
 
-It waits for the DTN to start talking, sends the configuration — 4 frames,
-about 16 ms — then draws the live table and keeps it up until Ctrl+C.
+It waits for the DTN to start talking, sends the configuration, then draws the
+live table and keeps it up until Ctrl+C.
+
+**config1 also generates traffic.** Before it starts it produces the PRBS-31
+stream, which is 256 MB and takes about four seconds, and then sends on both
+copper links — 100 Mbit/s each, sixty VLs out and sixty back — through the DTN to
+the VMC and home again. The senders start only after the configuration has gone
+out and been acknowledged: before the VL table is in the device there is nothing
+to carry the traffic. A third table appears under the others:
+
+| column | what a healthy run looks like |
+|---|---|
+| Sent / Returned | climbing together; a gap between them is traffic that did not come back |
+| Good | climbing with Returned |
+| Bad | zero |
+| Lost | zero |
+| Bit Error, BER | zero |
+
+Under the table, what is wrong is spelled out in words — `nothing back`, `arrived
+out of order`, `the link would not take`. `the link would not take` is this end
+rather than the unit: the kernel refused a send.
+
+If the unit goes quiet mid-run the senders pause, the configuration is re-sent
+when it comes back, and they resume — a rebooted DTN has no VL table to carry the
+traffic, and the configuration wants a quiet wire.
 
 The configuration is three datagrams plus a `0x52` status query:
 

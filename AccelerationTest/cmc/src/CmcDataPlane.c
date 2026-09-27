@@ -36,7 +36,7 @@ typedef struct {
 
 struct cmc_data_plane {
     const cmc_config_t     *config;
-    const cmc_prbs_cache_t *prbs;
+    const prbs31_cache_t *prbs;
     cmc_sink_t              sink;
     volatile bool          *stop;
 
@@ -106,7 +106,7 @@ static void wait_until(uint64_t target)
 /* ------------------------------------------------------------------ */
 
 cmc_data_plane_t *cmc_data_plane_create(const cmc_config_t *config,
-                                        const cmc_prbs_cache_t *prbs,
+                                        const prbs31_cache_t *prbs,
                                         const cmc_sink_t *sink,
                                         volatile bool *stop)
 {
@@ -327,7 +327,7 @@ bool cmc_data_plane_ingest(cmc_data_plane_t *dp, uint8_t net,
         st->lost += gap;
 
     cmc_verify_t v;
-    const bool ok = cmc_verify_payload(payload, cmc_prbs_at(dp->prbs, seq), &v);
+    const bool ok = cmc_verify_payload(payload, prbs31_at(dp->prbs, seq), &v);
 
     st->total_rx_pkts++;
     if (ok) {

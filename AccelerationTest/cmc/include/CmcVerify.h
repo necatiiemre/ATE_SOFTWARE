@@ -46,7 +46,7 @@ typedef struct {
  *
  * @param payload  the CMC_PAYLOAD_SIZE bytes after the UDP header
  * @param prbs_exp the PRBS stream for this payload's sequence, at least
- *                 CMC_NUM_PRBS_BYTES long - cmc_prbs_at() gives it
+ *                 CMC_NUM_PRBS_BYTES long - prbs31_at() gives it
  * @param out      filled in either way; bit_errors is only counted when
  *                 something failed, as the reference only counts it then
  * @return true when all four checks passed

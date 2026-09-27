@@ -6,6 +6,10 @@
  * link. From then on the test watches the health-monitor stream until the
  * operator stops it.
  *
+ * A round may also carry copper legs - config1 does - and then the test
+ * generates traffic as well as watching it: PRBS out of a copper port, through
+ * the DTN to the VMC, and back the same way. See DtnLegs.h.
+ *
  * The unit is powered separately. What the test does care about is power
  * *dropping* mid-run: on a vibration rig that is a likely fault and probably
  * the most valuable thing the run can catch. When the health monitor goes
@@ -17,6 +21,7 @@
 
 #include "AppConfig.h"
 #include "DtnConfig.h"
+#include "DtnLegs.h"
 #include "HealthDecode.h"
 #include "DtnHealthFrame.h"
 #include "Log.h"
@@ -38,11 +43,26 @@ static uint8_t      g_rx[RX_BUFFER_SIZE];
 static raw_socket_t g_links[APP_MAX_COPPER_LINKS];
 static vl_watch_t   g_watch;
 static hd_state_t   g_health;
+static dtn_legs_t  *g_legs;
+static prbs31_cache_t g_prbs;
+static volatile bool g_legs_stop;
 
 static void sleep_ms(unsigned ms)
 {
     struct timespec ts = {.tv_sec = ms / 1000, .tv_nsec = (long)(ms % 1000) * 1000000L};
     nanosleep(&ts, NULL);
+}
+
+static void prbs_progress(size_t done, size_t total)
+{
+    printf("\r  PRBS-31: %zu of %zu MB", done / (1024 * 1024), total / (1024 * 1024));
+    fflush(stdout);
+}
+
+static void stop_legs_action(void *ctx)
+{
+    (void)ctx;
+    g_legs_stop = true;
 }
 
 static void close_socket_action(void *ctx)
@@ -369,15 +389,31 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     while (!safe_shutdown_requested()) {
         size_t which = 0;
         int n = raw_socket_recv_any(g_links, link_count, g_rx, sizeof g_rx, 100, &which);
-        if (n > 0) {
-            hm_frame_t frame;
-            if (hm_classify(g_rx, (size_t)n, &frame)) {
+
+        /* Poll once, then drain. With the copper legs running this link carries
+         * thousands of frames a second, and a poll for each of them would be half
+         * the work this loop does. */
+        while (n > 0) {
+            const uint8_t port = copper[which].dtn_port;
+
+            /* The legs first. Their frames are the bulk of the traffic and are
+             * nothing to do with the health monitor, so they leave here rather
+             * than being classified and then discarded. */
+            if (g_legs && dtn_legs_ingest(g_legs, port, g_rx, (size_t)n)) {
                 hm_watch_saw_frame(&watch);
-                vl_watch_saw(&g_watch, copper[which].dtn_port, frame.vl_id, (size_t)n);
-                hd_ingest(&g_health, frame.payload, frame.payload_len);
+                vl_watch_saw(&g_watch, port,
+                             (uint16_t)((g_rx[4] << 8) | g_rx[5]), (size_t)n);
             } else {
-                vl_watch_unclassified(&g_watch);
+                hm_frame_t frame;
+                if (hm_classify(g_rx, (size_t)n, &frame)) {
+                    hm_watch_saw_frame(&watch);
+                    vl_watch_saw(&g_watch, port, frame.vl_id, (size_t)n);
+                    hd_ingest(&g_health, frame.payload, frame.payload_len);
+                } else {
+                    vl_watch_unclassified(&g_watch);
+                }
             }
+            n = raw_socket_recv_nowait(&g_links[which], g_rx, sizeof g_rx);
         }
 
         if (hm_watch_update(&watch, timing->heartbeat_timeout_ms)) {
@@ -385,6 +421,9 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                 interruptions++;
                 log_line("UNIT WENT QUIET - no traffic for %u ms (event %u)",
                          timing->heartbeat_timeout_ms, interruptions);
+                /* Stop generating: the device has no VL table to carry it, and
+                 * the configuration that is about to go out wants a quiet wire. */
+                dtn_legs_pause(g_legs, true);
             } else {
                 /* It rebooted, so its VL table is gone. Put it back. */
                 log_line("unit is back - re-sending the configuration");
@@ -393,6 +432,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                 else
                     log_line("configuration could NOT be restored after event %u",
                              interruptions);
+                dtn_legs_pause(g_legs, false);
             }
         }
 
@@ -402,6 +442,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
             vl_watch_render(&g_watch, (now - started) / 1000, profile_name,
                             watch.alive, interruptions);
             hd_render(&g_health, g_groups, g_group_count);
+            dtn_legs_print_table(g_legs);
             puts("\nCtrl+C to end the test");
             fflush(stdout);
         }
@@ -415,6 +456,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
              interruptions);
     vl_watch_log_summary(&g_watch);
     hd_log_summary(&g_health);
+    dtn_legs_log_summary(g_legs);
 }
 
 /* ------------------------------------------------------------------ */
@@ -426,6 +468,7 @@ unit_result_t dtn_test_run(void)
     const copper_link_t   *config_link = app_config_config_link();
     size_t link_count;
     int handles[APP_MAX_COPPER_LINKS];
+    int legs_handle = -1;
     raw_socket_t *config_sock = NULL;
     unit_result_t result = UNIT_RESULT_ERROR;
 
@@ -514,6 +557,24 @@ unit_result_t dtn_test_run(void)
             goto done;
         handles[i] = safe_shutdown_register(copper[i].iface, SHUTDOWN_PRIO_SOCKET,
                                             close_socket_action, &g_links[i]);
+
+        /* These links both send and receive - the configuration, and the copper
+         * legs' traffic - and a packet socket opened for every protocol is handed
+         * outgoing frames as well as incoming ones. Without this the monitor loop
+         * would be given back every frame this end sends: thousands a second on
+         * an outbound VL, which the legs would not claim and the health-monitor
+         * decoder would then be asked to make sense of. */
+        if (!raw_socket_ignore_outgoing(&g_links[i]))
+            log_line("%s: the kernel will keep showing us our own frames; "
+                     "expect them in the unclassified count", copper[i].iface);
+
+        /* Room for a scheduling hiccup. With the copper legs running each link
+         * carries thousands of frames a second, and the default buffer is a few
+         * hundred kilobytes - a pause on the reader would otherwise look exactly
+         * like loss on the unit's side. */
+        raw_socket_set_buffers(&g_links[i], 16 * 1024 * 1024, 4 * 1024 * 1024,
+                              NULL, NULL);
+
         if (copper[i].dtn_port == config_link->dtn_port)
             config_sock = &g_links[i];
     }
@@ -525,6 +586,36 @@ unit_result_t dtn_test_run(void)
     vl_watch_init(&g_watch, g_records, (size_t)count);
     hd_init(&g_health);
     collect_ports(g_records, (size_t)count);
+
+    /* The copper legs, if this round has any. The PRBS stream is generated once,
+     * here, and read out of at an offset every sequence number decides - never
+     * per frame. */
+    if (round.comm_count > 0) {
+        const dtn_leg_config_t *leg_cfg = app_config_dtn_legs();
+
+        printf("\nGenerating the PRBS-31 stream (%zu MB) - this takes a moment...\n",
+               PRBS31_CACHE_SIZE / (1024 * 1024));
+        if (!prbs31_cache_init(&g_prbs, PRBS31_INITIAL_STATE,
+                               dtn_legs_prbs_stride(leg_cfg), prbs_progress)) {
+            printf("\nCould not allocate the PRBS stream.\n");
+            goto done;
+        }
+        printf("\r  PRBS-31: ready (%zu MB, %zu bytes per frame)          \n",
+               PRBS31_CACHE_SIZE / (1024 * 1024), g_prbs.stride);
+
+        g_legs_stop = false;
+        g_legs = dtn_legs_create(&round, leg_cfg, &g_prbs, &g_legs_stop);
+        if (!g_legs) {
+            log_line("this round declares copper legs but none of them could be "
+                     "paired up - no traffic will be generated");
+        } else {
+            legs_handle = safe_shutdown_register("copper legs", SHUTDOWN_PRIO_SOCKET,
+                                                stop_legs_action, NULL);
+            for (size_t i = 0; i < link_count; i++)
+                dtn_legs_bind(g_legs, copper[i].dtn_port, &g_links[i]);
+        }
+    }
+
     log_line("profile %s, %d VL records (%zu enabled), %d frames",
              profile->name, count, vl_profile_enabled_count(g_records, (size_t)count),
              frame_count);
@@ -541,10 +632,24 @@ unit_result_t dtn_test_run(void)
         log_line("no status reply within %u ms - continuing, but the configuration "
                  "is unconfirmed", timing->status_reply_timeout_ms);
 
+    /* The senders start only now: before the VL table is in the device there is
+     * nothing to carry the traffic, and the configuration wants a quiet wire. */
+    if (g_legs && !dtn_legs_start(g_legs)) {
+        log_line("the copper legs would not start");
+        goto done;
+    }
+
     monitor_run(link_count, config_sock, frame_count, timing, profile->name);
     result = UNIT_RESULT_PASS;
 
 done:
+    /* The senders go first: they hold the sockets the loop below closes. */
+    g_legs_stop = true;
+    dtn_legs_destroy(g_legs);
+    g_legs = NULL;
+    safe_shutdown_unregister(legs_handle);
+    prbs31_cache_free(&g_prbs);
+
     for (size_t i = 0; i < link_count; i++) {
         safe_shutdown_unregister(handles[i]);
         raw_socket_close(&g_links[i]);

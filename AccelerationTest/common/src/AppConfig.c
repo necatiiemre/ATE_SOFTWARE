@@ -19,9 +19,14 @@ static const timing_config_t g_timing = {
     .display_interval_ms     = 1000,
 };
 
-double app_config_dtn_leg_mbps(void)
+static const dtn_leg_config_t g_dtn_legs = {
+    .target_mbps = 100.0,
+    .frame_bytes = 1513,
+};
+
+const dtn_leg_config_t *app_config_dtn_legs(void)
 {
-    return 100.0;
+    return &g_dtn_legs;
 }
 
 const copper_link_t *app_config_copper(size_t *count)

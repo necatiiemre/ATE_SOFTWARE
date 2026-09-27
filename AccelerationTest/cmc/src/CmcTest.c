@@ -224,7 +224,7 @@ static void stop_threads_action(void *ctx)
 unit_result_t cmc_test_run(void)
 {
     const cmc_config_t *c = app_config_cmc();
-    cmc_prbs_cache_t prbs = {0};
+    prbs31_cache_t prbs = {0};
     unit_result_t result = UNIT_RESULT_ERROR;
     int stop_handle = -1;
 
@@ -310,7 +310,7 @@ done:
     cmc_pmm_destroy(g_pmm);
     g_dp = NULL;
     g_pmm = NULL;
-    cmc_prbs_cache_free(&prbs);
+    prbs31_cache_free(&prbs);
 
     log_close();
     safe_shutdown_clear();

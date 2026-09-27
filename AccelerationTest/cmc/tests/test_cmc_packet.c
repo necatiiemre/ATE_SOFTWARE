@@ -44,7 +44,7 @@ static void test_prbs(void)
     };
     uint8_t got[16];
 
-    uint32_t after = cmc_prbs_fill(got, sizeof got, CMC_PRBS_INITIAL_STATE);
+    uint32_t after = prbs31_fill(got, sizeof got, CMC_PRBS_INITIAL_STATE);
 
     check(memcmp(got, expected, sizeof got) == 0,
           "PRBS-31 from state 0x0F, byte for byte");
@@ -53,8 +53,8 @@ static void test_prbs(void)
     /* Chunking must not change the stream: the cache is generated in pieces
      * with the state carried across, and that has to be the same stream. */
     uint8_t half_a[8], half_b[8];
-    uint32_t mid = cmc_prbs_fill(half_a, sizeof half_a, CMC_PRBS_INITIAL_STATE);
-    cmc_prbs_fill(half_b, sizeof half_b, mid);
+    uint32_t mid = prbs31_fill(half_a, sizeof half_a, CMC_PRBS_INITIAL_STATE);
+    prbs31_fill(half_b, sizeof half_b, mid);
     check(memcmp(half_a, expected, 8) == 0 && memcmp(half_b, expected + 8, 8) == 0,
           "generating it in two pieces gives the same bytes as one");
     printf("[ OK ] the PRBS-31 stream\n");
@@ -140,7 +140,7 @@ static void test_frame(void)
 
 static void test_payload(void)
 {
-    cmc_prbs_cache_t cache = {0};
+    prbs31_cache_t cache = {0};
     cmc_packet_config_t cfg;
     uint8_t frame[CMC_FRAME_LEN_MAX];
     uint8_t prbs[CMC_NUM_PRBS_BYTES];
@@ -150,9 +150,10 @@ static void test_payload(void)
      * enough to check that the payload is assembled out of it correctly; the
      * offset arithmetic is checked separately below. */
     static uint8_t small[CMC_NUM_PRBS_BYTES * 2];
-    cmc_prbs_fill(small, sizeof small, CMC_PRBS_INITIAL_STATE);
+    prbs31_fill(small, sizeof small, CMC_PRBS_INITIAL_STATE);
     cache.bytes = small;
     cache.initial_state = CMC_PRBS_INITIAL_STATE;
+    cache.stride = CMC_PRBS_STRIDE;
     cache.ready = true;
 
     cmc_packet_config_init(&cfg);
@@ -166,7 +167,7 @@ static void test_payload(void)
     memcpy(&seq_back, payload, sizeof seq_back);
     check(seq_back == 0, "the sequence goes in as a raw 64-bit word");
 
-    cmc_prbs_fill(prbs, sizeof prbs, CMC_PRBS_INITIAL_STATE);
+    prbs31_fill(prbs, sizeof prbs, CMC_PRBS_INITIAL_STATE);
     check(memcmp(payload + CMC_SEQ_BYTES, prbs, CMC_NUM_PRBS_BYTES) == 0,
           "and sequence 0 carries the stream from its start");
 
@@ -189,14 +190,15 @@ static void test_payload(void)
  * including the wrap, which the cache's repeated tail is there to absorb. */
 static void test_prbs_offset(void)
 {
-    cmc_prbs_cache_t cache = {0};
+    prbs31_cache_t cache = {0};
     static uint8_t small[16];
 
     cache.bytes = small;
+    cache.stride = CMC_PRBS_STRIDE;
     cache.ready = true;
 
-    check(cmc_prbs_at(&cache, 0) == small, "sequence 0 reads from the start");
-    check(cmc_prbs_at(&cache, 1) == small + CMC_NUM_PRBS_BYTES,
+    check(prbs31_at(&cache, 0) == small, "sequence 0 reads from the start");
+    check(prbs31_at(&cache, 1) == small + CMC_NUM_PRBS_BYTES,
           "and each sequence one packet further along");
 
     /* The offset wraps with the period, which is not a whole number of
@@ -206,11 +208,11 @@ static void test_prbs_offset(void)
      * packet's worth of buffer behind it. */
     const uint64_t per_period = (uint64_t)CMC_PRBS_CACHE_SIZE / CMC_NUM_PRBS_BYTES;
     const uint64_t off_last = (per_period * CMC_NUM_PRBS_BYTES) % CMC_PRBS_CACHE_SIZE;
-    check(cmc_prbs_at(&cache, per_period) == small + off_last,
+    check(prbs31_at(&cache, per_period) == small + off_last,
           "the offset wraps with the period, not with the buffer");
     check(off_last + CMC_NUM_PRBS_BYTES > CMC_PRBS_CACHE_SIZE,
           "the last packet of a period does run off the end");
-    check((CMC_PRBS_CACHE_SIZE - 1) + CMC_NUM_PRBS_BYTES <= CMC_PRBS_BUFFER_SIZE,
+    check((CMC_PRBS_CACHE_SIZE - 1) + CMC_NUM_PRBS_BYTES <= (PRBS31_CACHE_SIZE + CMC_PRBS_STRIDE),
           "and the buffer covers the worst offset the modulo can give");
     printf("[ OK ] the PRBS offset a sequence reads at\n");
 }

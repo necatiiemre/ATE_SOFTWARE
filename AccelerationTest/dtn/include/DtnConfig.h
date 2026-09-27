@@ -164,11 +164,28 @@ int dtn_build_payload(const dtn_block_t *blocks, size_t count, uint8_t op,
 
 /**
  * @brief Wrap a payload in Ethernet/IPv4/UDP and append the sequence byte.
+ *
+ * The source IP is 10.1.33.1, which is what every reference frame carries -
+ * the configuration goes out of the 100M copper port, DTN port 33. Traffic
+ * sourced anywhere else should say so; see dtn_build_frame_from.
+ *
  * @param vlan 802.1Q tag, or -1 for untagged (the copper path)
  * @return frame length, or -1 if it would exceed DTN_MAX_FRAME
  */
 int dtn_build_frame(const uint8_t *payload, size_t len, uint8_t seq,
                     uint16_t vl_id, int vlan, uint8_t net, uint8_t *out, size_t cap);
+
+/**
+ * @brief The same frame, with the source IP naming the port it came from.
+ *
+ * 10.1.<src_port>.1, which is the convention the rest of the rig uses. Kept
+ * separate from dtn_build_frame so the configuration path stays byte for byte
+ * the reference's - it is the only frame sequence real hardware is known to have
+ * accepted, and its source IP is part of that.
+ */
+int dtn_build_frame_from(uint8_t src_port, const uint8_t *payload, size_t len,
+                         uint8_t seq, uint16_t vl_id, int vlan, uint8_t net,
+                         uint8_t *out, size_t cap);
 
 /** The device's 1-byte AFDX counter: 0 is only the first value, then 1..255. */
 uint8_t dtn_next_seq(uint8_t seq);

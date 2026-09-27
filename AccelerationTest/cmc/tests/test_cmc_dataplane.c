@@ -35,7 +35,7 @@ static void check(bool ok, const char *what)
  * quarter of a gigabyte to look at four packets. */
 #define TEST_SEQS 8
 static uint8_t g_prbs_bytes[CMC_NUM_PRBS_BYTES * (TEST_SEQS + 1)];
-static cmc_prbs_cache_t g_prbs;
+static prbs31_cache_t g_prbs;
 
 /* The health-monitor and MMMS sink, counting rather than decoding. */
 static unsigned g_hm_calls, g_mmms_calls;
@@ -103,7 +103,7 @@ static size_t build_returned_frame(uint8_t *frame, const cmc_config_t *c,
     cmc_packet_fill_payload(frame, c->vlan_tagged, &g_prbs, seq);
     cmc_packet_stamp_dtn_seq(frame, len, seq);
     apply_cmc_transform(frame + CMC_PAYLOAD_OFF(c->vlan_tagged),
-                        cmc_prbs_at(&g_prbs, seq), seq);
+                        prbs31_at(&g_prbs, seq), seq);
     return len;
 }
 
@@ -176,7 +176,7 @@ static void test_each_failure(const cmc_config_t *c)
         payload[cases[i].offset] ^= 0x01;
 
         cmc_verify_t v;
-        const bool ok = cmc_verify_payload(payload, cmc_prbs_at(&g_prbs, 1), &v);
+        const bool ok = cmc_verify_payload(payload, prbs31_at(&g_prbs, 1), &v);
 
         check(!ok, "a corrupted payload fails");
         check(v.splitmix_ok == cases[i].expect_sm &&
@@ -361,9 +361,10 @@ int main(void)
 {
     const cmc_config_t *c = app_config_cmc();
 
-    cmc_prbs_fill(g_prbs_bytes, sizeof g_prbs_bytes, CMC_PRBS_INITIAL_STATE);
+    prbs31_fill(g_prbs_bytes, sizeof g_prbs_bytes, CMC_PRBS_INITIAL_STATE);
     g_prbs.bytes = g_prbs_bytes;
     g_prbs.initial_state = CMC_PRBS_INITIAL_STATE;
+    g_prbs.stride = CMC_PRBS_STRIDE;
     g_prbs.ready = true;
 
     cmc_sink_t sink = {0};

@@ -93,7 +93,7 @@ struct unit_ctx {
      * thread starts, because generating it inside the thread would have it still
      * counting bits while the sender was already on its last frame - which is
      * exactly what happened the first time this test ran. */
-    const cmc_prbs_cache_t *prbs;
+    const prbs31_cache_t *prbs;
     uint64_t                echoed;
     uint64_t                seen_own_echo;
 };
@@ -156,7 +156,7 @@ static void *unit_thread_fn(void *arg)
                 ip[10] = (uint8_t)(csum >> 8);
                 ip[11] = (uint8_t)csum;
 
-                apply_transform(payload, cmc_prbs_at(u->prbs, seq), seq);
+                apply_transform(payload, prbs31_at(u->prbs, seq), seq);
 
                 if (raw_socket_send(&u->sock, buf, frame_len))
                     u->echoed++;
@@ -176,8 +176,8 @@ static void *unit_thread_fn(void *arg)
 int main(void)
 {
     const cmc_config_t c = smoke_config();
-    cmc_prbs_cache_t prbs = {0};
-    cmc_prbs_cache_t unit_prbs = {0};
+    prbs31_cache_t prbs = {0};
+    prbs31_cache_t unit_prbs = {0};
     volatile bool stop = false;
     struct unit_ctx unit = {0};
     pthread_t unit_thread;
@@ -193,8 +193,8 @@ int main(void)
     if (!cmc_prbs_cache_init(&prbs, CMC_PRBS_INITIAL_STATE, NULL) ||
         !cmc_prbs_cache_init(&unit_prbs, CMC_PRBS_INITIAL_STATE, NULL)) {
         puts("[FAIL] the PRBS stream would not allocate");
-        cmc_prbs_cache_free(&prbs);
-        cmc_prbs_cache_free(&unit_prbs);
+        prbs31_cache_free(&prbs);
+        prbs31_cache_free(&unit_prbs);
         return 1;
     }
 
@@ -291,8 +291,8 @@ join:
     raw_socket_close(&unit.sock);
 out:
     cmc_data_plane_destroy(dp);
-    cmc_prbs_cache_free(&prbs);
-    cmc_prbs_cache_free(&unit_prbs);
+    prbs31_cache_free(&prbs);
+    prbs31_cache_free(&unit_prbs);
 
     if (rc == 0)
         puts("\nPASS: the CMC loop runs on a real socket, end to end");
