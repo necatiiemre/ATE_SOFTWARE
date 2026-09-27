@@ -437,6 +437,14 @@ static void *leg_sender(void *arg)
             leg->stats.tx_bytes += (uint64_t)n;
             leg->tx_seq[off]++;
         } else {
+            /* Once per leg, then counted. This is the hot path - a hundred
+             * thousand frames a second between the two legs - so a line per
+             * refused frame would bury the tables that explain it and hold the
+             * sender at the speed of the terminal. */
+            if (leg->stats.tx_refused == 0)
+                log_line("copper %u will not take frames: %s. Every one refused "
+                         "from here on is counted, not printed.",
+                         leg->copper_port, strerror(leg->sock->send_errno));
             leg->stats.tx_refused++;
         }
 

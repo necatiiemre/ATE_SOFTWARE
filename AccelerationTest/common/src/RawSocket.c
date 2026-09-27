@@ -38,6 +38,7 @@ bool raw_socket_open(raw_socket_t *sock, const char *iface, bool promiscuous)
     struct sockaddr_ll sll;
 
     sock->fd = -1;
+    sock->send_errno = 0;
     snprintf(sock->name, sizeof sock->name, "%s", iface);
 
     sock->fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
@@ -158,10 +159,28 @@ bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len)
     ssize_t sent = sendto(sock->fd, frame, len, 0,
                           (struct sockaddr *)&dest, sizeof dest);
     if (sent != (ssize_t)len) {
-        fprintf(stderr, "[net] %s: send failed: %s\n", sock->name, strerror(errno));
+        sock->send_errno = sent < 0 ? errno : EIO;
         return false;
     }
+    sock->send_errno = 0;
     return true;
+}
+
+unsigned raw_socket_link_mbps(const char *iface)
+{
+    char path[64 + IFNAMSIZ];
+    long mbps = 0;
+    FILE *f;
+
+    snprintf(path, sizeof path, "/sys/class/net/%s/speed", iface);
+    f = fopen(path, "r");
+    if (!f)
+        return 0;
+    if (fscanf(f, "%ld", &mbps) != 1)
+        mbps = 0;
+    fclose(f);
+    /* A link with no carrier reports -1 rather than failing to open. */
+    return mbps > 0 ? (unsigned)mbps : 0u;
 }
 
 int raw_socket_recv(raw_socket_t *sock, uint8_t *buf, size_t cap, unsigned timeout_ms)

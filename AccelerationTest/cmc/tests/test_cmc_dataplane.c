@@ -15,8 +15,10 @@
 #include "CmcPacket.h"
 #include "PayloadVerify.h"
 #include "CmcStats.h"
+#include "RawSocket.h"
 #include "SplitmixVerify.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -342,6 +344,16 @@ static void test_tables(const cmc_config_t *c)
         cmc_data_plane_ingest(dp, n, frame, len);
     }
 
+    /* A link that refused everything, which is the state the tables have to
+     * explain rather than leave as a row of zeros: on the rig it is a cable out
+     * or a line too slow, and it reads as the unit losing packets. Written
+     * through a cast because nothing in the running program sets it from
+     * outside - the sender is the only writer. */
+    cmc_net_stats_t *refused = (cmc_net_stats_t *)cmc_data_plane_stats(dp, 0);
+
+    refused->tx_refused = 12345;
+    refused->tx_errno   = ENOBUFS;
+
     cmc_stats_print_banner(c, false, 17);
     cmc_stats_print_all(&view, dp, c);
     cmc_stats_print_banner(c, true, 240);
@@ -349,6 +361,9 @@ static void test_tables(const cmc_config_t *c)
     cmc_stats_print_warnings(dp, c);
     for (uint8_t n = 0; n < c->net_count; n++)
         cmc_stats_log_net(dp, c, n);
+
+    check(raw_socket_link_mbps("no-such-interface-42") == 0,
+          "an interface that is not there reports no speed");
 
     check(cmc_data_plane_stats(dp, 0)->lost == 2 &&
           cmc_data_plane_stats(dp, 0)->bad == 1,

@@ -861,6 +861,33 @@ kernel would not take for sending. The kernel is in the send path here, so it ca
 happen, it is this end rather than the unit, and without a line of its own it
 would read as loss.
 
+### A link that will not take frames
+
+`No buffer space available` from one of the DSM links is worth recognising on
+sight. The sockets bypass the qdisc, so there is no queue to absorb anything: the
+kernel hands each frame straight to the driver, and the driver refusing it means
+the interface cannot transmit at the rate being asked of it. Two causes, and the
+test now names which:
+
+* no carrier — the cable is out or the module at the far end is not powered. The
+  link reports no speed at all.
+* a line slower than the rate — 0.3 Gbps across two networks is 150 Mbit/s each,
+  so a link that negotiated 100 Mbit/s cannot carry it. This is checked when the
+  links are opened, before the run, rather than diagnosed from the tables after.
+
+Neither is the unit losing packets, but both read that way: the row of the
+refusing link shows nothing, and the columns that fill up are somebody else's. So
+the link's own speed is in each table's heading (`ens6f1, LINK DOWN`), the refusal
+is explained once in the `WARNINGS` block with the reason the kernel gave, and
+`raw_socket_send` no longer prints anything itself.
+
+That last part matters more than it sounds. It used to print one line per refused
+frame, and a refusal of this kind is not occasional — it is every frame, twelve
+thousand a second. That floods the terminal, scrolls away the tables that would
+explain it, and holds the sender at the speed of whatever stdout is attached to,
+so the counters that were working crawl too and the whole dashboard reads as
+zeros. A hot path counts; it does not print.
+
 ### What is left out, and why
 
 The PSU telemetry table. It exists to show the 1 Hz V/I/W stream MainSoftware

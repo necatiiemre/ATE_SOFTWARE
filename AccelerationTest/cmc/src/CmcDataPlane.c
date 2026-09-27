@@ -190,11 +190,27 @@ bool cmc_data_plane_open(cmc_data_plane_t *dp)
          * this end sends carry the outbound VL range. */
         const bool own = raw_socket_ignore_outgoing(&dp->sock[n]);
 
-        log_line("[cmc] %-8s %-5s %s  src MAC tail 0x%02X  rcvbuf %d KB  sndbuf %d KB%s%s",
-                 link->iface, link->unit_label, link->label,
-                 link->src_mac_tail, rcv / 1024, snd / 1024,
+        const unsigned mbps = raw_socket_link_mbps(link->iface);
+
+        log_line("[cmc] %-8s %-5s %s  src MAC tail 0x%02X  link %s  rcvbuf %d KB  "
+                 "sndbuf %d KB%s%s",
+                 link->iface, link->unit_label, link->label, link->src_mac_tail,
+                 mbps ? "" : "down", rcv / 1024, snd / 1024,
                  bypass ? "  qdisc bypassed" : "",
                  own ? "" : "  (kernel still shows us our own frames)");
+        if (mbps)
+            log_line("      %s is up at %u Mbit/s", link->iface, mbps);
+
+        /* Asked before the run rather than diagnosed after it. A link that cannot
+         * carry the rate refuses the frames, and a refused frame looks like a lost
+         * one in every column of the table - on the row of the link that is
+         * working, because the one at fault shows nothing at all. */
+        const double want_mbps = cmc_data_plane_net_gbps(dp) * 1000.0;
+
+        if (mbps && (double)mbps < want_mbps)
+            log_line("      WARNING: this test paces %.0f Mbit/s onto it. The link "
+                     "cannot carry that; lower the CMC target rate or fix the link.",
+                     want_mbps);
     }
     return true;
 }
@@ -378,6 +394,43 @@ static void *rx_thread_fn(void *arg)
 /* Send                                                               */
 /* ------------------------------------------------------------------ */
 
+
+/**
+ * @brief Say once why a link will not take our frames.
+ *
+ * ENOBUFS is the one worth spelling out. The qdisc is bypassed on these sockets,
+ * so there is no queue to absorb anything: the kernel hands the frame to the
+ * driver and the driver says no. That means the interface cannot transmit at the
+ * rate being asked of it - no carrier at all, or a line slower than the rate. It
+ * does not mean the CMC dropped anything, and without this line it reads exactly
+ * as if it had: the loss column fills and the row that is really at fault is the
+ * one showing nothing.
+ */
+static void report_refusal(const cmc_data_plane_t *dp, uint8_t net, int err)
+{
+    const cmc_net_link_t *link = &dp->config->nets[net];
+    const unsigned mbps = raw_socket_link_mbps(link->iface);
+    const double   want = cmc_data_plane_net_gbps(dp) * 1000.0;
+
+    log_line("[cmc] %s (%s) will not take frames: %s", link->iface,
+             link->unit_label, strerror(err));
+    if (err != ENOBUFS)
+        return;
+
+    if (mbps == 0)
+        log_line("      the link reports no speed, so it has no carrier - check the "
+                 "cable and whether the %s side is powered", link->unit_label);
+    else if ((double)mbps < want)
+        log_line("      the link negotiated %u Mbit/s and this test asks %.0f "
+                 "Mbit/s of it - lower cmc target_gbps or fix the link",
+                 mbps, want);
+    else
+        log_line("      the link is up at %u Mbit/s, so the driver queue is "
+                 "backing up rather than the line being too slow", mbps);
+    log_line("      every frame refused from here on is counted, not printed; see "
+             "the WARNINGS block under the tables");
+}
+
 static void *tx_thread_fn(void *arg)
 {
     cmc_data_plane_t *dp = arg;
@@ -455,6 +508,15 @@ static void *tx_thread_fn(void *arg)
                 if (n == 0)
                     first_sent = true;
             } else {
+                /* Said once, per link, and counted from then on. A refusal here
+                 * is not rare when it happens at all - it is every frame, tens of
+                 * thousands a second - so a line each would flood the terminal,
+                 * bury the tables that explain it, and hold the sender at the
+                 * speed of stdout. The count and the warnings block carry it. */
+                if (dp->stats[n].tx_refused == 0) {
+                    dp->stats[n].tx_errno = dp->sock[n].send_errno;
+                    report_refusal(dp, n, dp->sock[n].send_errno);
+                }
                 dp->stats[n].tx_refused++;
             }
         }

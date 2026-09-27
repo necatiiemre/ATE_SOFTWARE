@@ -2,6 +2,9 @@
 
 #include "CmcPacket.h"
 #include "Log.h"
+#include "RawSocket.h"
+
+#include <errno.h>
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -95,9 +98,20 @@ void cmc_stats_print_all(cmc_stats_view_t *view, const cmc_data_plane_t *dp,
 {
     for (uint8_t n = 0; n < config->net_count; n++) {
         const cmc_net_link_t *link = &config->nets[n];
+        const unsigned mbps = raw_socket_link_mbps(link->iface);
+        char state[32];
 
-        printf("\n  === %s (%s | %s | VL %u..%u -> %u..%u | SRC MAC tail 0x%02X) ===\n",
-               link->label, link->unit_label, link->iface,
+        /* The link's own state, in the heading. A row of zeros has two very
+         * different explanations - the unit is not answering, or this end never
+         * put anything on the wire - and the cable is the one the table can
+         * answer for. */
+        if (mbps)
+            snprintf(state, sizeof state, "%u Mbit/s", mbps);
+        else
+            snprintf(state, sizeof state, "LINK DOWN");
+
+        printf("\n  === %s (%s | %s, %s | VL %u..%u -> %u..%u | SRC MAC tail 0x%02X) ===\n",
+               link->label, link->unit_label, link->iface, state,
                config->tx_vl_start, config->tx_vl_start + config->vl_count - 1,
                config->rx_vl_start, config->rx_vl_start + config->vl_count - 1,
                link->src_mac_tail);
@@ -137,9 +151,15 @@ void cmc_stats_print_warnings(const cmc_data_plane_t *dp, const cmc_config_t *co
         /* Ours, not the reference's: the kernel is in the send path here, so a
          * frame it would not take is a thing that can happen and is not the
          * unit's fault. It has to be visible or it would read as loss. */
-        if (st->tx_refused > 0)
-            printf("      %s: %" PRIu64 " frame(s) the link would not take - "
-                   "that is this end, not the unit\n", label, st->tx_refused);
+        if (st->tx_refused > 0) {
+            printf("      %s: %" PRIu64 " frame(s) the link would not take (%s) - "
+                   "that is this end, not the unit\n", label, st->tx_refused,
+                   st->tx_errno ? strerror(st->tx_errno) : "reason not recorded");
+            if (st->tx_errno == ENOBUFS)
+                printf("           %s cannot transmit at this rate: no carrier, or "
+                       "a line slower than the test asks for. Nothing on this row "
+                       "went out.\n", config->nets[n].iface);
+        }
         if (st->other_vl > 0)
             printf("      %s: %" PRIu64 " frame(s) on an unexpected VL id "
                    "(last was %u)\n", label, st->other_vl, st->last_other_vl);

@@ -301,7 +301,8 @@ int mmms_send_trigger(raw_socket_t *sock, bool vlan_tagged)
     memcpy(payload + 2, "read-smmm", 9);
 
     if (!raw_socket_send(sock, pkt, pkt_len)) {
-        printf("MMMS: could not put the trigger on %s\n", sock->name);
+        printf("MMMS: could not put the trigger on %s: %s\n", sock->name,
+               strerror(sock->send_errno));
         return -1;
     }
 

@@ -68,6 +68,7 @@ typedef struct {
     uint64_t tx_pkts;
     uint64_t tx_bytes;
     uint64_t tx_refused;      /**< the link would not take the frame */
+    int      tx_errno;        /**< errno of the first refusal; 0 if none */
 
     uint64_t total_rx_pkts;   /**< frames that reached verification */
     uint64_t good;

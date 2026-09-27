@@ -20,10 +20,22 @@ typedef struct {
     int     ifindex;
     char    name[IFNAMSIZ];
     uint8_t mac[6];      /**< the interface's own address, for frames we source */
+    int     send_errno;  /**< errno of the last refused send; see raw_socket_send */
 } raw_socket_t;
 
 /** True if the interface exists and is administratively up with a carrier. */
 bool raw_socket_link_up(const char *iface, bool *carrier);
+
+/**
+ * @brief The link's negotiated speed in Mbit/s, or 0 when it is not known.
+ *
+ * Worth asking before a run rather than after: a test that asks a link for more
+ * than it negotiated does not fail in a way that names itself. The kernel refuses
+ * the frames it cannot queue, which looks like the unit dropping them, and the
+ * table fills with loss on a link that was never carrying the traffic. A link with
+ * no carrier, or a virtual one, reports nothing and gives 0.
+ */
+unsigned raw_socket_link_mbps(const char *iface);
 
 /**
  * @brief Bind a raw socket to one interface.
@@ -71,7 +83,19 @@ bool raw_socket_ignore_outgoing(raw_socket_t *sock);
  */
 bool raw_socket_bypass_qdisc(raw_socket_t *sock);
 
-/** Put one complete Ethernet frame on the wire. */
+/**
+ * @brief Put one complete Ethernet frame on the wire.
+ *
+ * Does not report a refusal itself, and that is deliberate. This is the hot path:
+ * a data plane sends tens of thousands of frames a second, so one line per refused
+ * frame is tens of thousands of lines a second - which floods the terminal, buries
+ * the very tables that would explain it, and slows the sender down to the speed of
+ * whatever stdout is attached to. The refusal has to be counted, not printed.
+ *
+ * On false, sock->send_errno says why, so a caller can say it once and count the
+ * rest. ENOBUFS with the qdisc bypassed means the interface itself would not take
+ * the frame: no carrier, or a line slower than the rate being asked of it.
+ */
 bool raw_socket_send(raw_socket_t *sock, const uint8_t *frame, size_t len);
 
 /**
