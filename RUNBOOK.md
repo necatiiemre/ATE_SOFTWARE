@@ -111,8 +111,17 @@ sudo ./build/acceleration_test
 2. pick the round (`1`, `2` or `3`)
 3. read the routing it is about to write, then `y`
 
-It waits for the DTN to start talking, sends the configuration, then draws the
-live table and keeps it up until Ctrl+C.
+**Power the DTN when it asks, not before.** The test waits for its health
+monitor to appear on either copper link — that is the first sign it is alive —
+and then waits ten seconds more before writing the configuration, because
+talking is not the same as having finished booting. A configuration written into
+a device that is still coming up may not stick, and the failure looks like a
+device that ignored it. The countdown is on screen; `config_settle_s` in
+`AccelerationTest/common/src/AppConfig.c` changes it. The same wait applies if
+the unit goes quiet mid-run and comes back.
+
+It then sends the configuration, draws the live table and keeps it up until
+Ctrl+C.
 
 **config1 also generates traffic.** Before it starts it produces the PRBS-31
 stream, which is 256 MB and takes about four seconds, and then sends on both
