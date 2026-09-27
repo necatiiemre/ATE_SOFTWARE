@@ -118,28 +118,57 @@ void vl_watch_render(const vl_watch_t *watch, uint64_t elapsed_s,
     printf("unit %s   expected VLs seen %zu/%zu   power interruptions %u\n\n",
            unit_alive ? "ALIVE" : "LOST ", seen, total_expected, interruptions);
 
-    printf("  link       DTN  VL-ID   packets      bytes   last   sizes           status\n");
-    printf("  ---------- ---  -----  --------  ---------  -----   --------------  ------\n");
+    printf("  link       DTN  VL-ID        packets      bytes   last   sizes           status\n");
+    printf("  ---------- ---  -----------  --------  ---------  -----   --------------  ------\n");
 
-    for (size_t i = 0; i < watch->count; i++) {
+    /* A leg's sixty return VLs are sixty rows that all say the same thing, and
+     * sixty rows push the health tables off the screen. So a run of neighbouring
+     * VLs that agree - same link, same verdict, same frame sizes - prints as one
+     * row over their range, with the packets and bytes added up. Anything that
+     * disagrees with its neighbours breaks the run and gets its own row, which is
+     * the case worth looking at anyway. */
+    for (size_t i = 0; i < watch->count; ) {
         const vl_sighting_t *e = &watch->entries[i];
         const char *iface = app_config_iface_for_port(e->dtn_port);
-        char sizes[32];
-        char last[16];
+        char sizes[32], other[32], range[16], last[16];
+        uint64_t packets = e->packets, bytes = e->bytes, latest = e->last_ms;
+        size_t j = i;
 
         format_sizes(e, sizes, sizeof sizes);
-        if (e->packets)
-            snprintf(last, sizeof last, "%4.1fs", (double)(now - e->last_ms) / 1000.0);
+        while (j + 1 < watch->count) {
+            const vl_sighting_t *n = &watch->entries[j + 1];
+
+            if (n->dtn_port != e->dtn_port || n->expected != e->expected ||
+                n->vl_id != watch->entries[j].vl_id + 1 ||
+                (n->packets != 0) != (e->packets != 0))
+                break;
+            format_sizes(n, other, sizeof other);
+            if (strcmp(other, sizes) != 0)
+                break;
+            j++;
+            packets += n->packets;
+            bytes   += n->bytes;
+            if (n->last_ms > latest)
+                latest = n->last_ms;
+        }
+
+        if (j > i)
+            snprintf(range, sizeof range, "%u-%u", e->vl_id, watch->entries[j].vl_id);
+        else
+            snprintf(range, sizeof range, "%u", e->vl_id);
+        if (packets)
+            snprintf(last, sizeof last, "%4.1fs", (double)(now - latest) / 1000.0);
         else
             snprintf(last, sizeof last, "   -");
 
-        printf("  %-10s %3u  %5u  %8llu  %9llu  %5s   %-14s  %s\n",
-               iface ? iface : "?", e->dtn_port, e->vl_id,
-               (unsigned long long)e->packets, (unsigned long long)e->bytes,
+        printf("  %-10s %3u  %-11s  %8llu  %9llu  %5s   %-14s  %s\n",
+               iface ? iface : "?", e->dtn_port, range,
+               (unsigned long long)packets, (unsigned long long)bytes,
                last, sizes,
                !e->expected  ? "extra"
-               : e->packets  ? "ok"
+               : packets     ? "ok"
                              : "MISSING");
+        i = j + 1;
     }
 
     if (watch->unclassified)

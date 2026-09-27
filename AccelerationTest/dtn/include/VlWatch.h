@@ -21,7 +21,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VL_WATCH_MAX_ENTRIES 64
+/* One row per VL routed to copper. config1 routes 123 of them - the two taps,
+ * the DTN's own health monitor and the two legs' return runs - and a round that
+ * overflowed this would be a round whose display stopped answering the one
+ * question it exists to answer. The screen stays readable because the renderer
+ * collapses contiguous runs; this only has to be big enough to hold them. */
+#define VL_WATCH_MAX_ENTRIES 256
 #define VL_WATCH_MAX_SIZES    4
 
 typedef struct {

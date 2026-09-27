@@ -67,6 +67,26 @@ from that unit's folder, so the fixtures they read are beside them.
 5. The frames go out of the configuration link, followed by a `0x52` status query.
 6. It watches both copper links until the operator presses Ctrl-C.
 
+The configuration link is the 100M one when its cable is in, because that is the
+proven management path, and the 1G one when it is not. It is chosen rather than
+fixed for a reason worth knowing: a configuration sent down an unplugged cable is
+sent nowhere, and nothing afterwards says so. A raw socket takes the frames
+happily, the DTN carries on with whatever table it already had - health monitor
+and all - and the run looks alive while every frame it generates is dropped by the
+device as an undefined VL. That reads exactly like a *wrong* VL table, which is a
+rig session spent looking in the wrong place. So the links are reported before the
+run starts:
+
+```
+  copper links:
+    eno12399   DTN port 32  1G    connected
+    eno12409   DTN port 33  100M  no carrier
+    -> configuring over eno12399 instead of eno12409, which is not connected
+```
+
+and if the device does start dropping our traffic as an undefined VL, the display
+says that in one line instead of leaving it to be worked out from the tables.
+
 ## The live table
 
 Until the health-monitor payloads are decoded, the run answers a simpler and
@@ -75,19 +95,27 @@ copper is seeded into a table at zero packets, so one that never arrives shows u
 as a row rather than as an absence:
 
 ```
-unit ALIVE   expected VLs seen 3/7   power interruptions 1
+unit ALIVE   expected VLs seen 61/123   power interruptions 1
 
-  link       DTN  VL-ID   packets      bytes   last   sizes           status
-  ---------- ---  -----  --------  ---------  -----   --------------  ------
-  eno12409    33    100       284     322340   0.0s   1187,1083       ok
-  eno12409    33    101         0          0      -   -               MISSING
-  eno12399    32   4485        30      35610   0.0s   1187            ok
-  eno12409    33      0         6        564   0.0s   94              extra
+  link       DTN  VL-ID        packets      bytes   last   sizes           status
+  ---------- ---  -----------  --------  ---------  -----   --------------  ------
+  eno12399    32  100               284     322340   0.0s   1187,1083       ok
+  eno12409    33  101                 0          0      -   -               MISSING
+  eno12399    32  38                200      60000   0.0s   300             ok
+  eno12399    32  4024-4083       12000   18108000   0.0s   1509            ok
+  eno12409    33  6024-6083           0          0      -   -               MISSING
+  eno12399    32  9999                5        320   0.0s   64              extra
 ```
 
 `MISSING` means the profile routes that VL to that copper port but nothing has
 arrived — either it is not being generated or it is not being routed. `extra` is
 a VL nobody asked for. Packet contents are ignored.
+
+config1 routes 123 VLs to copper, and 123 rows would push the health tables off
+the screen, so neighbouring VLs that agree - same link, same verdict, same frame
+sizes - print as one row over their range with the packets added up. A VL that
+disagrees with its neighbours breaks the run and gets its own row, which is the
+one worth looking at.
 
 Power is operated separately; the test only observes a unit that is already
 live. What it does watch for is power *dropping* mid-run - on a vibration rig

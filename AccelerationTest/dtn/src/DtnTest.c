@@ -427,6 +427,43 @@ static bool wait_for_status_reply(size_t link_count, unsigned timeout_ms)
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief Say it out loud when the DTN is throwing our traffic away.
+ *
+ * The device counts, per ingress port, every frame whose VL its table does not
+ * define. On a copper port that counter can only be us: nothing else sends there.
+ * So a copper port whose undefined-VL count keeps climbing means the switch table
+ * the device is using is not the one this test wrote - and nothing else on the
+ * screen says so. The loss column fills up, the legs report bad frames, the VL
+ * watch shows the return VLs idle, and every one of those readings is what a
+ * *wrong* VL table looks like too. One line here is the difference between that
+ * and a rig session spent reading the tables.
+ *
+ * @param last per-link snapshot of the counter, so this only speaks up while the
+ *        count is still growing
+ */
+static void warn_if_table_not_taken(size_t link_count, uint64_t *last)
+{
+    const copper_link_t *copper = app_config_copper(NULL);
+
+    for (size_t i = 0; i < link_count; i++) {
+        const uint8_t  port  = copper[i].dtn_port;
+        const uint64_t drops = port < HD_MAX_PORTS ? g_health.ports[port].vlid_drop : 0;
+
+        /* A handful can be a frame in flight while the table was being written;
+         * a thousand and still counting cannot. */
+        if (drops > last[i] && drops > 1000)
+            printf("\n  ! DTN port %u has dropped %llu frame(s) as an undefined VL.\n"
+                   "    The device is not using the VL table this test wrote. Check that\n"
+                   "    the configuration went out of a cable that is plugged in (see\n"
+                   "    \"config out\" above), then power the DTN off and on and retry.\n",
+                   port, (unsigned long long)drops);
+        last[i] = drops;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+
 static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                         int frame_count, const timing_config_t *timing,
                         const char *profile_name)
@@ -436,6 +473,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     uint64_t   started = hm_now_ms();
     uint64_t   next_draw = started;
     unsigned   interruptions = 0;
+    uint64_t   undef_seen[APP_MAX_COPPER_LINKS] = {0};
 
     hm_watch_init(&watch);
     watch.alive = true;
@@ -503,6 +541,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                             watch.alive, interruptions);
             hd_render(&g_health, g_groups, g_group_count);
             dtn_legs_print_table(g_legs);
+            warn_if_table_not_taken(link_count, undef_seen);
             puts("\nCtrl+C to end the test");
             fflush(stdout);
         }
@@ -521,11 +560,56 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * @brief Report on the copper links and pick the one the configuration goes out
+ *        of.
+ *
+ * app_config names the 100M link, because that is the proven management path -
+ * where the reference status query goes and where the main ATE software polls the
+ * device. But a configuration sent down a cable that is not plugged in is sent
+ * nowhere, and nothing later in the run says so: a raw socket accepts the frames,
+ * and the DTN carries on with whatever configuration it already had, health
+ * monitor and all. The test then looks alive while the switch table it was told
+ * to load never arrived - and the symptom is every frame we send counted as an
+ * undefined VL, which is exactly what a *wrong* VL table looks like. One
+ * unplugged cable is a rig session spent reading the wrong tables.
+ *
+ * So the link is chosen from the ones that actually have a carrier: the preferred
+ * one when it is plugged in, otherwise whichever is. All of them dark is an
+ * error - there is no way in to the device.
+ *
+ * @return the link to configure through, or NULL if none is usable
+ */
+static const copper_link_t *choose_config_link(const copper_link_t *copper,
+                                               size_t link_count,
+                                               const copper_link_t *preferred)
+{
+    const copper_link_t *chosen = NULL;
+
+    puts("\n  copper links:");
+    for (size_t i = 0; i < link_count; i++) {
+        bool carrier = false;
+        bool up = raw_socket_link_up(copper[i].iface, &carrier);
+
+        printf("    %-10s DTN port %2u  %-5s %s\n", copper[i].iface,
+               copper[i].dtn_port, copper[i].speed,
+               !up ? "DOWN - ip link set up" : carrier ? "connected" : "no carrier");
+        if (!up || !carrier)
+            continue;
+        if (copper[i].dtn_port == preferred->dtn_port)
+            chosen = &copper[i];
+        else if (!chosen)
+            chosen = &copper[i];
+    }
+    return chosen;
+}
+
+
 unit_result_t dtn_test_run(void)
 {
     const timing_config_t *timing = app_config_timing();
     const copper_link_t   *copper;
-    const copper_link_t   *config_link = app_config_config_link();
+    const copper_link_t   *config_link;
     size_t link_count;
     int handles[APP_MAX_COPPER_LINKS];
     int legs_handle = -1;
@@ -557,6 +641,16 @@ unit_result_t dtn_test_run(void)
         return UNIT_RESULT_ERROR;
     }
 
+    config_link = choose_config_link(copper, link_count, app_config_config_link());
+    if (!config_link) {
+        puts("\nNo copper link is connected. The configuration has to reach the DTN\n"
+             "over one of them, so there is nothing to run until a cable is in.");
+        return UNIT_RESULT_ERROR;
+    }
+    if (config_link->dtn_port != app_config_config_link()->dtn_port)
+        printf("    -> configuring over %s instead of %s, which is not connected\n",
+               config_link->iface, app_config_config_link()->iface);
+
     /* Untagged: the workstation is wired straight to the DTN's copper
      * end-system ports, with no bridge in between to steer on a VLAN tag. */
     size_t protocol_len;
@@ -587,7 +681,8 @@ unit_result_t dtn_test_run(void)
     printf("  VL table    : %d records, %zu enabled%s\n", count, enabled,
            round.management ? "  (round + DTN management VLs)" : "  (round only)");
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
-    printf("  config out  : %s (DTN port %u)\n", config_link->iface, config_link->dtn_port);
+    printf("  config out  : %s (DTN port %u, %s)\n", config_link->iface,
+           config_link->dtn_port, config_link->speed);
     printf("  power       : switch the DTN on by hand; the test waits for its\n"
            "                health monitor, then %u s more before configuring\n",
            timing->config_settle_s);
@@ -601,19 +696,6 @@ unit_result_t dtn_test_run(void)
         log_close();
         return UNIT_RESULT_ABORTED;
     }
-
-    for (size_t i = 0; i < link_count; i++) {
-        bool carrier = false;
-        if (!raw_socket_link_up(copper[i].iface, &carrier)) {
-            printf("%s is down. Bring it up first.\n", copper[i].iface);
-            log_close();
-            return UNIT_RESULT_ERROR;
-        }
-        if (!carrier)
-            printf("Warning: %s has no carrier - is the cable connected?\n",
-                   copper[i].iface);
-    }
-    putchar('\n');
 
     for (size_t i = 0; i < link_count; i++) {
         if (!raw_socket_open(&g_links[i], copper[i].iface, true))
@@ -682,6 +764,8 @@ unit_result_t dtn_test_run(void)
     log_line("profile %s, %d VL records (%zu enabled), %d frames",
              profile->name, count, vl_profile_enabled_count(g_records, (size_t)count),
              frame_count);
+    log_line("configuration goes out of %s (DTN port %u, %s)", config_link->iface,
+             config_link->dtn_port, config_link->speed);
 
     if (!wait_for_unit(link_count, timing->device_ready_timeout_s)) {
         result = safe_shutdown_requested() ? UNIT_RESULT_ABORTED : UNIT_RESULT_ERROR;
