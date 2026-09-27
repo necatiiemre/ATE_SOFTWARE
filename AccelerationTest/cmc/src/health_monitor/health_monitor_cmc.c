@@ -4,6 +4,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include "ShutdownSnapshot.h"  // render_out()
+
+// Rendered output goes through render_out() so the main loop can capture a
+// second's tables for the summary log. The capture target is thread-local:
+// anything other threads print from this file still goes to stdout.
+#define printf(...) fprintf(render_out(), __VA_ARGS__)
 
 // ============================================================================
 // ANSI Renk ve Format Kodları
@@ -244,9 +250,9 @@ void print_pcs_profile_stats(const Pcs_profile_stats *d, uint16_t vl_id, unsigne
     // 2 + 16 + 3 + 20 + 3 + 20 + 3 + 45 = 112
     printf("║  " C_BOLD "%-16s" C_RESET " │ " C_BOLD "%-20s" C_RESET " │ " C_BOLD "%-20s" C_RESET " │ " C_BOLD "%-45s" C_RESET " ║\n", 
            "MEMORY PROFILE", "Total (B)", "Used (B)", "Max Used (B)");
-    printf("║  %-16s │ %-20zu │ %-20zu │ %-45zu ║\n", "Heap", 
+    printf("║  %-16s │ %-20" PRIu32 " │ %-20" PRIu32 " │ %-45" PRIu32 " ║\n", "Heap", 
            d->heap_mem.total_size, d->heap_mem.used_size, d->heap_mem.max_used_size);
-    printf("║  %-16s │ %-20zu │ %-20zu │ %-45zu ║\n", "Stack", 
+    printf("║  %-16s │ %-20" PRIu32 " │ %-20" PRIu32 " │ %-45" PRIu32 " ║\n", "Stack", 
            d->stack_mem.total_size, d->stack_mem.used_size, d->stack_mem.max_used_size);
 
     table_footer();
@@ -426,6 +432,80 @@ void print_counters_dpm_vl(const COUNTERS_DPM_VL *d, uint16_t vl_id, unsigned pa
         printf("║  %-6u %-19" PRIu64 " %-6u %-19" PRIu64 " │ %-6u %-19" PRIu64 " %-6u %-19" PRIu64 " ║\n",
                (unsigned)(rx_base + li), rx[li], (unsigned)(tx_base + li), tx[li],
                (unsigned)(rx_base + ri), rx[ri], (unsigned)(tx_base + ri), tx[ri]);
+    }
+
+    table_footer();
+}
+#pragma GCC diagnostic pop
+
+// ============================================================================
+// COUNTERS_DPM_52 — DPM başına 52 adet {rx_count, tx_count} (417 B paket)
+// ----------------------------------------------------------------------------
+// Paket SANİYELİK (delta) değer taşır; kümülatif toplam burada biriktirilir.
+// Biriktirme dashboard thread'inde (tek tüketici) yapılır → kilit gerekmez.
+// hm_print_dashboard drained item'ların TAMAMI üzerinde (dedup'tan önce)
+// dpm52_accumulate() çağırır, böylece bir tick'te aynı DPM'den 2+ paket
+// gelse de hiçbiri kaybolmaz.
+// ============================================================================
+typedef struct {
+    uint64_t rx_total[DPM_COUNTERS52_COUNT];
+    uint64_t tx_total[DPM_COUNTERS52_COUNT];
+    uint64_t packets;                        // biriktirilen paket sayısı
+} dpm52_accum_t;
+
+static dpm52_accum_t g_dpm52_accum[5];       // index 0..4 → DPM-1..5
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+void dpm52_accumulate(uint16_t vl_id, const COUNTERS_DPM_52 *d)
+{
+    int idx = dpm_index(vl_id);
+    if (idx < 0 || d == NULL) return;
+    for (unsigned i = 0; i < (unsigned)DPM_COUNTERS52_COUNT; i++) {
+        g_dpm52_accum[idx].rx_total[i] += d->msg[i].rx_count;
+        g_dpm52_accum[idx].tx_total[i] += d->msg[i].tx_count;
+    }
+    g_dpm52_accum[idx].packets++;
+}
+
+void print_counters_dpm_52(const COUNTERS_DPM_52 *d, uint16_t vl_id, unsigned packets)
+{
+    if (d == NULL) return;
+    banner(vl_id, "DPM RX/TX COUNTERS (52 x RX/TX, kumulatif)", packets);
+
+    const int idx = dpm_index(vl_id);
+
+    // Gösterilen değerler KÜMÜLATİF toplamdır. Bilinmeyen VL için
+    // biriktirici slotu yoksa son paketin ham saniyelik değerleri gösterilir.
+    uint64_t rx[DPM_COUNTERS52_COUNT], tx[DPM_COUNTERS52_COUNT];
+    for (unsigned i = 0; i < (unsigned)DPM_COUNTERS52_COUNT; i++) {
+        rx[i] = (idx >= 0) ? g_dpm52_accum[idx].rx_total[i] : d->msg[i].rx_count;
+        tx[i] = (idx >= 0) ? g_dpm52_accum[idx].tx_total[i] : d->msg[i].tx_count;
+    }
+
+    char info[128];
+    if (idx >= 0) {
+        snprintf(info, sizeof(info),
+                 "DPM-%d  -  %u sayac cifti, %" PRIu64 " paketin kumulatif toplami",
+                 idx + 1, (unsigned)DPM_COUNTERS52_COUNT, g_dpm52_accum[idx].packets);
+    } else {
+        snprintf(info, sizeof(info),
+                 "Bilinmeyen DPM VL - son paketin ham saniyelik degerleri");
+    }
+    printf("║  " C_DIM "%-107s" C_RESET " ║\n", info);
+    hr();
+
+    // İki yarım sütun: her yarı idx, RX toplam, TX toplam (52 + " │ " + 52 = 107)
+    printf("║  " C_BOLD "%-4s %-23s %-23s" C_RESET " │ "
+           C_BOLD "%-4s %-23s %-23s" C_RESET " ║\n",
+           "Idx", "RX total", "TX total", "Idx", "RX total", "TX total");
+    hr();
+
+    const unsigned half = DPM_COUNTERS52_COUNT / 2;   // 26
+    for (unsigned r = 0; r < half; r++) {
+        const unsigned li = r, ri = r + half;
+        printf("║  %-4u %-23" PRIu64 " %-23" PRIu64 " │ %-4u %-23" PRIu64 " %-23" PRIu64 " ║\n",
+               li, rx[li], tx[li], ri, rx[ri], tx[ri]);
     }
 
     table_footer();

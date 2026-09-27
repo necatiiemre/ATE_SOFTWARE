@@ -87,17 +87,32 @@ $(BUILD)/dtn/src/AteHealth.o: dtn/src/AteHealth.c $(wildcard dtn/ate/*)
 ATE_REF   ?= $(firstword $(wildcard ../../update-deneme/dpdk ../dpdk) ../dpdk)
 ATE_COPIES := HealthMonitor.c:src/HealthMonitor HealthMonitor.h:include HealthTypes.h:include
 
+# The CMC's health monitor is the same arrangement against dpdk_cmc: eleven files,
+# copied whole. Config.h and ShutdownSnapshot.h beside them are stand-ins, not
+# copies, so they are not checked - see their own comments.
+CMC_REF   ?= $(firstword $(wildcard ../../update-deneme/dpdk_cmc ../dpdk_cmc) ../dpdk_cmc)
+CMC_COPIES := $(notdir $(wildcard cmc/src/health_monitor/*.c)) \
+              $(filter-out Config.h ShutdownSnapshot.h,$(notdir $(wildcard cmc/include/health_monitor/*.h)))
+
 .PHONY: ate-diff
 ate-diff:
 	@if [ ! -d $(ATE_REF) ]; then \
 	   echo "no $(ATE_REF) beside this tree - nothing to diff against"; exit 0; fi
 	@echo "comparing dtn/ate/ against $(ATE_REF)"
-	@echo "(dtn/ate/PROVENANCE.md says which tree and commit the copy is from)"
+	@echo "(dtn/ate/PROVENANCE.md says which tree and commit the copies are from)"
 	@ok=1; for pair in $(ATE_COPIES); do \
 	   f=$${pair%%:*}; d=$${pair##*:}; \
 	   if diff -q dtn/ate/$$f $(ATE_REF)/$$d/$$f >/dev/null 2>&1; then \
-	     echo "same as the reference: $$f"; \
-	   else ok=0; echo "DIFFERS from $(ATE_REF)/$$d/$$f: $$f"; fi; \
+	     echo "  same as the reference: $$f"; \
+	   else ok=0; echo "  DIFFERS from $(ATE_REF)/$$d/$$f: $$f"; fi; \
+	 done; \
+	 echo "comparing cmc/{src,include}/health_monitor/ against $(CMC_REF)"; \
+	 for f in $(CMC_COPIES); do \
+	   mine=$$(ls cmc/src/health_monitor/$$f cmc/include/health_monitor/$$f 2>/dev/null | head -1); \
+	   theirs=$$(ls $(CMC_REF)/src/health_monitor/$$f $(CMC_REF)/include/health_monitor/$$f 2>/dev/null | head -1); \
+	   if [ -z "$$theirs" ]; then ok=0; echo "  NOT IN THE REFERENCE: $$f"; \
+	   elif diff -q $$mine $$theirs >/dev/null 2>&1; then echo "  same as the reference: $$f"; \
+	   else ok=0; echo "  DIFFERS from $$theirs: $$f"; fi; \
 	 done; [ $$ok = 1 ]
 
 # ---------------------------------------------------------------------------

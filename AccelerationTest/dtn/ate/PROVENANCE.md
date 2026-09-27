@@ -1,23 +1,31 @@
-# Where these files came from
+# Where the copied health monitors came from
 
-`HealthMonitor.c`, `HealthMonitor.h` and `HealthTypes.h` are copies, byte for
-byte, of the ATE software's DTN health monitor. `PsuTelemetryReceiver.h` and
-`ShutdownSnapshot.h` beside them are stand-ins, not copies — see their own
-comments.
+Both units' health monitors are the ATE software's own code, copied byte for byte
+rather than reimplemented:
+
+* the DTN's, in this directory — `HealthMonitor.c`, `HealthMonitor.h`,
+  `HealthTypes.h`;
+* the CMC's, in `cmc/src/health_monitor/` and `cmc/include/health_monitor/` —
+  two source files and nine headers.
+
+`PsuTelemetryReceiver.h` and `ShutdownSnapshot.h` here, and `Config.h` and
+`ShutdownSnapshot.h` beside the CMC's, are stand-ins rather than copies — see
+their own comments. `make ate-diff` checks everything else and skips those.
 
 | | |
 |---|---|
 | repository | `necatiiemre/update-deneme` |
 | branch | `claude/peaceful-johnson-9xhutk` |
 | commit | `8df47cc` — *dpdk_cmc HM: decode the 113-byte CPU usage packet as Pcs_profile_stats* |
-| taken from | `dpdk/src/HealthMonitor/HealthMonitor.c`, `dpdk/include/HealthMonitor.h`, `dpdk/include/HealthTypes.h` |
+| taken from | `dpdk/src/HealthMonitor/…` for the DTN, `dpdk_cmc/{src,include}/health_monitor/` for the CMC |
 
 The files use CRLF line endings there, and the copies keep them. `make ate-diff`
 is a byte-exact comparison, so normalising them would break the one check that
 says the copy is still a copy:
 
 ```
-make ate-diff ATE_REF=/path/to/update-deneme/dpdk
+make ate-diff ATE_REF=/path/to/update-deneme/dpdk \
+              CMC_REF=/path/to/update-deneme/dpdk_cmc
 ```
 
 ## What this revision changed, and why it matters here
@@ -50,3 +58,28 @@ id reads back as 0, *and the switch floods those queries to the other ports* —
 which is why the ATE software's own PRBS filters had to learn to ignore them. That
 is the reason this test does not poll by default; see
 `app_config_dtn_health_poll`.
+
+## What it changed on the CMC side
+
+Two reports the unit sends were not being decoded at all. Both fell through to the
+unknown-length histogram, which is exactly where a report goes when nobody has
+told the program it exists.
+
+**113 bytes — `Pcs_profile_stats`, the CPU and memory profile.** The struct was
+already there, but its memory-profile fields were declared `size_t`. The firmware
+is built for a 32-bit target, so they are 4 bytes on the wire; on x86_64 `size_t`
+made them 8 and the struct 136, so the dispatch was waiting for a 137-byte packet
+that never comes. Now `uint32_t`, 112 bytes, and a `_Static_assert` holds it
+there. The byte order of those fields changed with it — `be32` where it used to
+be `be64`.
+
+**417 bytes — `COUNTERS_DPM_52`, 52 RX/TX counter pairs.** New. Each of DPM-1..5
+(VL 2021, 2042, 2063, 2084, 2105) sends one, 52 × {`rx_count`, `tx_count`} as
+big-endian `uint32`, 416 bytes plus the sequence trailer.
+
+The second one behaves unlike every other report: **the packet carries a second's
+counts, not a total.** So the dashboard adds each packet to a running sum per DPM
+(`dpm52_accumulate`, called for every drained packet before de-duplication, so two
+packets from one DPM in one tick both land) and prints the cumulative figure.
+A printer that showed the packet's own numbers would look perfectly reasonable and
+be wrong by however long the run had been going.

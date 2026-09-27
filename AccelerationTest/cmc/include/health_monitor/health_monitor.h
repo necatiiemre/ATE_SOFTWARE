@@ -84,6 +84,7 @@ typedef enum {
     HM_ITEM_CLCMSW,             // CL CMSW (DSM-A, DSM-B)
     HM_ITEM_SMMM,               // Smmm_monitoring_data_t (VL 2021)
     HM_ITEM_IPMC,               // CL CMSW IPMC board temp (VL 50)
+    HM_ITEM_COUNTERS_DPM_52,    // COUNTERS_DPM_52 (52 x {rx,tx}, DPM-1..5)
 } hm_item_kind_t;
 
 // CL CMSW IPMC log (VL 50) — TAM board data. Alan sayısı çok (DPM 84, GPM 78,
@@ -108,6 +109,7 @@ typedef struct {
         tA664ESMonitoring   es_mon;
         tA664SWMonitoring   sw_mon;   // status + port[12]
         COUNTERS_DPM_VL     counters_dpm_vl; // 104 RX + 104 TX uint32
+        COUNTERS_DPM_52     counters_dpm_52; // 52 x {rx, tx} uint32
         Cl_cmsw_status_report_msg_type clcmsw; // CL CMSW status report (662 B)
         Smmm_monitoring_data_t smmm;           // SMMM monitoring (130 B)
         hm_ipmc_raw_t          ipmc;           // IPMC log ham payload (VL 50)
@@ -154,6 +156,16 @@ void print_counters_dpm_vl     (const COUNTERS_DPM_VL     *data, uint16_t vl_id,
 //                       kümülatif farkını (loss>0) basar.
 // ============================================================================
 void dpm_vl_accumulate(uint16_t vl_id, const COUNTERS_DPM_VL *data);
+
+// ============================================================================
+// DPM 52'li RX/TX sayaçları (417 B paket, DPM-1..5) — health_monitor_cmc.c.
+//   dpm52_accumulate : paket SANİYELİK (delta) değer taşır; dashboard her
+//                      drained paket için çağırır (dedup'tan önce), ilgili
+//                      DPM'in kümülatif toplamına ekler.
+//   print_counters_dpm_52 : ilgili DPM'in kümülatif toplamlarını basar.
+// ============================================================================
+void dpm52_accumulate(uint16_t vl_id, const COUNTERS_DPM_52 *data);
+void print_counters_dpm_52(const COUNTERS_DPM_52 *data, uint16_t vl_id, unsigned packets);
 void print_dpm_vl_loss_table(void);
 void print_dtn_es_monitoring   (const tA664ESMonitoring   *data, uint16_t vl_id, unsigned packets);
 void print_dtn_sw_monitoring   (const tA664SWMonitoring   *data, uint16_t vl_id, unsigned packets);

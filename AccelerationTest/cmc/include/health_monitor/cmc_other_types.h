@@ -59,10 +59,39 @@ typedef struct __attribute__((packed))
 	uint32_t tx_count[DPM_VL_PORT_COUNT];   // 416 B — TX VL-IDX base+i
 } COUNTERS_DPM_VL;                          // TOPLAM: 832 byte
 
+// ============================================================================
+// DPM RX/TX sayaç çiftleri (52 adet)
+// ----------------------------------------------------------------------------
+// DPM-1..5 (VL 2021/2042/2063/2084/2105) her biri tek pakette 52 adet
+// {rx_count, tx_count} çifti gönderir. Her sayaç 4 byte (uint32), wire'da
+// big-endian. Toplam 52 x 8 = 416 byte + 1 byte sequence trailer = 417 byte
+// UDP payload. Paket SANİYELİK (delta) değer taşır; kümülatif toplam bizim
+// tarafta biriktirilir (bkz. health_monitor_cmc.c → dpm52_accumulate()).
+#define DPM_COUNTERS52_COUNT 52
+
+typedef struct __attribute__((packed))
+{
+	uint32_t rx_count;
+	uint32_t tx_count;
+} Counters;
+
+typedef struct __attribute__((packed))
+{
+	Counters msg[DPM_COUNTERS52_COUNT];     // 52 x 8 = 416 B
+} COUNTERS_DPM_52;                          // TOPLAM: 416 byte
+
+_Static_assert(sizeof(COUNTERS_DPM_52) == 416, "COUNTERS_DPM_52 size mismatch");
+
 
 // NOT: Pcs_* tipleri wire formatında natural alignment kullanır (CMC firmware
-// non-packed gönderiyor; toplam 136 byte). Bu nedenle bu struct'lar packed
-// DEĞİL — Pcs_monitor_type 16 byte (1+7+8), Pcs_profile_stats 136 byte.
+// non-packed gönderiyor). Bu nedenle bu struct'lar packed DEĞİL —
+// Pcs_monitor_type 16 byte (1+7+8).
+//
+// Pcs_mem_profile_type alanları firmware'de size_t'dir; firmware 32-bit hedefte
+// derlendiği için size_t orada 4 byte'tır. Burada x86_64'te size_t 8 byte
+// olacağından alanlar açıkça uint32_t tanımlanır. Böylece:
+//   Pcs_profile_stats = 24 + 64 + 12 (heap) + 12 (stack) = 112 byte
+//   wire paketi       = 112 + 1 byte sequence trailer   = 113 byte
 typedef struct Pcs_monitor_type
 {
     uint8_t   percentage;                     /*!< Percentage */
@@ -79,9 +108,9 @@ typedef struct Pcs_cpu_exec_time_type
 
 typedef struct Pcs_mem_profile_type
 {
-    size_t total_size;            /*!< Total memory size in bytes */
-    size_t used_size;             /*!< Used memory size in bytes */
-    size_t max_used_size;         /*!< Maximum used memory size in bytes */
+    uint32_t total_size;          /*!< Total memory size in bytes (size_t, 32-bit firmware) */
+    uint32_t used_size;           /*!< Used memory size in bytes (size_t, 32-bit firmware) */
+    uint32_t max_used_size;       /*!< Maximum used memory size in bytes (size_t, 32-bit firmware) */
 } Pcs_mem_profile_type;
 
 typedef struct Pcs_profile_stats
@@ -93,5 +122,7 @@ typedef struct Pcs_profile_stats
     Pcs_mem_profile_type    heap_mem;           /*!< Heap memory information. */
     Pcs_mem_profile_type    stack_mem;          /*!< Stack memory information. */
 } Pcs_profile_stats;
+
+_Static_assert(sizeof(Pcs_profile_stats) == 112, "Pcs_profile_stats size mismatch (wire: 112 + 1 seq = 113)");
 
 #endif /* CMC_OTHER_TYPES_H */

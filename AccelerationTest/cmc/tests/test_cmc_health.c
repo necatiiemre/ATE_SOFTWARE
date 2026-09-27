@@ -16,8 +16,11 @@
 
 #include "health_monitor.h"
 
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int failures;
 
@@ -34,7 +37,12 @@ static void check(bool ok, const char *what)
  * as sizeof, because the point is that sizeof agrees with the wire. */
 static void test_sizes(void)
 {
-    check(sizeof(Pcs_profile_stats) == 136, "Pcs_profile_stats is 136 bytes (packet 137)");
+    /* The firmware is built for a 32-bit target, so the size_t fields of its
+     * memory profile are 4 bytes there. Declaring them size_t here made them 8
+     * and the struct 136, so the 113-byte packet the unit actually sends matched
+     * nothing and was counted as an unknown length. */
+    check(sizeof(Pcs_profile_stats) == 112, "Pcs_profile_stats is 112 bytes (packet 113)");
+    check(sizeof(COUNTERS_DPM_52) == 416, "COUNTERS_DPM_52 is 52x2x4 = 416 (417)");
     check(sizeof(tA664ESMonitoring) == 352, "tA664ESMonitoring is 352 (353)");
     check(sizeof(COUNTERS_DPM) == 960, "COUNTERS_DPM is 20x6x8 = 960 (961)");
     check(sizeof(COUNTERS_INTER_DPM) == 720, "COUNTERS_INTER_DPM is 15x6x8 = 720 (721)");
@@ -70,7 +78,7 @@ static void test_every_report(void)
     const uint16_t dsm[] = {HM_VLID_8009, HM_VLID_8109};
 
     for (size_t i = 0; i < sizeof dsm / sizeof dsm[0]; i++) {
-        feed(dsm[i], 137, 0x11);        /* CPU usage */
+        feed(dsm[i], 113, 0x11);        /* CPU usage and memory profile */
         feed(dsm[i], 353, 0x22);        /* end-system monitoring */
         feed(dsm[i], 961, 0x33);        /* inter-LRM counters, DPM */
         feed(dsm[i], 721, 0x44);        /* inter-DPM counters */
@@ -86,10 +94,19 @@ static void test_every_report(void)
     feed(HM_VLID_18, 663, 0x99);        /* CL CMSW status, DSM-A */
     feed(HM_VLID_19, 663, 0xAA);        /* CL CMSW status, DSM-B */
     feed(HM_VLID_2021, 131, 0xBB);      /* SMMM monitoring */
-    feed(HM_VLID_2042, 137, 0xCC);
+    feed(HM_VLID_2042, 113, 0xCC);
     feed(HM_VLID_2063, 385, 0xDD);
     feed(HM_VLID_2084, 961, 0xEE);
     feed(HM_VLID_2105, 721, 0x0F);
+
+    /* The 52-pair DPM counters, one packet from each of the five DPMs. These
+     * carry per-second deltas rather than totals, so the dashboard accumulates
+     * them - see test_dpm52_accumulates. */
+    feed(HM_VLID_2021, 417, 0x10);
+    feed(HM_VLID_2042, 417, 0x11);
+    feed(HM_VLID_2063, 417, 0x12);
+    feed(HM_VLID_2084, 417, 0x13);
+    feed(HM_VLID_2105, 417, 0x14);
 
     hm_print_dashboard();
     printf("[ OK ] every report type decodes and every printer runs\n");
@@ -161,10 +178,78 @@ static void test_vl_set(void)
     printf("[ OK ] the health-monitor VL set\n");
 }
 
+/*
+ * The 52-pair DPM counters, and the one thing about them that is not like any
+ * other report: the packet carries a *second's* counts, not a total, so the
+ * dashboard adds each one to a running sum per DPM. A printer that showed the
+ * packet's own numbers would look right and be wrong by however long the run had
+ * been going.
+ *
+ * The sum only exists in the printed table, so the table is captured and read
+ * back. Run before test_every_report, which feeds these packets too and would
+ * otherwise have already added to the same accumulator.
+ */
+static void test_dpm52_accumulates(void)
+{
+    COUNTERS_DPM_52 d;
+
+    for (int i = 0; i < DPM_COUNTERS52_COUNT; i++) {
+        d.msg[i].rx_count = (uint32_t)(10 + i);
+        d.msg[i].tx_count = (uint32_t)(100 + i);
+    }
+
+    /* Two seconds of the same deltas on DPM-1. */
+    dpm52_accumulate(HM_VLID_2021, &d);
+    dpm52_accumulate(HM_VLID_2021, &d);
+
+    char path[] = "/tmp/cmc_hm_dpm52_XXXXXX";
+    int tmp = mkstemp(path);
+    int saved = dup(STDOUT_FILENO);
+
+    if (tmp < 0 || saved < 0) {
+        printf("[FAIL] could not capture the table\n");
+        failures++;
+        return;
+    }
+    fflush(stdout);
+    dup2(tmp, STDOUT_FILENO);
+    print_counters_dpm_52(&d, HM_VLID_2021, 2);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    close(tmp);
+
+    FILE *f = fopen(path, "r");
+    char line[512];
+    bool row_seen = false, packets_seen = false;
+
+    while (f && fgets(line, sizeof line, f)) {
+        unsigned idx;
+        unsigned long long rx, tx;
+
+        if (strstr(line, "2 paketin kumulatif toplami"))
+            packets_seen = true;
+        /* The left half of the first row: index 0, then its two totals. */
+        if (sscanf(line, "║  %u %llu %llu", &idx, &rx, &tx) == 3 && idx == 0) {
+            row_seen = true;
+            check(rx == 20 && tx == 200,
+                  "the totals are the sum of both packets, not the last one");
+        }
+    }
+    if (f)
+        fclose(f);
+    remove(path);
+
+    check(packets_seen, "the table says how many packets it is a total of");
+    check(row_seen, "the first counter pair's row was printed");
+    printf("[ OK ] the 52-pair DPM counters accumulate per second\n");
+}
+
 int main(void)
 {
     test_sizes();
     test_vl_set();
+    test_dpm52_accumulates();
     test_every_report();
     test_ipmc();
     test_unknown_lengths();

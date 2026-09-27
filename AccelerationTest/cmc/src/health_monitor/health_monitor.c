@@ -7,6 +7,12 @@
 #include <pthread.h>
 #include <time.h>
 #include <inttypes.h>
+#include "ShutdownSnapshot.h"  // render_out()
+
+// Rendered output goes through render_out() so the main loop can capture a
+// second's tables for the summary log. The capture target is thread-local:
+// anything other threads print from this file still goes to stdout.
+#define printf(...) fprintf(render_out(), __VA_ARGS__)
 
 // ============================================================================
 // SW_MON Fragment (Parça) Yönetimi
@@ -102,13 +108,13 @@ static void swap_pcs(Pcs_profile_stats *p)
     p->cpu_exec_time.max_exec_time.usage  = be64(p->cpu_exec_time.max_exec_time.usage);
     p->cpu_exec_time.avg_exec_time.usage  = be64(p->cpu_exec_time.avg_exec_time.usage);
     p->cpu_exec_time.last_exec_time.usage = be64(p->cpu_exec_time.last_exec_time.usage);
-    // heap_mem / stack_mem: 3 × size_t (x86_64'te 8 byte)
-    p->heap_mem.total_size     = be64(p->heap_mem.total_size);
-    p->heap_mem.used_size      = be64(p->heap_mem.used_size);
-    p->heap_mem.max_used_size  = be64(p->heap_mem.max_used_size);
-    p->stack_mem.total_size    = be64(p->stack_mem.total_size);
-    p->stack_mem.used_size     = be64(p->stack_mem.used_size);
-    p->stack_mem.max_used_size = be64(p->stack_mem.max_used_size);
+    // heap_mem / stack_mem: 3 × size_t — firmware 32-bit, yani 4 byte
+    p->heap_mem.total_size     = be32(p->heap_mem.total_size);
+    p->heap_mem.used_size      = be32(p->heap_mem.used_size);
+    p->heap_mem.max_used_size  = be32(p->heap_mem.max_used_size);
+    p->stack_mem.total_size    = be32(p->stack_mem.total_size);
+    p->stack_mem.used_size     = be32(p->stack_mem.used_size);
+    p->stack_mem.max_used_size = be32(p->stack_mem.max_used_size);
 }
 
 static void swap_es(tA664ESMonitoring *e)
@@ -209,6 +215,14 @@ static void swap_counters_inter_dpm(COUNTERS_INTER_DPM *c)
 }
 
 // Per-VL akış sayaçları: 104 RX + 104 TX uint32, wire'da big-endian.
+static void swap_counters_dpm_52(COUNTERS_DPM_52 *c)
+{
+    for (int i = 0; i < DPM_COUNTERS52_COUNT; i++) {
+        c->msg[i].rx_count = be32(c->msg[i].rx_count);
+        c->msg[i].tx_count = be32(c->msg[i].tx_count);
+    }
+}
+
 static void swap_counters_dpm_vl(COUNTERS_DPM_VL *c)
 {
     for (int i = 0; i < DPM_VL_PORT_COUNT; i++) {
@@ -291,7 +305,7 @@ static void swap_smmm(Smmm_monitoring_data_t *s)
 // ============================================================================
 // Paket uzunluğu sabitleri (UDP payload toplam uzunluğu = struct + 1 seq)
 // ----------------------------------------------------------------------------
-//   137 B = 136 (Pcs_profile_stats)         + 1 (seq)
+//   113 B = 112 (Pcs_profile_stats, 32-bit size_t) + 1 (seq)
 //   353 B = 352 (tA664ESMonitoring)         + 1 (seq)
 //   961 B = 960 (COUNTERS_DPM,      20×6×8) + 1 (seq)
 //   721 B = 720 (COUNTERS_INTER_DPM,15×6×8) + 1 (seq)
@@ -309,6 +323,7 @@ static void swap_smmm(Smmm_monitoring_data_t *s)
 #define HM_COUNTERS_INTER_DPM_TOTAL_LEN (HM_FRAME_OVERHEAD + (uint16_t)sizeof(COUNTERS_INTER_DPM))
 #define HM_COUNTERS_DSM_TOTAL_LEN       (HM_FRAME_OVERHEAD + (uint16_t)sizeof(COUNTERS_DSM))
 #define HM_COUNTERS_DPM_VL_TOTAL_LEN    (HM_FRAME_OVERHEAD + (uint16_t)sizeof(COUNTERS_DPM_VL)) // 833
+#define HM_COUNTERS_DPM_52_TOTAL_LEN    (HM_FRAME_OVERHEAD + (uint16_t)sizeof(COUNTERS_DPM_52)) // 417 = 416 + 1 seq
 #define HM_CL_CMSW_TOTAL_LEN            (HM_FRAME_OVERHEAD + (uint16_t)sizeof(Cl_cmsw_status_report_msg_type)) // 663 = 662 + 1 seq
 #define HM_SMMM_TOTAL_LEN               (HM_FRAME_OVERHEAD + (uint16_t)sizeof(Smmm_monitoring_data_t)) // 131 = 130 + 1 seq
 
@@ -370,13 +385,14 @@ static void unknown_dump_dashboard(void)
         return;
     }
     printf("\n[HM] UNKNOWN-LEN observed (vl_id, total_len) histogram:\n");
-    printf("     expected sizes:  PCS=%u  ES_MON=%u  DPM=%u  INTER_DPM=%u  DSM=%u  DPM_VL=%u  SW_MON_P1=%u  SW_MON_P2=%u\n",
+    printf("     expected sizes:  PCS=%u  ES_MON=%u  DPM=%u  INTER_DPM=%u  DSM=%u  DPM_VL=%u  DPM_52=%u  SW_MON_P1=%u  SW_MON_P2=%u\n",
            (unsigned)HM_PCS_TOTAL_LEN,
            (unsigned)HM_ES_MON_TOTAL_LEN,
            (unsigned)HM_COUNTERS_DPM_TOTAL_LEN,
            (unsigned)HM_COUNTERS_INTER_DPM_TOTAL_LEN,
            (unsigned)HM_COUNTERS_DSM_TOTAL_LEN,
            (unsigned)HM_COUNTERS_DPM_VL_TOTAL_LEN,
+           (unsigned)HM_COUNTERS_DPM_52_TOTAL_LEN,
            (unsigned)SW_MON_PART1_TOTAL_LEN,
            (unsigned)SW_MON_PART2_TOTAL_LEN);
     for (int i = 0; i < g_unknown_count; i++) {
@@ -467,6 +483,7 @@ static volatile uint64_t g_hm_rx_counters_dpm      = 0;
 static volatile uint64_t g_hm_rx_counters_inter_dpm = 0;
 static volatile uint64_t g_hm_rx_counters_dsm      = 0;
 static volatile uint64_t g_hm_rx_counters_dpm_vl   = 0;
+static volatile uint64_t g_hm_rx_counters_dpm_52   = 0;
 static volatile uint64_t g_hm_rx_clcmsw            = 0;
 static volatile uint64_t g_hm_rx_smmm              = 0;
 static volatile uint64_t g_hm_rx_vl50              = 0;
@@ -627,6 +644,12 @@ void hm_handle_packet(uint16_t vl_id, const uint8_t *payload, uint16_t len)
         swap_counters_dpm_vl(&item.payload.counters_dpm_vl);
         __atomic_add_fetch(&g_hm_rx_counters_dpm_vl, 1, __ATOMIC_RELAXED);
     }
+    else if (len == HM_COUNTERS_DPM_52_TOTAL_LEN) {
+        item.kind = HM_ITEM_COUNTERS_DPM_52;
+        memcpy(&item.payload.counters_dpm_52, body, sizeof(COUNTERS_DPM_52));
+        swap_counters_dpm_52(&item.payload.counters_dpm_52);
+        __atomic_add_fetch(&g_hm_rx_counters_dpm_52, 1, __ATOMIC_RELAXED);
+    }
     else if (len == HM_CL_CMSW_TOTAL_LEN) {
         item.kind = HM_ITEM_CLCMSW;
         memcpy(&item.payload.clcmsw, body, sizeof(Cl_cmsw_status_report_msg_type));
@@ -672,6 +695,10 @@ void hm_print_dashboard(void)
         if (drain_buf[i].kind == HM_ITEM_COUNTERS_DPM_VL) {
             dpm_vl_accumulate(drain_buf[i].vl_id,
                               &drain_buf[i].payload.counters_dpm_vl);
+        } else if (drain_buf[i].kind == HM_ITEM_COUNTERS_DPM_52) {
+            // Saniyelik değerler; bir tick'te gelen TÜM paketler toplanır.
+            dpm52_accumulate(drain_buf[i].vl_id,
+                             &drain_buf[i].payload.counters_dpm_52);
         } else if (drain_buf[i].kind == HM_ITEM_IPMC) {
             // IPMC board temp'leri device_id bazında burada (tek thread) sakla.
             ipmc_temp_store(&drain_buf[i].payload.ipmc);
@@ -761,6 +788,10 @@ void hm_print_dashboard(void)
                 // kümülatif toplamı yazdır.
                 print_counters_dpm_vl(&it->payload.counters_dpm_vl, it->vl_id, cnt);
                 break;
+            case HM_ITEM_COUNTERS_DPM_52:
+                // Biriktirme yukarıda yapıldı; burada kümülatif toplam basılır.
+                print_counters_dpm_52(&it->payload.counters_dpm_52, it->vl_id, cnt);
+                break;
             case HM_ITEM_CLCMSW:
                 print_clcmsw(&it->payload.clcmsw, it->vl_id, cnt);
                 break;
@@ -786,6 +817,7 @@ void hm_print_dashboard(void)
     uint64_t inter_dpm_cnt  = __atomic_load_n(&g_hm_rx_counters_inter_dpm,  __ATOMIC_RELAXED);
     uint64_t dsm_cnt        = __atomic_load_n(&g_hm_rx_counters_dsm,        __ATOMIC_RELAXED);
     uint64_t dpm_vl_cnt     = __atomic_load_n(&g_hm_rx_counters_dpm_vl,     __ATOMIC_RELAXED);
+    uint64_t dpm52_cnt      = __atomic_load_n(&g_hm_rx_counters_dpm_52,     __ATOMIC_RELAXED);
     uint64_t clcmsw_cnt     = __atomic_load_n(&g_hm_rx_clcmsw,              __ATOMIC_RELAXED);
     uint64_t smmm_cnt       = __atomic_load_n(&g_hm_rx_smmm,                __ATOMIC_RELAXED);
     uint64_t vl50_cnt       = __atomic_load_n(&g_hm_rx_vl50,                __ATOMIC_RELAXED);
@@ -796,7 +828,7 @@ void hm_print_dashboard(void)
     uint64_t sw_wrong       = __atomic_load_n(&g_hm_rx_sw_on_wrong_vl,      __ATOMIC_RELAXED);
     uint64_t drops          = __atomic_load_n(&g_hm_rx_drop,                __ATOMIC_RELAXED);
 
-    printf("[HM] tick=%lu total=%lu pcs=%lu dpm=%lu inter_dpm=%lu dsm=%lu dpm_vl=%lu clcmsw=%lu smmm=%lu vl50=%lu es_mon=%lu sw_mon=%lu "
+    printf("[HM] tick=%lu total=%lu pcs=%lu dpm=%lu inter_dpm=%lu dsm=%lu dpm_vl=%lu dpm52=%lu clcmsw=%lu smmm=%lu vl50=%lu es_mon=%lu sw_mon=%lu "
            "sw_p2_orphan=%lu unknown_len=%lu sw_on_wrong_vl=%lu drops=%lu drained=%zu\n",
            (unsigned long)tick,
            (unsigned long)total,
@@ -805,6 +837,7 @@ void hm_print_dashboard(void)
            (unsigned long)inter_dpm_cnt,
            (unsigned long)dsm_cnt,
            (unsigned long)dpm_vl_cnt,
+           (unsigned long)dpm52_cnt,
            (unsigned long)clcmsw_cnt,
            (unsigned long)smmm_cnt,
            (unsigned long)vl50_cnt,

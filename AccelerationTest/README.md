@@ -919,6 +919,28 @@ explain it, and holds the sender at the speed of whatever stdout is attached to,
 so the counters that were working crawl too and the whole dashboard reads as
 zeros. A hot path counts; it does not print.
 
+### The two reports that were being missed
+
+The unit sends two reports that used to fall through to the unknown-length
+histogram — which is where a report goes when nobody has told the program it
+exists. Both are decoded now, from the same copied files as the rest:
+
+* **113 bytes — the CPU and memory profile** (`Pcs_profile_stats`). The struct was
+  there, but its memory-profile fields were declared `size_t`, and the firmware is
+  built for a 32-bit target where they are 4 bytes. On x86_64 that made the struct
+  136 bytes, so the dispatch waited for a 137-byte packet that never comes.
+* **417 bytes — 52 RX/TX counter pairs per DPM** (`COUNTERS_DPM_52`), one packet
+  from each of DPM-1..5 on VL 2021, 2042, 2063, 2084 and 2105.
+
+The second is unlike every other report: the packet carries **a second's counts,
+not a total**, so each one is added to a running sum per DPM and the table shows
+the cumulative figure with the packet count it is a total of. A printer that showed
+the packet's own numbers would look right and be wrong by however long the run had
+been going.
+
+`dtn/ate/PROVENANCE.md` records which tree and commit all the copied health-monitor
+files came from, for both units.
+
 ### What is left out, and why
 
 The PSU telemetry table. It exists to show the 1 Hz V/I/W stream MainSoftware
