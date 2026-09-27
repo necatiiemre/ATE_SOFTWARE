@@ -76,6 +76,19 @@ void ate_health_reset(void)
 {
     memset(&g_filling, 0, sizeof g_filling);
     memset(&g_complete, 0, sizeof g_complete);
+
+    /* The copy's own state too. It is written by the thread this test does not
+     * run, so nothing else clears it, and a second run in the same process would
+     * otherwise start with the first run's baseline. */
+    memset(g_dev_ports, 0, sizeof g_dev_ports);
+    memset(g_dev_ports_baseline, 0, sizeof g_dev_ports_baseline);
+    memset(&g_last_assistant, 0, sizeof g_last_assistant);
+    memset(&g_last_manager, 0, sizeof g_last_manager);
+    memset(&g_base_assistant, 0, sizeof g_base_assistant);
+    memset(&g_base_manager, 0, sizeof g_base_manager);
+    g_last_tables_valid = false;
+    g_base_tables_valid = false;
+
     g_seen_any      = false;
     g_sequence      = HEALTH_MONITOR_SEQ_INIT;
     g_queries       = 0;
@@ -105,14 +118,37 @@ void ate_health_cycle(void)
      * software shows and the truth; leaving the last good block on the screen
      * would say the opposite for as long as the silence lasted. */
     g_complete = g_filling;
-    if (g_filling.total_responses_received > 0)
+
+    /* What the copy's own thread does at this point: keep the per-port counters
+     * and the two port tables, so the end of the run can difference them against
+     * the baseline. Called from here because that thread is not running. */
+    health_store_port_snapshot(&g_filling.assistant);
+    health_store_port_snapshot(&g_filling.manager);
+    health_store_fpga_table(&g_last_assistant, &g_filling.assistant);
+    health_store_fpga_table(&g_last_manager, &g_filling.manager);
+
+    if (g_filling.total_responses_received > 0) {
+        /* The first reading is the baseline. The device's counters are absolute -
+         * it never clears them - so without one, a port's undefined-VL count is
+         * however many it has dropped since it was last powered, which says
+         * nothing about this run. The reference takes its baseline in a quiet
+         * window; the equivalent here is the first cycle, which closes before the
+         * legs have put any real traffic through. */
+        if (!g_seen_any)
+            health_monitor_mark_port_baseline();
         g_seen_any = true;
-    else if (!g_seen_any)
+    } else if (!g_seen_any) {
         goto clear;   /* nothing has ever answered: not a short cycle yet */
+    }
     if (g_filling.total_responses_received < HEALTH_MONITOR_EXPECTED_RESPONSES)
         g_short_cycles++;
 clear:
     memset(&g_filling, 0, sizeof g_filling);
+}
+
+void ate_health_render_start_end(void)
+{
+    health_monitor_render_port_tables(stdout);
 }
 
 void ate_health_ingest(const uint8_t *frame, size_t len)

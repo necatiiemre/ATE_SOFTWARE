@@ -115,8 +115,9 @@ what comes back: both FPGAs' device status, all 35 ports with their 22 counters,
 and the MCU's rails and temperatures. That is the most informative thing the
 device says about itself, so it is not reimplemented here.
 `dpdk/src/HealthMonitor/HealthMonitor.c` is copied into `dtn/ate/` byte for byte
-and its parser and renderer are driven from this test's receive loop — `make
-ate-diff` checks the copy still matches the reference. `dtn/src/AteHealth.c`
+and its parser and renderer are driven from this test's receive loop.
+`dtn/ate/PROVENANCE.md` names the tree, branch and commit it came from, and `make
+ate-diff ATE_REF=<that tree>/dpdk` checks the copy still matches it. `dtn/src/AteHealth.c`
 explains what is not used (its thread, its sockets, its VL filter, its firmware
 and 28 V checks) and why.
 
@@ -128,6 +129,16 @@ is printed.
 The health block is drawn at the top of each redraw and the test's own tables
 below it, so a terminal too short for all of it still shows the tables that are
 watched while the rig runs.
+
+### The port counters are absolute, so there is a baseline
+
+The DTN never clears its own counters: every number in the health block counts
+from whenever the device was last powered, not from when the test started. Read on
+its own, a port's undefined-VL count says nothing about this run. So the first
+cycle of a run is kept as the baseline and the end of the run prints it beside the
+last reading — the difference is what the device carried while the test was
+running, and both are in the live block's layout so either can be matched against
+it.
 
 ### Nothing repeats on VL 0
 

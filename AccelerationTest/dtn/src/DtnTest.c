@@ -604,6 +604,10 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     log_line("elapsed %llus, %llu frames from the unit, %u interruption(s)",
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
              interruptions);
+    /* The device's counters are absolute, so the two readings are what say what
+     * happened during this run: the first cycle of the test beside the last. */
+    ate_health_render_start_end();
+
     uint64_t queries = 0, short_cycles = 0;
     ate_health_counts(&queries, &short_cycles);
     log_line("health monitor: %llu queries, last cycle %u/%d packets, "

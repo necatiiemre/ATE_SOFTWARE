@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>   // FILE, for health_monitor_render_port_tables()
 #include <pthread.h>
 #include "HealthTypes.h"
 
@@ -20,6 +21,12 @@
 
 // VL_IDX for response filtering (DST MAC offset 4-5)
 #define HEALTH_MONITOR_RESPONSE_VL_IDX 0x1188  // 4488 decimal
+// VL_IDX carried by our own query packets: their DST MAC is the multicast
+// 03:00:00:00:00:00, so bytes 4-5 read back as 0. The switch floods those
+// queries to the other ports, where the raw socket RX rings see them, so the
+// PRBS filters need to recognise them too. VL-ID 0 is never a valid PRBS
+// VL-ID, so matching it costs nothing.
+#define HEALTH_MONITOR_QUERY_VL_IDX 0x0000
 #define HEALTH_MONITOR_RESPONSE_VL_IDX_HIGH 0x11
 #define HEALTH_MONITOR_RESPONSE_VL_IDX_LOW 0x88
 
@@ -86,7 +93,53 @@ int init_health_monitor(void);
  * @param stop_flag Pointer to global stop flag
  * @return 0 on success, -1 on failure
  */
-int start_health_monitor(volatile bool *stop_flag);
+// stop_flag: what the monitor watches to know when to stop. Pass the RX drain
+//   flag rather than force_quit so the monitor keeps running through the
+//   post-Ctrl+C drain window and the final health block is not stale.
+// abort_flag: what the monitor sets when it finds a condition that must end the
+//   test (28V power-status mismatch). Must be the app-wide stop flag.
+int start_health_monitor(volatile bool *stop_flag, volatile bool *abort_flag);
+
+/**
+ * @brief Record the device's per-port frame counters as the test's zero point.
+ *
+ * The device never clears its own counters, so comparing them against ours as
+ * absolutes only measures how long it had been running before we started.
+ * Call this in the quiet window, when no traffic is moving, and the difference
+ * from here is what the device carried during the test.
+ */
+void health_monitor_mark_port_baseline(void);
+
+/**
+ * @brief Device-side frames on one of its ports since the baseline.
+ * @return false if that port was never seen, or its counter went backwards.
+ */
+bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx);
+
+/**
+ * @brief The two readings a port's delta was taken between.
+ *
+ * These are the device's counters as they stand, not differences: the same
+ * numbers the ASSISTANT / MANAGER FPGA port tables print in their TxCnt and
+ * RxCnt columns, so a reading here can be matched against a health monitor
+ * table directly. `_base` is what was snapshotted in the quiet window, `_now`
+ * the last cycle stored.
+ *
+ * @return false if that port was never seen by the monitor.
+ */
+bool health_monitor_get_port_readings(int port,
+                                      uint64_t *tx_base, uint64_t *rx_base,
+                                      uint64_t *tx_now, uint64_t *rx_now);
+
+/**
+ * @brief Print the monitor's own ASSISTANT and MANAGER port tables to `out`.
+ *
+ * Both readings, in the same layout the monitor prints every second: the
+ * tables as they stood in the quiet window, then as they stood at the end. The
+ * end-of-test reconciliation is one minus the other, so it can be checked here
+ * without going back through the log for either.
+ */
+void health_monitor_render_port_tables(FILE *out);
 
 /**
  * @brief Stop health monitor thread

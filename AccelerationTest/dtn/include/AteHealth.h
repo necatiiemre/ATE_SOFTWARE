@@ -84,6 +84,21 @@ void ate_health_ingest(const uint8_t *frame, size_t len);
  */
 bool ate_health_render(void);
 
+/**
+ * @brief Print the device's port tables as they stood at the start and at the end.
+ *
+ * The DTN never clears its own counters, so every number in the health block is
+ * absolute - it counts from whenever the device was last powered, not from when
+ * this test started. Read on its own, a port's undefined-VL count says nothing
+ * about this run.
+ *
+ * So the first cycle that arrives is kept as the baseline, and this prints that
+ * reading beside the last one. The difference between the two is what the device
+ * carried while the test was running, and both are in the same layout the live
+ * block uses, so either can be matched against it directly.
+ */
+void ate_health_render_start_end(void);
+
 /** Packets a full cycle carries: two for one FPGA, three for the other, one MCU. */
 #define ATE_HEALTH_EXPECTED_RESPONSES 6
 

@@ -21,7 +21,130 @@
 // ==========================================
 
 static struct health_monitor_state g_health_monitor;
+
+// ==========================================
+// DEVICE-SIDE PORT COUNTER SNAPSHOT
+// ==========================================
+// The device keeps its own per-port frame counters and nothing in this
+// application clears them, so they carry everything since it came up -
+// including all the traffic sent before our own counters were zeroed. Compared
+// as absolutes they are therefore always ahead of ours, by a per-port amount
+// that says nothing about the test.
+//
+// A difference between two of its own readings does not have that problem. The
+// latest reading is kept here, a baseline is taken in the quiet window before
+// the test starts, and the difference is what the device says it carried during
+// the test - directly comparable with our own totals.
+//
+// Written once per cycle by the monitor thread and read by the stats thread.
+// Plain 64-bit loads and stores: a reader can see one port updated and the next
+// not yet, which for a reconciliation printed at the end of a run costs a
+// packet or two and is not worth a lock on the monitor's hot path.
+// One named type, not two anonymous ones: two separate anonymous struct
+// declarations are distinct types in C even when their members match, so the
+// baseline could not be assigned from the live copy.
+struct health_port_counters {
+    uint64_t tx;
+    uint64_t rx;
+    bool     valid;
+};
+
+static struct health_port_counters g_dev_ports[HEALTH_MAX_PORTS];
+static struct health_port_counters g_dev_ports_baseline[HEALTH_MAX_PORTS];
+
+// The last per-port data each FPGA reported, kept so the end-of-test totals can
+// print the monitor's own tables beside the reconciliation that uses them. Held
+// per port rather than as a whole-cycle copy: a cycle that came back short of a
+// port would otherwise blank that port's row rather than show its last reading.
+static struct health_fpga_data g_last_assistant;
+static struct health_fpga_data g_last_manager;
+static bool g_last_tables_valid = false;
+// The same tables as they stood in the quiet window. The end-of-test totals
+// print both, because the differences they report are one minus the other and
+// a reader who only has the end table cannot check them.
+static struct health_fpga_data g_base_assistant;
+static struct health_fpga_data g_base_manager;
+static bool g_base_tables_valid = false;
+
+static void health_store_port_snapshot(const struct health_fpga_data *fpga)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        const struct health_port_info *p = &fpga->ports[i];
+        if (!p->valid || p->port_number >= HEALTH_MAX_PORTS) {
+            continue;
+        }
+        g_dev_ports[p->port_number].tx = p->tx_count;
+        g_dev_ports[p->port_number].rx = p->rx_count;
+        g_dev_ports[p->port_number].valid = true;
+    }
+}
+
+// Merge one FPGA's valid ports into the retained copy of its table.
+static void health_store_fpga_table(struct health_fpga_data *dst,
+                                    const struct health_fpga_data *src)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        if (src->ports[i].valid) {
+            dst->ports[i] = src->ports[i];
+            g_last_tables_valid = true;
+        }
+    }
+    if (src->packets_received > 0) {
+        dst->packets_received = src->packets_received;
+        dst->port_count_received = src->port_count_received;
+    }
+}
+
+void health_monitor_mark_port_baseline(void)
+{
+    for (int i = 0; i < HEALTH_MAX_PORTS; i++) {
+        g_dev_ports_baseline[i] = g_dev_ports[i];
+    }
+    g_base_assistant = g_last_assistant;
+    g_base_manager = g_last_manager;
+    g_base_tables_valid = g_last_tables_valid;
+}
+
+bool health_monitor_get_port_delta(int port, uint64_t *tx, uint64_t *rx)
+{
+    if (port < 0 || port >= HEALTH_MAX_PORTS) return false;
+    if (!g_dev_ports[port].valid || !g_dev_ports_baseline[port].valid) return false;
+    uint64_t now_tx = g_dev_ports[port].tx, now_rx = g_dev_ports[port].rx;
+    uint64_t base_tx = g_dev_ports_baseline[port].tx, base_rx = g_dev_ports_baseline[port].rx;
+    // A counter that went backwards means the device restarted or wrapped;
+    // reporting a huge unsigned number would be worse than reporting nothing.
+    if (now_tx < base_tx || now_rx < base_rx) return false;
+    *tx = now_tx - base_tx;
+    *rx = now_rx - base_rx;
+    return true;
+}
+
+bool health_monitor_get_port_readings(int port,
+                                      uint64_t *tx_base, uint64_t *rx_base,
+                                      uint64_t *tx_now, uint64_t *rx_now)
+{
+    if (port < 0 || port >= HEALTH_MAX_PORTS) return false;
+    if (!g_dev_ports[port].valid) return false;
+    // The baseline may be missing where the delta is not - a port the monitor
+    // only started reporting after the quiet window. Report what exists rather
+    // than nothing: zeros here are visibly zeros, and the end reading is still
+    // worth matching against an HM table.
+    *tx_base = g_dev_ports_baseline[port].valid ? g_dev_ports_baseline[port].tx : 0;
+    *rx_base = g_dev_ports_baseline[port].valid ? g_dev_ports_baseline[port].rx : 0;
+    *tx_now  = g_dev_ports[port].tx;
+    *rx_now  = g_dev_ports[port].rx;
+    return true;
+}
+// What the monitor watches to know when to stop. Points at the RX drain flag,
+// not the app-wide force_quit, so the monitor keeps querying the DTN through
+// the post-Ctrl+C drain window instead of going dark exactly when the final
+// health snapshot is taken.
 static volatile bool *g_stop_flag = NULL;
+// What the monitor SETS when it finds a condition that must end the test (a
+// 28V power-status mismatch). That has to stop the whole application, so it is
+// a separate pointer - writing to g_stop_flag would only stop the RX workers
+// and leave the main loop running.
+static volatile bool *g_abort_flag = NULL;
 
 // ==========================================
 // QUERY PACKET TEMPLATE (64 bytes, no VLAN)
@@ -45,13 +168,14 @@ static const uint8_t health_query_template[HEALTH_MONITOR_QUERY_SIZE] = {
     0x00, 0x64, 0x00, 0x64,              // SRC Port: 100, DST Port: 100
     0x00, 0x1e, 0x00, 0x00,              // Length: 30, Checksum: 0
 
-    // Payload (22 bytes)
+    // Payload (22 bytes). The last byte, at offset 63, is the sequence number:
+    // 14 + 20 + 8 + 22 = 64, which is the whole packet, so it has no room of
+    // its own - listing it separately put a 65th element in a 64-byte array
+    // and the compiler dropped it. Its value here only documents where
+    // HEALTH_MONITOR_SEQ_INIT starts; every send overwrites it.
     0x26, 0x00, 0x52, 0x00, 0x00, 0x00,
     0x00, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-
-    // Sequence Number (1 byte) - offset 63
-    0x2f
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2f
 };
 
 // ==========================================
@@ -352,10 +476,11 @@ static double convert_fpga_temperature(int16_t raw)
 static const char *port_speed_str(uint64_t speed)
 {
     switch (speed) {
-    case 0:  return "1000M";
-    case 1:  return "10M";
-    case 2:  return "100M";
-    default: return "???";
+    case 0:  return "1-GBPS   ";
+    case 1:  return "10-MBPS  ";
+    case 2:  return "UNDEFINED";
+    case 3:  return "100-MBPS ";
+    default: return "OOF      ";
     }
 }
 
@@ -559,6 +684,27 @@ static void health_print_tables(const struct health_cycle_data *cycle)
     }
 }
 
+void health_monitor_render_port_tables(FILE *out)
+{
+    if (!g_last_tables_valid) {
+        fprintf(out, "[HEALTH] no port tables were received during this run\n");
+        return;
+    }
+    if (g_base_tables_valid) {
+        fprintf(out, "[HEALTH] ############### AT TEST START ###############\n");
+        health_print_fpga_table(out, "ASSISTANT", &g_base_assistant);
+        fprintf(out, "[HEALTH] ================================================\n");
+        health_print_fpga_table(out, "MANAGER", &g_base_manager);
+    } else {
+        fprintf(out, "[HEALTH] ############### AT TEST START ###############\n");
+        fprintf(out, "[HEALTH] no reading had arrived yet\n");
+    }
+    fprintf(out, "[HEALTH] ############### AT TEST END ###############\n");
+    health_print_fpga_table(out, "ASSISTANT", &g_last_assistant);
+    fprintf(out, "[HEALTH] ================================================\n");
+    health_print_fpga_table(out, "MANAGER", &g_last_manager);
+}
+
 static int get_interface_index(const char *ifname)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -749,6 +895,13 @@ static void *health_monitor_thread_func(void *arg)
         // 3. Receive and parse responses
         receive_health_responses(HEALTH_MONITOR_RESPONSE_TIMEOUT_MS, &cycle);
 
+        // Keep the per-port counters so the end-of-test reconciliation can
+        // difference them against the baseline taken before the test started.
+        health_store_port_snapshot(&cycle.assistant);
+        health_store_port_snapshot(&cycle.manager);
+        health_store_fpga_table(&g_last_assistant, &cycle.assistant);
+        health_store_fpga_table(&g_last_manager, &cycle.manager);
+
         uint64_t cycle_end = get_time_ms();
         uint64_t cycle_time = cycle_end - cycle_start;
 
@@ -789,44 +942,44 @@ static void *health_monitor_thread_func(void *arg)
         }
 
         // 4b. Check 28V power status after warmup (at 10th cycle)
-        if (state->warmup_complete && state->power_status_check_enabled && !state->power_status_check_done) {
-            if (state->post_warmup_cycle_count >= 10) {
-                state->power_status_check_done = true;
-                if (cycle.mcu.valid) {
-                    uint8_t actual = cycle.mcu.input_power_status;
-                    uint8_t expected = state->expected_power_status;
-                    if (actual == expected) {
-                        printf("\n");
-                        printf("[HEALTH] ✓ 28V Power Status Check PASSED\n");
-                        printf("[HEALTH]   Expected: Primary=%s | Secondary=%s\n",
-                               (expected & 0x01) ? "FAIL" : "SUCCESS",
-                               (expected & 0x02) ? "FAIL" : "SUCCESS");
-                        printf("[HEALTH]   Actual:   Primary=%s | Secondary=%s\n",
-                               (actual & 0x01) ? "FAIL" : "SUCCESS",
-                               (actual & 0x02) ? "FAIL" : "SUCCESS");
-                        printf("\n");
-                    } else {
-                        printf("\n");
-                        printf("[HEALTH] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-                        printf("[HEALTH] ERROR: 28V Power Status MISMATCH detected!\n");
-                        printf("[HEALTH]   Expected: Primary=%s | Secondary=%s (0x%02X)\n",
-                               (expected & 0x01) ? "FAIL" : "SUCCESS",
-                               (expected & 0x02) ? "FAIL" : "SUCCESS",
-                               expected);
-                        printf("[HEALTH]   Actual:   Primary=%s | Secondary=%s (0x%02X)\n",
-                               (actual & 0x01) ? "FAIL" : "SUCCESS",
-                               (actual & 0x02) ? "FAIL" : "SUCCESS",
-                               actual);
-                        printf("[HEALTH] Stopping test due to 28V power status mismatch!\n");
-                        printf("[HEALTH] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-                        printf("\n");
-                        *g_stop_flag = true;
-                    }
-                } else {
-                    printf("[HEALTH] WARNING: MCU data not received at cycle 10 - cannot verify 28V power status\n");
-                }
-            }
-        }
+        // if (state->warmup_complete && state->power_status_check_enabled && !state->power_status_check_done) {
+        //     if (state->post_warmup_cycle_count >= 10) {
+        //         state->power_status_check_done = true;
+        //         if (cycle.mcu.valid) {
+        //             uint8_t actual = cycle.mcu.input_power_status;
+        //             uint8_t expected = state->expected_power_status;
+        //             if (actual == expected) {
+        //                 printf("\n");
+        //                 printf("[HEALTH] ✓ 28V Power Status Check PASSED\n");
+        //                 printf("[HEALTH]   Expected: Primary=%s | Secondary=%s\n",
+        //                        (expected & 0x01) ? "FAIL" : "SUCCESS",
+        //                        (expected & 0x02) ? "FAIL" : "SUCCESS");
+        //                 printf("[HEALTH]   Actual:   Primary=%s | Secondary=%s\n",
+        //                        (actual & 0x01) ? "FAIL" : "SUCCESS",
+        //                        (actual & 0x02) ? "FAIL" : "SUCCESS");
+        //                 printf("\n");
+        //             } else {
+        //                 printf("\n");
+        //                 printf("[HEALTH] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        //                 printf("[HEALTH] ERROR: 28V Power Status MISMATCH detected!\n");
+        //                 printf("[HEALTH]   Expected: Primary=%s | Secondary=%s (0x%02X)\n",
+        //                        (expected & 0x01) ? "FAIL" : "SUCCESS",
+        //                        (expected & 0x02) ? "FAIL" : "SUCCESS",
+        //                        expected);
+        //                 printf("[HEALTH]   Actual:   Primary=%s | Secondary=%s (0x%02X)\n",
+        //                        (actual & 0x01) ? "FAIL" : "SUCCESS",
+        //                        (actual & 0x02) ? "FAIL" : "SUCCESS",
+        //                        actual);
+        //                 printf("[HEALTH] Stopping test due to 28V power status mismatch!\n");
+        //                 printf("[HEALTH] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        //                 printf("\n");
+        //                 if (g_abort_flag) *g_abort_flag = true;
+        //             }
+        //         } else {
+        //             printf("[HEALTH] WARNING: MCU data not received at cycle 10 - cannot verify 28V power status\n");
+        //         }
+        //     }
+        // }
 
         // 5. Print parsed data tables (Assistant + Manager)
         health_print_tables(&cycle);
@@ -923,7 +1076,7 @@ int init_health_monitor(void)
     return 0;
 }
 
-int start_health_monitor(volatile bool *stop_flag)
+int start_health_monitor(volatile bool *stop_flag, volatile bool *abort_flag)
 {
     struct health_monitor_state *state = &g_health_monitor;
 
@@ -938,6 +1091,7 @@ int start_health_monitor(volatile bool *stop_flag)
     }
 
     g_stop_flag = stop_flag;
+    g_abort_flag = abort_flag;
     state->running = true;
 
     // Create thread

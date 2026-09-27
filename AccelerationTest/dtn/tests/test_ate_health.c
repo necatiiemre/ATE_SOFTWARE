@@ -15,6 +15,7 @@
 
 #include "AteHealth.h"
 #include "DtnConfig.h"
+#include "HealthMonitor.h"
 #include "HealthTypes.h"
 
 #include <stdio.h>
@@ -183,6 +184,50 @@ static void test_cycle(void)
     check(shorts == 1, "and is counted as a short cycle");
 }
 
+/* The device's counters are absolute, so the baseline is what makes them mean
+ * anything. It has to be the first cycle of the run, and it has to survive the
+ * cycles after it without moving. */
+static void test_baseline(void)
+{
+    uint8_t frame[2048];
+
+    ate_health_reset();
+
+    /* First cycle: port 0 has carried 1000 frames, port 16 carries 1016. */
+    ate_health_ingest(frame, build_fpga(frame, sizeof frame, true,
+                                        STATUS_ENABLE_ASSISTANT, 8, 0));
+    ate_health_ingest(frame, build_fpga(frame, sizeof frame, true,
+                                        STATUS_ENABLE_MANAGER, 8, 16));
+    ate_health_cycle();
+
+    uint64_t tx = 0, rx = 0;
+    check(health_monitor_get_port_delta(0, &tx, &rx) && rx == 0,
+          "the first cycle is the baseline, so nothing has happened yet");
+
+    /* A later cycle, 500 frames further on. */
+    size_t len = build_fpga(frame, sizeof frame, true, STATUS_ENABLE_ASSISTANT, 8, 0);
+    put_be48(frame + HEALTH_UDP_PAYLOAD_OFFSET + HEALTH_DEVICE_HEADER_SIZE
+             + PORT_OFF_RX_COUNT, 1500);
+    ate_health_ingest(frame, len);
+    ate_health_cycle();
+
+    check(health_monitor_get_port_delta(0, &tx, &rx) && rx == 500,
+          "and the delta from it is what the device carried during the run");
+
+    uint64_t tx_base = 0, rx_base = 0, tx_now = 0, rx_now = 0;
+    check(health_monitor_get_port_readings(0, &tx_base, &rx_base, &tx_now, &rx_now)
+          && rx_base == 1000 && rx_now == 1500,
+          "both readings are kept, so either can be matched against a live table");
+
+    puts("\n--- the start and end port tables ---");
+    ate_health_render_start_end();
+    puts("--- end ---\n");
+
+    ate_health_reset();
+    check(!health_monitor_get_port_delta(0, &tx, &rx),
+          "a reset forgets the baseline, so a second run does not inherit it");
+}
+
 static void test_render(void)
 {
     uint8_t frame[2048];
@@ -207,6 +252,7 @@ int main(void)
 {
     test_query();
     test_cycle();
+    test_baseline();
     test_render();
 
     if (failures) {

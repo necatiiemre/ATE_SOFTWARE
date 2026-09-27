@@ -71,13 +71,28 @@ $(BUILD)/dtn/src/AteHealth.o: dtn/src/AteHealth.c $(wildcard dtn/ate/*)
 # The three files in dtn/ate/ that are copies rather than stand-ins must diff
 # clean against the ATE software. If they do not, either the reference moved or
 # someone edited the copy, and both are worth knowing before a rig session.
-ATE_REF   := ../dpdk
+#
+# Which tree they came from is in dtn/ate/PROVENANCE.md, down to the commit. It is
+# not always ../dpdk: the copy is taken from whichever tree is current, so point
+# this at it -
+#
+#   make ate-diff ATE_REF=/path/to/update-deneme/dpdk
+#
+# and note the files there use CRLF, which the copy keeps, because the check is
+# byte-exact and that is the point of it.
+#
+# The default looks for the tree the copy was actually taken from first, and falls
+# back to the sibling dpdk/ so the target still says something useful in a
+# checkout that has only this repository.
+ATE_REF   ?= $(firstword $(wildcard ../../update-deneme/dpdk ../dpdk) ../dpdk)
 ATE_COPIES := HealthMonitor.c:src/HealthMonitor HealthMonitor.h:include HealthTypes.h:include
 
 .PHONY: ate-diff
 ate-diff:
 	@if [ ! -d $(ATE_REF) ]; then \
 	   echo "no $(ATE_REF) beside this tree - nothing to diff against"; exit 0; fi
+	@echo "comparing dtn/ate/ against $(ATE_REF)"
+	@echo "(dtn/ate/PROVENANCE.md says which tree and commit the copy is from)"
 	@ok=1; for pair in $(ATE_COPIES); do \
 	   f=$${pair%%:*}; d=$${pair##*:}; \
 	   if diff -q dtn/ate/$$f $(ATE_REF)/$$d/$$f >/dev/null 2>&1; then \
