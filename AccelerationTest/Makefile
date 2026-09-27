@@ -6,7 +6,7 @@ CC      ?= gcc
 # none of them; app/ is main and the registry that says which units exist.
 UNITS   := dtn vmc cmc
 INCLUDE := -Icommon/include -Iapp $(foreach u,$(UNITS),-I$(u)/include) \
-           -Icmc/include/health_monitor
+           -Icmc/include/health_monitor -Idtn/ate
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wpedantic -pthread $(INCLUDE)
 
 COMMON_SRC := $(wildcard common/src/*.c)
@@ -18,7 +18,7 @@ OBJ        := $(patsubst %.c,$(BUILD)/%.o,$(SRC))
 # Everything except main, for the tests to link against.
 LIB_OBJ := $(filter-out $(BUILD)/app/main.o,$(OBJ))
 
-.PHONY: all test clean symbols smoke
+.PHONY: all test clean symbols smoke ate-diff
 
 all: $(BUILD)/acceleration_test
 
@@ -50,11 +50,47 @@ $(BUILD)/cmc/src/health_monitor/%.o: cmc/src/health_monitor/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(HM_RENAME) -Wno-unused-function -c $< -o $@
 
+# The DTN health monitor is dpdk/src/HealthMonitor/HealthMonitor.c, verbatim, in
+# dtn/ate/. It is not compiled on its own: AteHealth.c includes it, to reach the
+# static parser and renderer without editing the copy. So it must stay out of the
+# source glob, which is why it lives in dtn/ate/ and not dtn/src/.
+#
+# Warnings are off for that one object, with -w rather than a list, because the
+# one warning it produces has no flag of its own: the query template is a 64-byte
+# array with 65 initialisers, so GCC drops the last one. That is not a mistake in
+# the copy to be fixed - it is what the ATE software compiles to and therefore what
+# it sends, a 64-byte query whose sequence is the last byte inside the UDP length.
+# ate_health_build_query() writes it to the same place for the same reason.
+#
+# `make ate-diff` is the guard that matters here: it checks the copy against the
+# reference, which is the property -w must not be allowed to hide.
+$(BUILD)/dtn/src/AteHealth.o: dtn/src/AteHealth.c $(wildcard dtn/ate/*)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -w -c $< -o $@
+
+# The three files in dtn/ate/ that are copies rather than stand-ins must diff
+# clean against the ATE software. If they do not, either the reference moved or
+# someone edited the copy, and both are worth knowing before a rig session.
+ATE_REF   := ../dpdk
+ATE_COPIES := HealthMonitor.c:src/HealthMonitor HealthMonitor.h:include HealthTypes.h:include
+
+.PHONY: ate-diff
+ate-diff:
+	@if [ ! -d $(ATE_REF) ]; then \
+	   echo "no $(ATE_REF) beside this tree - nothing to diff against"; exit 0; fi
+	@ok=1; for pair in $(ATE_COPIES); do \
+	   f=$${pair%%:*}; d=$${pair##*:}; \
+	   if diff -q dtn/ate/$$f $(ATE_REF)/$$d/$$f >/dev/null 2>&1; then \
+	     echo "same as the reference: $$f"; \
+	   else ok=0; echo "DIFFERS from $(ATE_REF)/$$d/$$f: $$f"; fi; \
+	 done; [ $$ok = 1 ]
+
 # ---------------------------------------------------------------------------
 # Tests. Each unit's tests live with it, and run from its folder so that the
 # fixtures they read are beside them.
 
-DTN_TESTS := test_reference test_rounds test_profiles test_health test_dtn_legs
+DTN_TESTS := test_reference test_rounds test_profiles test_health test_dtn_legs \
+             test_ate_health
 VMC_TESTS := test_vmc test_vmc_print test_vmc_pbit
 CMC_TESTS := test_cmc_packet test_cmc_dataplane test_cmc_pmm test_cmc_health
 

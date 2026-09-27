@@ -112,7 +112,6 @@ void vl_watch_render(const vl_watch_t *watch, uint64_t elapsed_s,
     size_t total_expected, seen = vl_watch_expected_seen(watch, &total_expected);
     uint64_t now = hm_now_ms();
 
-    printf("\033[H\033[2J");
     printf("Acceleration Test - DTN - %s        %llus elapsed\n",
            profile_name, (unsigned long long)elapsed_s);
     printf("unit %s   expected VLs seen %zu/%zu   power interruptions %u\n\n",

@@ -27,8 +27,11 @@ dtn/src/DtnConfig.c        the encoder
 dtn/src/VlProfile.c        the three configuration rounds
 dtn/src/DtnHealthFrame.c   recognising the DTN's health-monitor stream
 dtn/src/HealthDecode.c     taking those packets apart
+dtn/src/AteHealth.c        drives the ATE software's health monitor, copied whole
+dtn/ate/                   that copy, byte for byte; `make ate-diff` checks it
+dtn/src/DtnLegs.c          the copper legs: PRBS out to the VMC and back
 dtn/src/VlWatch.c          what arrived on copper, by VL
-dtn/tests/                 four test programs
+dtn/tests/                 six test programs
 dtn/fixtures/              the reference frames and the config1 capture
 dtn/tools/                 analysis-side helpers (see below)
 dtn/profiles/              the three rounds as JSON, for those helpers
@@ -86,6 +89,31 @@ run starts:
 
 and if the device does start dropping our traffic as an undefined VL, the display
 says that in one line instead of leaving it to be worked out from the tables.
+
+## The DTN's own health monitor
+
+The main ATE software polls the DTN once a second with a `0x52` read and prints
+what comes back: both FPGAs' device status, all 35 ports with their 22 counters,
+and the MCU's rails and temperatures. That is the most informative thing the
+device says about itself, so it is not reimplemented here.
+`dpdk/src/HealthMonitor/HealthMonitor.c` is copied into `dtn/ate/` byte for byte
+and its parser and renderer are driven from this test's receive loop — `make
+ate-diff` checks the copy still matches the reference. `dtn/src/AteHealth.c`
+explains what is not used (its thread, its sockets, its VL filter, its firmware
+and 28 V checks) and why.
+
+Two of the copy's neighbours are stand-ins rather than copies: the PSU telemetry
+table, because this test does not touch power, and the Ctrl-C snapshot store,
+because the log is already a tee of stdout so the block is recorded the moment it
+is printed.
+
+The health block is drawn at the top of each redraw and the test's own tables
+below it, so a terminal too short for all of it still shows the tables that are
+watched while the rig runs.
+
+This is the DTN's own health monitor, VL 38 from the internal management port.
+The fibre-side unit's health monitor on VL 100 and 101 is a different thing and
+is not decoded yet.
 
 ## The live table
 

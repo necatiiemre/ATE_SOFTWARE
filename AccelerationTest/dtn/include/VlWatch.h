@@ -65,7 +65,14 @@ void vl_watch_unclassified(vl_watch_t *watch);
 /** How many expected VLs have been seen at least once. */
 size_t vl_watch_expected_seen(const vl_watch_t *watch, size_t *expected_total);
 
-/** Redraw the table in place. */
+/**
+ * @brief Print the table.
+ *
+ * Does not clear the screen. The caller does that, because the DTN test draws the
+ * DTN's own health block above this and that block decides where the clear goes:
+ * the tables the operator reads while the rig runs have to end up at the bottom of
+ * the screen, where a terminal too short for all of it still shows them.
+ */
 void vl_watch_render(const vl_watch_t *watch, uint64_t elapsed_s,
                      const char *profile_name, bool unit_alive,
                      unsigned interruptions);

@@ -20,6 +20,7 @@
 #include "DtnTest.h"
 
 #include "AppConfig.h"
+#include "AteHealth.h"
 #include "DtnConfig.h"
 #include "DtnLegs.h"
 #include "HealthDecode.h"
@@ -472,6 +473,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     hm_watch_t watch;
     uint64_t   started = hm_now_ms();
     uint64_t   next_draw = started;
+    uint64_t   next_query = started;
     unsigned   interruptions = 0;
     uint64_t   undef_seen[APP_MAX_COPPER_LINKS] = {0};
 
@@ -503,6 +505,14 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
                     hm_watch_saw_frame(&watch);
                     vl_watch_saw(&g_watch, port, frame.vl_id, (size_t)n);
                     hd_ingest(&g_health, frame.payload, frame.payload_len);
+
+                    /* The ATE software's parser, which is the copy in dtn/ate/,
+                     * is given the whole frame: it tells the six health packets
+                     * apart by total length. Its own VL filter is not used - it
+                     * tests for 0x1188 and this device answers on VL 38 - so the
+                     * same check is made here against the VL we configured. */
+                    if (frame.vl_id == DTN_HEALTH_MONITOR_VL)
+                        ate_health_ingest(g_rx, (size_t)n);
                 } else {
                     vl_watch_unclassified(&g_watch);
                 }
@@ -535,8 +545,32 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
         }
 
         uint64_t now = hm_now_ms();
+
+        /* Ask the device how it is, once a second, with the ATE software's own
+         * 0x52 query. The DTN also streams its health monitor unprompted, but the
+         * ATE software polls and a polled answer is a fresh one - and the reply
+         * count per cycle is itself a reading: six is the device answering fully. */
+        if (now >= next_query) {
+            uint8_t query[ATE_HEALTH_QUERY_MAX];
+            int qlen = ate_health_build_query(query, sizeof query);
+
+            next_query = now + ATE_HEALTH_QUERY_INTERVAL_MS;
+            ate_health_cycle();
+            if (qlen > 0 && !raw_socket_send(config_sock, query, (size_t)qlen))
+                log_line("health query could not be sent on %s", config_sock->name);
+        }
+
         if (now >= next_draw) {
             next_draw = now + timing->display_interval_ms;
+
+            /* The ATE software's health block first, then this test's own
+             * tables. The block is tall - both FPGAs, all 35 ports, the MCU - so
+             * on a terminal that cannot hold everything, what stays on screen is
+             * the bottom: the VL watch, the per-port summary and the legs, which
+             * are what is read while the rig runs. The block is in the log either
+             * way, because the log is a tee of stdout. */
+            printf("\033[H\033[2J");
+            ate_health_render();
             vl_watch_render(&g_watch, (now - started) / 1000, profile_name,
                             watch.alive, interruptions);
             hd_render(&g_health, g_groups, g_group_count);
@@ -553,6 +587,13 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     log_line("elapsed %llus, %llu frames from the unit, %u interruption(s)",
              (unsigned long long)elapsed, (unsigned long long)watch.frames,
              interruptions);
+    uint64_t queries = 0, short_cycles = 0;
+    ate_health_counts(&queries, &short_cycles);
+    log_line("health monitor: %llu queries, last cycle %u/%d packets, "
+             "%llu cycle(s) came back short",
+             (unsigned long long)queries, ate_health_responses(),
+             ATE_HEALTH_EXPECTED_RESPONSES,
+             (unsigned long long)short_cycles);
     vl_watch_log_summary(&g_watch);
     hd_log_summary(&g_health);
     dtn_legs_log_summary(g_legs);
@@ -683,6 +724,8 @@ unit_result_t dtn_test_run(void)
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
     printf("  config out  : %s (DTN port %u, %s)\n", config_link->iface,
            config_link->dtn_port, config_link->speed);
+    printf("  health mon  : the ATE software's, polled once a second on VL %u\n",
+           DTN_HEALTH_MONITOR_VL);
     printf("  power       : switch the DTN on by hand; the test waits for its\n"
            "                health monitor, then %u s more before configuring\n",
            timing->config_settle_s);
@@ -730,6 +773,7 @@ unit_result_t dtn_test_run(void)
 
     vl_watch_init(&g_watch, g_records, (size_t)count);
     hd_init(&g_health);
+    ate_health_reset();
     collect_ports(g_records, (size_t)count);
 
     /* The copper legs, if this round has any. The PRBS stream is generated once,
