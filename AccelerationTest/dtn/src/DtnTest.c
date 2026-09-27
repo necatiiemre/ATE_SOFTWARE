@@ -480,6 +480,7 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
     uint64_t   started = hm_now_ms();
     uint64_t   next_draw = started;
     uint64_t   next_query = started;
+    const bool poll_health = app_config_dtn_health_poll();
     unsigned   interruptions = 0;
     uint64_t   undef_seen[APP_MAX_COPPER_LINKS] = {0};
 
@@ -552,18 +553,28 @@ static void monitor_run(size_t link_count, raw_socket_t *config_sock,
 
         uint64_t now = hm_now_ms();
 
-        /* Ask the device how it is, once a second, with the ATE software's own
-         * 0x52 query. The DTN also streams its health monitor unprompted, but the
-         * ATE software polls and a polled answer is a fresh one - and the reply
-         * count per cycle is itself a reading: six is the device answering fully. */
+        /* The cycle boundary, on the ATE software's one-second beat, so the block
+         * that gets printed covers the same second theirs does.
+         *
+         * Whether a query goes out with it is another matter. The ATE software
+         * polls, and the poll is a VL 0 frame because that is how a management
+         * frame is addressed - but VL 0 is a VL the VMC uses, so one of those a
+         * second for the length of a vibration run is a frame turning up at a unit
+         * that means something else by it. The DTN streams its health monitor
+         * unprompted, so leaving the query off costs nothing. See
+         * app_config_dtn_health_poll. */
         if (now >= next_query) {
-            uint8_t query[ATE_HEALTH_QUERY_MAX];
-            int qlen = ate_health_build_query(query, sizeof query);
-
             next_query = now + ATE_HEALTH_QUERY_INTERVAL_MS;
             ate_health_cycle();
-            if (qlen > 0 && !raw_socket_send(config_sock, query, (size_t)qlen))
-                log_line("health query could not be sent on %s", config_sock->name);
+
+            if (poll_health) {
+                uint8_t query[ATE_HEALTH_QUERY_MAX];
+                int qlen = ate_health_build_query(query, sizeof query);
+
+                if (qlen > 0 && !raw_socket_send(config_sock, query, (size_t)qlen))
+                    log_line("health query could not be sent on %s",
+                             config_sock->name);
+            }
         }
 
         if (now >= next_draw) {
@@ -730,8 +741,11 @@ unit_result_t dtn_test_run(void)
     printf("  frames      : %d, %zu bytes, untagged\n", frame_count, total);
     printf("  config out  : %s (DTN port %u, %s)\n", config_link->iface,
            config_link->dtn_port, config_link->speed);
-    printf("  health mon  : the ATE software's, polled once a second on VL %u\n",
-           DTN_HEALTH_MONITOR_VL);
+    printf("  health mon  : the ATE software's, reading VL %u%s\n",
+           DTN_HEALTH_MONITOR_VL,
+           app_config_dtn_health_poll()
+               ? " - polling once a second with a VL 0 query"
+               : " - listening only, nothing is sent on VL 0 during the run");
     printf("  to capture   : tcpdump -i %s -nn -s0 'udp port 100'\n",
            config_link->iface);
     printf("  power       : switch the DTN on by hand; the test waits for its\n"

@@ -91,6 +91,27 @@ const dtn_leg_config_t *app_config_dtn_legs(void);
  * part of the table is unchanged either way.
  */
 bool app_config_management_vls(void);
+
+/**
+ * @brief Whether the DTN is polled once a second for its health monitor.
+ *
+ * Off, and this one is not a preference. The `0x52` query is addressed to VL 0 -
+ * destination MAC 03:00:00:00:00:00, destination IP 224.224.0.0 - because that is
+ * how the reference addresses a management frame and how the device recognises one
+ * meant for itself. But VL 0 is also a VL the VMC uses, and a frame on it every
+ * second, for as long as a vibration run lasts, is a frame arriving at a unit that
+ * has its own meaning for it.
+ *
+ * Nothing is lost by leaving it off: the DTN streams its health monitor unprompted
+ * - a real run saw 35,501 of them without a single query going out - so polling
+ * buys freshness that was never missing. The queries the configuration itself
+ * carries are a different matter: they go once, and re-configuring after a power
+ * interruption is the only thing that repeats them.
+ *
+ * Turn it on only on a rig where nothing else is listening on VL 0.
+ */
+bool app_config_dtn_health_poll(void);
+void app_config_set_dtn_health_poll(bool poll);
 void app_config_set_management_vls(bool keep);
 
 /**

@@ -27,6 +27,8 @@ int main(int argc, char **argv)
             app_config_set_management_vls(true);
         else if (strcmp(argv[i], "--all-ports") == 0)
             app_config_set_all_ports(true);
+        else if (strcmp(argv[i], "--poll-health") == 0)
+            app_config_set_dtn_health_poll(true);
         else
             printf("Ignoring unknown argument '%s'\n", argv[i]);
     }
@@ -37,6 +39,10 @@ int main(int argc, char **argv)
            app_config_management_vls()
                ? "round + the DTN's own management VLs (--keep-management)"
                : "round only, as captured");
+    if (app_config_dtn_health_poll())
+        puts("DTN health: polling once a second (--poll-health). The query is a "
+             "VL 0 frame;\n            only do this where nothing else on the rig "
+             "uses VL 0.");
 
     for (;;) {
         const unit_t *unit = unit_manager_select();

@@ -129,6 +129,26 @@ The health block is drawn at the top of each redraw and the test's own tables
 below it, so a terminal too short for all of it still shows the tables that are
 watched while the rig runs.
 
+### Nothing repeats on VL 0
+
+The ATE software polls the DTN every second, and its `0x52` query is addressed to
+VL 0 — destination MAC `03:00:00:00:00:00`, destination IP `224.224.0.0` — because
+that is how a management frame is addressed and how the device knows one is meant
+for it. The configuration frames are addressed the same way, and so is the status
+query that closes them.
+
+But VL 0 is a VL the VMC uses. A one-off burst while the DTN is being configured
+is one thing; a frame on VL 0 every second for the length of a vibration run is a
+frame arriving at a unit that has its own meaning for it. So the poll is **off**:
+during a run the test sends nothing on VL 0 at all, and the DTN's health monitor
+is read from what the device streams unprompted — a real run saw 35,501 of them
+without a single query going out. `--poll-health` turns the poll on for a rig where
+nothing else is listening on VL 0.
+
+What still goes out on VL 0, and cannot not: the six configuration frames, once,
+and again after a power interruption, because that is the only way the DTN is
+configured.
+
 This is the DTN's own health monitor, VL 38 from the internal management port.
 The fibre-side unit's health monitor on VL 100 and 101 is a different thing and
 is not decoded yet.

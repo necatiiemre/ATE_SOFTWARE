@@ -55,6 +55,12 @@ static bool g_management_vls;
 bool app_config_management_vls(void) { return g_management_vls; }
 void app_config_set_management_vls(bool keep) { g_management_vls = keep; }
 
+/* Off: the query is a VL 0 frame and the VMC uses VL 0. See the header. */
+static bool g_dtn_health_poll;
+
+bool app_config_dtn_health_poll(void) { return g_dtn_health_poll; }
+void app_config_set_dtn_health_poll(bool poll) { g_dtn_health_poll = poll; }
+
 static bool g_all_ports;
 
 bool app_config_all_ports(void) { return g_all_ports; }

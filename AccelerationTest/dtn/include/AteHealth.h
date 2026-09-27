@@ -12,9 +12,16 @@
  * this test's own receive loop - see dtn/src/AteHealth.c for why it is included
  * rather than linked, and what the two stand-in headers beside it replace.
  *
- * The cycle is the ATE software's: the query goes out, the device answers with six
- * packets, and the block is printed. What is shown is always the last *complete*
- * cycle, so a table is never half a second's worth of answers.
+ * The cycle is the ATE software's one second. What is shown is always the last
+ * *complete* cycle, so a table is never half a second's worth of answers.
+ *
+ * The query is a different matter from the cycle, and off by default. The ATE
+ * software polls every second, but its `0x52` query is addressed to VL 0 - that is
+ * how a management frame is addressed - and VL 0 is a VL the VMC uses. One of those
+ * a second for the length of a vibration run is a frame turning up at a unit that
+ * means something else by it, so nothing is sent unless the rig is one where that
+ * is safe; see app_config_dtn_health_poll. The DTN streams its health monitor
+ * unprompted, so listening costs nothing.
  *
  * This is the DTN's own health monitor, on VL 38 from the internal management
  * port. The fibre-side unit's health monitor on VL 100 and 101 is a different
