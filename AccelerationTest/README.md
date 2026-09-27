@@ -70,6 +70,24 @@ from that unit's folder, so the fixtures they read are beside them.
 5. The frames go out of the configuration link, followed by a `0x52` status query.
 6. It watches both copper links until the operator presses Ctrl-C.
 
+Nothing is configured until the DTN has been heard from, and then ten seconds
+more — the operator powers the unit by hand and a configuration written into a
+device still booting may not stick. That is worth knowing when nothing appears on
+a capture: for the first while, nothing is supposed to. If the unit never says
+anything the test offers to send the configuration anyway, because a run that
+ends with no frames on the wire is indistinguishable from one whose frames went
+somewhere unexpected, and looking at the configuration path itself needs them
+sent.
+
+The line to point a capture at is printed before the run starts:
+
+```
+  config out  : eno12399 (DTN port 32, 1G)
+  to capture   : tcpdump -i eno12399 -nn -s0 'udp port 100'
+```
+
+and again, naming the same interface, at the moment the frames go.
+
 The configuration link is the 100M one when its cable is in, because that is the
 proven management path, and the 1G one when it is not. It is chosen rather than
 fixed for a reason worth knowing: a configuration sent down an unplugged cable is

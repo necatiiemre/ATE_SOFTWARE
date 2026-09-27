@@ -387,6 +387,12 @@ static bool settle_before_config(size_t link_count, unsigned seconds)
 
 static bool send_configuration(raw_socket_t *config_sock, int frame_count, unsigned gap_ms)
 {
+    /* Named on the terminal, not only in the log, and named before the frames go
+     * rather than after: this is the line that says which interface to point a
+     * capture at, and it is no use once the frames have already gone past. */
+    log_line("configuring over %s now: %d frames, %u ms apart",
+             config_sock->name, frame_count, gap_ms);
+
     for (int i = 0; i < frame_count; i++) {
         if (!raw_socket_send(config_sock, g_frames[i].data, g_frames[i].len)) {
             log_line("configuration frame %d (seq %u) failed to send", i, g_frames[i].seq);
@@ -726,6 +732,8 @@ unit_result_t dtn_test_run(void)
            config_link->dtn_port, config_link->speed);
     printf("  health mon  : the ATE software's, polled once a second on VL %u\n",
            DTN_HEALTH_MONITOR_VL);
+    printf("  to capture   : tcpdump -i %s -nn -s0 'udp port 100'\n",
+           config_link->iface);
     printf("  power       : switch the DTN on by hand; the test waits for its\n"
            "                health monitor, then %u s more before configuring\n",
            timing->config_settle_s);
@@ -811,14 +819,30 @@ unit_result_t dtn_test_run(void)
     log_line("configuration goes out of %s (DTN port %u, %s)", config_link->iface,
              config_link->dtn_port, config_link->speed);
 
-    if (!wait_for_unit(link_count, timing->device_ready_timeout_s)) {
-        result = safe_shutdown_requested() ? UNIT_RESULT_ABORTED : UNIT_RESULT_ERROR;
-        goto done;
-    }
-
-    if (!settle_before_config(link_count, timing->config_settle_s)) {
-        result = UNIT_RESULT_ABORTED;
-        goto done;
+    if (wait_for_unit(link_count, timing->device_ready_timeout_s)) {
+        if (!settle_before_config(link_count, timing->config_settle_s)) {
+            result = UNIT_RESULT_ABORTED;
+            goto done;
+        }
+    } else {
+        /* The unit said nothing. Normally that means it is not powered and there
+         * is nothing to configure - but it also means this is the one situation in
+         * which the configuration never goes out at all, and a run that ends
+         * without a single frame on the wire is impossible to tell from one where
+         * the frames went somewhere unexpected. So it is offered rather than
+         * decided: sending into silence is how the configuration path itself gets
+         * looked at, with a capture running and the device's answer unknown. */
+        if (safe_shutdown_requested()) {
+            result = UNIT_RESULT_ABORTED;
+            goto done;
+        }
+        puts("\nThe unit has not said anything, so there is nothing to configure -\n"
+             "unless what you want to see is the configuration itself going out.");
+        if (!prompt_yes_no("Send it anyway", false)) {
+            result = UNIT_RESULT_ERROR;
+            goto done;
+        }
+        log_line("sending the configuration into silence at the operator's request");
     }
 
     if (!send_configuration(config_sock, frame_count, timing->frame_gap_ms))
