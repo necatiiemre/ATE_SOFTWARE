@@ -62,6 +62,7 @@ struct cmc_data_plane {
 
     volatile bool tx_paused;
     volatile bool own_stop;      /**< used when the caller passed no flag */
+    bool          b_skipped_said;/**< the "A refused so B is skipped" line, once */
 };
 
 /* ------------------------------------------------------------------ */
@@ -500,8 +501,21 @@ static void *tx_thread_fn(void *arg)
         bool first_sent = false;
 
         for (uint8_t n = 0; n < nets; n++) {
-            if (n > 0 && !first_sent)
+            if (n > 0 && !first_sent) {
+                /* A refused, so the twins cannot be twins and B is not sent. Said
+                 * once, because otherwise network B looks silent with nothing
+                 * against its name: no frames, no refusals, no reason - and the
+                 * reason is on the other row. */
+                if (!dp->b_skipped_said) {
+                    dp->b_skipped_said = true;
+                    log_line("[cmc] %s went nowhere, so %s is not being sent either "
+                             "- the twins have to go out together or they are not "
+                             "twins. Fix %s first.",
+                             dp->config->nets[0].iface, dp->config->nets[n].iface,
+                             dp->config->nets[0].iface);
+                }
                 break;
+            }
             if (raw_socket_send(&dp->sock[n], frame[n], dp->frame_len)) {
                 dp->stats[n].tx_pkts++;
                 dp->stats[n].tx_bytes += dp->frame_len;
