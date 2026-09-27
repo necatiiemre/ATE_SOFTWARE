@@ -5,11 +5,19 @@
 
 /* Fibre links, per round, in each direction.
  *
- * config1 and config2 are the same round on different ports: four adjacent pairs
- * with the next two ports left to the VMC - 0-9 for config1, 10-19 for config2.
- * The taps bring the VMC's health monitor out of those two, and the copper legs
- * carry the workstation's traffic through them. config3 still has the six-pair
- * shape it was written with; it gets its own ports when its turn comes.
+ * The three rounds together cover fibre ports 0-31, and each leaves its last two
+ * to the VMC: the taps bring the VMC's health monitor out of them, and the copper
+ * legs carry the workstation's traffic through them.
+ *
+ *   config1  0-9    four pairs, 0 with 4 and so on, VMC on 8 and 9
+ *   config2  10-19  the same ten ports along, VMC on 18 and 19
+ *   config3  20-31  twelve ports, so five pairs - 20 with 25 and so on - and
+ *                   the VMC on 30 and 31
+ *
+ * config3 has two more ports than the others, and they go into the fibre pairs
+ * rather than anywhere else: five pairs of five rather than four of four. The VL
+ * ids keep counting in tens from 1024 either way, so its forward group simply
+ * runs one link further than the others'.
  *
  * Each round is written out on its own rather than generated from a shared
  * macro. They no longer have a shape in common, and one that did would hide
@@ -18,8 +26,8 @@ static const vl_link_t C1_FWD[] = {{0,4},{1,5},{2,6},{3,7}};
 static const vl_link_t C1_REV[] = {{4,0},{5,1},{6,2},{7,3}};
 static const vl_link_t C2_FWD[] = {{10,14},{11,15},{12,16},{13,17}};
 static const vl_link_t C2_REV[] = {{14,10},{15,11},{16,12},{17,13}};
-static const vl_link_t C3_FWD[] = {{10,26},{11,27},{12,28},{13,29},{14,30},{15,31}};
-static const vl_link_t C3_REV[] = {{26,10},{27,11},{28,12},{29,13},{30,14},{31,15}};
+static const vl_link_t C3_FWD[] = {{20,25},{21,26},{22,27},{23,28},{24,29}};
+static const vl_link_t C3_REV[] = {{25,20},{26,21},{27,22},{28,23},{29,24}};
 
 /* The captured configuration's links, kept because the capture is kept. */
 static const vl_link_t REF_FWD[] = {{0,16},{1,17},{2,18},{3,19},{4,20},{5,21}};
@@ -270,22 +278,39 @@ static const vl_profile_t g_profiles[] = {
     },
 
     /* ----------------------------------------------------------------
-     * config3 - likewise. Its taps are on 0 and 16 because ports 15 and 31
-     * carry fibre traffic in this round.
+     * config3 - the last twelve ports, so five fibre pairs instead of four.
+     *
+     *   fibre     20 <-> 25, 21 <-> 26, 22 <-> 27, 23 <-> 28, 24 <-> 29
+     *   ports 30/31 the VMC, wired to copper exactly as the other rounds' two
+     *   the VL ids keep counting in tens from 1024, so the forward group runs
+     *   to 1073 here where the others stop at 1063
      * ---------------------------------------------------------------- */
     {
         .name = "config3",
-        .description = "fibre ports 10-15 <-> 26-31, HM from ports 0 and 16",
+        .description = "fibre 20-24 <-> 25-29, VMC on 30/31, copper legs 32<->30 and 33<->31",
         .group_count = 2,
         .groups = {FIBRE_GROUP(1024, C3_FWD), FIBRE_GROUP(2024, C3_REV)},
+
         .hm_count = 2,
         .hm = {
-            {.vl_id = 100, .src_port = 0,  .dst_port = 33, .flags = HM_FLAGS},
-            {.vl_id = 101, .src_port = 16, .dst_port = 33, .flags = HM_FLAGS},
+            {.vl_id = 100, .src_port = 30, .dst_port = 32, .flags = HM_FLAGS},
+            {.vl_id = 101, .src_port = 31, .dst_port = 33, .flags = HM_FLAGS},
         },
-        .comm_count = 0,
+
+        .comm_count = 4,
+        .comms = {
+            {.vl_first = 3024, .vl_count = 60, .src_port = 32, .dst_port = 30,
+             .label = "workstation -> VMC, port 30"},
+            {.vl_first = 4024, .vl_count = 60, .src_port = 30, .dst_port = 32,
+             .label = "VMC -> workstation, port 30"},
+            {.vl_first = 5024, .vl_count = 60, .src_port = 33, .dst_port = 31,
+             .label = "workstation -> VMC, port 31"},
+            {.vl_first = 6024, .vl_count = 60, .src_port = 31, .dst_port = 33,
+             .label = "VMC -> workstation, port 31"},
+        },
+
         .dtn_health_monitor = true,
-        .dtn_hm_port = DTN_HEALTH_MONITOR_PORT,
+        .dtn_hm_port = 32,
         .management = false,
     },
 };

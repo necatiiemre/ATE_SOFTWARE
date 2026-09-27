@@ -191,7 +191,10 @@ static void test_payload(void)
 static void test_prbs_offset(void)
 {
     prbs31_cache_t cache = {0};
-    static uint8_t small[16];
+    /* Only the pointer arithmetic is under test here, never the bytes, so the
+     * buffer is sized for the arithmetic rather than for a read. Big enough that
+     * the compiler does not warn about offsets it can see are past the end. */
+    static uint8_t small[CMC_NUM_PRBS_BYTES * 2];
 
     cache.bytes = small;
     cache.stride = CMC_PRBS_STRIDE;

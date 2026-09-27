@@ -183,20 +183,28 @@ the reference blob: the vendor line for VL 620 encodes to that record exactly.
 
 ## The three rounds
 
-config1 and config2 have been re-cut for the new rig; config3 still has the shape
-it was written with and gets its own ports when its turn comes. Each round is now
-written out on its own rather than generated from a shared macro: they no longer
-have a shape in common, and one that did would hide which round changed.
+All three rounds have been re-cut for the new rig. Each is written out on its own
+rather than generated from a shared macro: they no longer have a shape in common,
+and one that did would hide which round changed.
 
-### config1 and config2
+| round | fibre ports | pairs | the VMC's two |
+|---|---|---|---|
+| config1 | 0-9 | 0↔4, 1↔5, 2↔6, 3↔7 | 8 and 9 |
+| config2 | 10-19 | 10↔14, 11↔15, 12↔16, 13↔17 | 18 and 19 |
+| config3 | 20-31 | 20↔25, 21↔26, 22↔27, 23↔28, 24↔29 | 30 and 31 |
 
-The same round on different ports: config1 on fibre ports 0-9, config2 ten along
-on 10-19. Writing `B` for the first fibre port of the round - 0 or 10 - and `V`
-for the first of the two the VMC has - 8 or 18:
+config3 has two ports more than the others, and they go into the fibre pairs:
+five pairs of five rather than four of four. The VL ids keep counting in tens
+from 1024 either way, so its forward group runs one link further - to 1073 where
+the others stop at 1063. Everything else about the three is the same.
+
+### The shape of a round
+
+Writing `B` for the first fibre port of the round, `N` for how many pairs it has
+and `V` for the first of the two the VMC gets:
 
 ```
-fibre         B <-> B+4,  B+1 <-> B+5,  B+2 <-> B+6,  B+3 <-> B+7
-                                            VL 1024-1063 / 2024-2063
+fibre         B <-> B+N,  B+1 <-> B+N+1,  ...   VL 1024.. / 2024.., ten a link
 VMC's HM      port V   -> copper 32   VL 100
               port V+1 -> copper 33   VL 101
 DTN's own HM  port 34  -> copper 32   VL 38
@@ -206,10 +214,10 @@ copper legs   copper 32 -> port V     VL 3024-3083   workstation -> VMC
               port V+1 -> copper 33   VL 6024-6083   VMC -> workstation
 ```
 
-323 records each, which is four switch datagrams where the capture needed two,
-and six frames in all. The VL ids are the same in both rounds: the two never run
-at once, and keeping them identical means one less thing that differs between a
-round that works and a round that does not.
+323 records for config1 and config2, 343 for config3, which is four switch
+datagrams where the capture needed two, and six frames in all. The VL ids are the
+same in every round: they never run at once, and keeping them identical means one
+less thing that differs between a round that works and a round that does not.
 
 Ports V and V+1 are the VMC's. Three things happen on them and they are easy to
 confuse: the VMC's own health monitor comes *out* of them on VL 100 and 101, the
@@ -251,14 +259,15 @@ cable's.
 
 The captured configuration - six fibre pairs 0-5 to 16-21, taps from ports 15 and
 31, the DTN's own health monitor out of port 33 - is the only evidence there is
-that the encoder emits frames real hardware accepts. Now that config1 and config2
-have moved, that capture lives on as `vl_profile_reference()`: a profile that is
-not in the menu, does not change when the rounds do, and is what `test_rounds`
-checks byte for byte. config3 is still the captured table with its ports moved,
-so it is still checked that way; config1 and config2 get a structural check
-instead - one function serves both, because they are the same round on different
-ports - and every record has to be the VL id and port pair its profile declares,
-the routing has to validate, and it still has to fit in frames.
+that the encoder emits frames real hardware accepts. Now that every round has
+moved, that capture lives on as `vl_profile_reference()`: a profile that is not
+in the menu, does not change when the rounds do, and is what `test_rounds` checks
+byte for byte.
+
+The rounds themselves get a structural check - one function serves all three,
+taking where the fibre pairs start, how many there are, and the VMC's two ports.
+Every record has to be the VL id and port pair its profile declares, the routing
+has to validate, and it still has to fit in frames.
 
 Without that split, re-cutting a round would have quietly thrown away the only
 hardware-validated proof in the repository.
