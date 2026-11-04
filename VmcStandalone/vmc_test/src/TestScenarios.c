@@ -78,12 +78,24 @@ static int sendBurst(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlI
     return sent;
 }
 
+/* resetSeq=true -> counters back to 0; false -> continue. Logs what happens. */
+static void applySeqReset(const char *who, const Network *nets, int n, bool resetSeq)
+{
+    printf("[%s] sequence:", who);
+    for (int i = 0; i < n; ++i) {
+        if (resetSeq) resetSequence(nets[i]);
+        printf(" %s starts at %u", networkName(nets[i]), peekSequence(nets[i]));
+        if (i + 1 < n) printf(",");
+    }
+    printf(" (%s)\n", resetSeq ? "reset" : "continuing");
+}
+
 /* ====================================================================
  *  Scenarios
  * ==================================================================== */
 
 int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlIdx,
-                  uint16_t payloadLen, int count, unsigned delayMs)
+                  uint16_t payloadLen, int count, unsigned delayMs, bool resetSeq)
 {
     if (count < 0 || !validFlow("tryPacketSend", net, vlanId, payloadLen)) return -1;
 
@@ -92,6 +104,8 @@ int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlI
 
     RawSocket sock;
     if (rawSocketOpen(&sock, ifname) != 0) return -1;
+
+    applySeqReset("tryPacketSend", &net, 1, resetSeq);
 
     const int sent = sendBurst(&sock, net, vlanId, vlIdx, payloadLen, count, delayMs, false);
     rawSocketClose(&sock);
@@ -108,7 +122,7 @@ static int endSystemFlow(const char *who, const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs)
+                         unsigned delayMs, bool resetSeq)
 {
     if (countA < 0 || countB < 0 || pairCount < 0 ||
         !validFlow(who, NET_A, vlanIdA, payloadLen) ||
@@ -126,6 +140,9 @@ static int endSystemFlow(const char *who, const char *ifname,
     RawSocket sockStorage;
     if (rawSocketOpen(&sockStorage, ifname) != 0) return -1;
     RawSocket *sock = &sockStorage;
+
+    static const Network bothNets[2] = { NET_A, NET_B };
+    applySeqReset(who, bothNets, 2, resetSeq);
 
     int sent = 0;
     int ok;
@@ -169,10 +186,10 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs)
+                         unsigned delayMs, bool resetSeq)
 {
     return endSystemFlow("senaryoFlcsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs);
+                         payloadLen, countA, countB, pairCount, delayMs, resetSeq);
 }
 
 int senaryoVsEndSystem(const char *ifname,
@@ -180,8 +197,8 @@ int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,
                        int countA, int countB, int pairCount,
-                       unsigned delayMs)
+                       unsigned delayMs, bool resetSeq)
 {
     return endSystemFlow("senaryoVsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs);
+                         payloadLen, countA, countB, pairCount, delayMs, resetSeq);
 }

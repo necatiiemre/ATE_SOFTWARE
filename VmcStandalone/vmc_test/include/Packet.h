@@ -27,6 +27,12 @@ size_t buildPacket(uint8_t *buf, size_t bufSize, Network net, uint16_t vlanId,
  */
 uint8_t nextSequence(Network net);
 
+/* Sequence value the next packet of this network will carry (no advance). */
+uint8_t peekSequence(Network net);
+
+/* Restart a network's counter: its next packet carries sequence 0 again. */
+void resetSequence(Network net);
+
 /* Print a frame as hex (16 bytes per line). */
 void hexDump(const uint8_t *buf, size_t len);
 

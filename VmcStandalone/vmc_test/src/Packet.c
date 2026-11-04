@@ -23,6 +23,16 @@ uint8_t nextSequence(Network net)
     return seq;
 }
 
+uint8_t peekSequence(Network net)
+{
+    return (net < 0 || net >= NET_COUNT) ? 0 : g_nextSeq[net];
+}
+
+void resetSequence(Network net)
+{
+    if (net >= 0 && net < NET_COUNT) g_nextSeq[net] = 0;
+}
+
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)(v >> 16)); put16(p + 2, (uint16_t)v); }
 

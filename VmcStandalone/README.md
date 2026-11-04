@@ -213,6 +213,9 @@ ETH 14 | 802.1Q 4 | IPv4 20 | UDP 8 | DATA N byte | SEQ 1 byte
 - Payload 100 → frame 147 byte; payload 200 → 201. byte sequence, frame 247 byte.
 - Payload sınırı: 1..1466 (DPDK'daki en büyük payload: 1466 + 1 seq).
 - Sequence Net A ve Net B için **ayrı sayaç**: `0, 1, 2, … 255, 1, 2, …` (0 sadece ilk pakette).
+- Her senaryo fonksiyonunun son parametresi `resetSeq`: `true` → senaryo başında sayaç(lar)
+  0'a döner; `false` → önceki senaryodan kaldığı yerden devam eder. Log'da
+  `sequence: NetA starts at 0, NetB starts at 0 (reset)` gibi yazılır.
 
 ### Raw socket ve interface
 
@@ -225,11 +228,11 @@ FAIL olur.
 
 ```c
 int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlIdx,
-                  uint16_t payloadLen, int count, unsigned delayMs);
+                  uint16_t payloadLen, int count, unsigned delayMs, bool resetSeq);
 ```
 
 Hepsi parametre: interface adı, network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
-paketler arası bekleme (ms). Gönderilen paket sayısını döner. Deneme senaryosu
+paketler arası bekleme (ms), `resetSeq`. Gönderilen paket sayısını döner. Deneme senaryosu
 (`src/main.c` → `runTryPacketSend`):
 
 ```c
@@ -247,7 +250,7 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs);
+                         unsigned delayMs, bool resetSeq);
 int senaryoVsEndSystem(/* aynı parametreler */);
 ```
 
@@ -256,12 +259,13 @@ int senaryoVsEndSystem(/* aynı parametreler */);
 3. `pairCount` × (A, B) → `A B A B …`
 
 Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
+`resetSeq = true` ise senaryo başında A ve B sayaçları 0'a döner.
 Şu anki çağrılar (`src/main.c`):
 
-| Senaryo | Interface | Net A | Net B | Payload | Akış | Bekleme |
-|---------|-----------|-------|-------|---------|------|---------|
-| `senaryoFlcsEndSystem` | ens1f0np0 | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
-| `senaryoVsEndSystem`   | ens1f0np0 | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
+| Senaryo | Interface | Net A | Net B | Payload | Akış | Bekleme | resetSeq |
+|---------|-----------|-------|-------|---------|------|---------|----------|
+| `senaryoFlcsEndSystem` | ens1f0np0 | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 ms | true |
+| `senaryoVsEndSystem`   | ens1f0np0 | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 ms | true |
 
 Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 
@@ -282,7 +286,8 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
 - Bir senaryo başarısız olursa (paket gönderilemezse) kalanlar koşulmaz (`NOT RUN`) ve
   `vmc_test` 1 ile çıkar.
 - Ctrl+C (bekleme sırasında da) çalışmayı durdurur.
-- Sequence sayaçları (A ve B ayrı) senaryolar arasında da kaldığı yerden devam eder.
+- Sequence sayaçlarının senaryo başında sıfırlanıp sıfırlanmayacağını her çağrıdaki
+  `resetSeq` parametresi belirler.
 
 **Yeni senaryo eklemek:**
 
