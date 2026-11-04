@@ -74,8 +74,8 @@ int senaryoVsEndSystem(const char *ifname,
                        unsigned delayMs, unsigned abDelayUs, bool resetSeq);
 
 /*
- * FLCS switch scenario: countPerVl packets on ONE network and VLAN for each
- * VL-IDX in vlIdxList, in list order.
+ * Switch scenarios (FLCS and VS use the same flow): countPerVl packets on
+ * ONE network and VLAN for each VL-IDX in vlIdxList, in list order.
  *
  *   ifname      : server interface (own raw socket, closed at the end)
  *   net         : NET_A or NET_B
@@ -95,5 +95,10 @@ int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
                       const uint16_t *vlIdxList, int vlIdxCount,
                       uint16_t payloadLen, int countPerVl,
                       unsigned delayMs, bool resetSeq);
+
+int senaryoVsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                    const uint16_t *vlIdxList, int vlIdxCount,
+                    uint16_t payloadLen, int countPerVl,
+                    unsigned delayMs, bool resetSeq);
 
 #endif /* VMC_TEST_TEST_SCENARIOS_H_ */

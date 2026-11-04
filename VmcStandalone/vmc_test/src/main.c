@@ -76,6 +76,17 @@ static bool runSenaryoFlcsSwitch(void)
     return senaryoFlcsSwitch("ens2f0np0", NET_A, 125, vlIdx, n, 100, 10, 10, true) == n * 10;
 }
 
+/* senaryoVsSwitch - same flow as FLCS switch:
+ *   interface ens2f0np0, Net B, VLAN 126
+ *   10 x VL-IDX 90, then 10 x 91, then 10 x 80, then 10 x 81
+ *   100 B payload (+1 B seq), 10 ms between packets, sequence reset (B starts at 0) */
+static bool runSenaryoVsSwitch(void)
+{
+    static const uint16_t vlIdx[] = { 90, 91, 80, 81 };
+    const int n = (int)(sizeof(vlIdx) / sizeof(vlIdx[0]));
+    return senaryoVsSwitch("ens2f0np0", NET_B, 126, vlIdx, n, 100, 10, 10, true) == n * 10;
+}
+
 typedef struct {
     const char *name;
     bool (*run)(void);
@@ -86,6 +97,7 @@ static const Scenario SCENARIOS[] = {
     { "senaryoFlcsEndSystem", runSenaryoFlcsEndSystem },
     { "senaryoVsEndSystem",   runSenaryoVsEndSystem   },
     { "senaryoFlcsSwitch",    runSenaryoFlcsSwitch    },
+    { "senaryoVsSwitch",      runSenaryoVsSwitch      },
     /* { "senaryoXxx", runSenaryoXxx }, */
 };
 

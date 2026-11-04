@@ -287,24 +287,28 @@ B gittikten sonra yapılır. Ölçülen A→B = istenen + gönderim süresi (tes
 
 Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 
-### senaryoFlcsSwitch
+### senaryoFlcsSwitch / senaryoVsSwitch
+
+İkisi aynı akışı kullanır, sadece parametre değerleri farklıdır:
 
 ```c
 int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
                       const uint16_t *vlIdxList, int vlIdxCount,
                       uint16_t payloadLen, int countPerVl,
                       unsigned delayMs, bool resetSeq);
+int senaryoVsSwitch(/* aynı parametreler */);
 ```
 
 Tek network ve tek VLAN'da, `vlIdxList`'teki her VL-IDX için sırayla `countPerVl` paket.
 Paketler arası (VL-IDX değişirken de) `delayMs` beklenir. Sequence network başına tutulur;
-VL-IDX blokları boyunca devam eder. Şu anki çağrı (`src/main.c` → `runSenaryoFlcsSwitch`):
+VL-IDX blokları boyunca devam eder. Şu anki çağrılar (`src/main.c`):
 
-| Interface | Network | VLAN | VL-IDX sırası | Paket / VL-IDX | Payload | delayMs | resetSeq |
-|-----------|---------|------|---------------|----------------|---------|---------|----------|
-| ens2f0np0 | A | 125 | 90 → 91 → 80 → 81 | 10 | 100 | 10 | true |
+| Senaryo | Interface | Network | VLAN | VL-IDX sırası | Paket / VL-IDX | Payload | delayMs | resetSeq |
+|---------|-----------|---------|------|---------------|----------------|---------|---------|----------|
+| `senaryoFlcsSwitch` | ens2f0np0 | A | 125 | 90 → 91 → 80 → 81 | 10 | 100 | 10 | true |
+| `senaryoVsSwitch`   | ens2f0np0 | B | 126 | 90 → 91 → 80 → 81 | 10 | 100 | 10 | true |
 
-Toplam 40 paket, sequence 0…39.
+Her biri 40 paket, sequence 0…39.
 
 ### Senaryoların çalışma sırası
 
@@ -318,6 +322,7 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
   2. senaryoFlcsEndSystem     PASS
   3. senaryoVsEndSystem       PASS
   4. senaryoFlcsSwitch        PASS
+  5. senaryoVsSwitch          PASS
   Result: PASS
 ```
 

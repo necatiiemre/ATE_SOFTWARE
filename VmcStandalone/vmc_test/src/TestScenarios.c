@@ -292,12 +292,13 @@ int senaryoVsEndSystem(const char *ifname,
                          payloadLen, countA, countB, pairCount, delayMs, abDelayUs, resetSeq);
 }
 
-int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
+/* Shared switch flow: countPerVl packets on one network/VLAN per VL-IDX.
+ * `who` is the scenario name used in every log line. */
+static int switchFlow(const char *who, const char *ifname, Network net, uint16_t vlanId,
                       const uint16_t *vlIdxList, int vlIdxCount,
                       uint16_t payloadLen, int countPerVl,
                       unsigned delayMs, bool resetSeq)
 {
-    const char *who = "senaryoFlcsSwitch";
     if (!vlIdxList || vlIdxCount <= 0 || countPerVl < 0 ||
         !validFlow(who, net, vlanId, payloadLen)) {
         fprintf(stderr, "[%s] invalid arguments\n", who);
@@ -331,4 +332,22 @@ int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
     printf("[%s] %d/%d packets sent%s\n", who, sent, expected,
            g_stopRequested ? " (stopped by Ctrl+C)" : "");
     return sent;
+}
+
+int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                      const uint16_t *vlIdxList, int vlIdxCount,
+                      uint16_t payloadLen, int countPerVl,
+                      unsigned delayMs, bool resetSeq)
+{
+    return switchFlow("senaryoFlcsSwitch", ifname, net, vlanId, vlIdxList, vlIdxCount,
+                      payloadLen, countPerVl, delayMs, resetSeq);
+}
+
+int senaryoVsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                    const uint16_t *vlIdxList, int vlIdxCount,
+                    uint16_t payloadLen, int countPerVl,
+                    unsigned delayMs, bool resetSeq)
+{
+    return switchFlow("senaryoVsSwitch", ifname, net, vlanId, vlIdxList, vlIdxCount,
+                      payloadLen, countPerVl, delayMs, resetSeq);
 }
