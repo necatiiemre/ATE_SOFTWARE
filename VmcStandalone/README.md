@@ -250,7 +250,7 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, unsigned abDelayMs, bool resetSeq);
+                         unsigned delayMs, unsigned abDelayUs, bool resetSeq);
 int senaryoVsEndSystem(/* aynı parametreler */);
 ```
 
@@ -267,19 +267,23 @@ Bekleme süreleri:
 
 - `delayMs`: ardışık iki paket arası – faz 1–2, fazlar arası ve bir çiftin B'sinden sonraki
   çiftin A'sına kadar
-- `abDelayMs`: **aynı çiftin A'sı ile B'si arası** (faz 3); `0` = B, A'nın hemen arkasından
+- `abDelayUs`: **aynı çiftin A'sı ile B'si arası, mikrosaniye** (faz 3); `0` = B, A'nın hemen arkasından
 
 ```
-faz 3:  A ─abDelayMs─ B ───delayMs─── A ─abDelayMs─ B ───delayMs─── A ...
+faz 3:  A ─abDelayUs─ B ───delayMs─── A ─abDelayUs─ B ───delayMs─── A ...
 ```
+
+Mikrosaniye hassasiyeti için: çiftin iki frame'i baştan hazırlanır, B, A'nın gönderildiği
+andan `abDelayUs` sonra gönderilir (son 200 µs hassas saatle beklenir), ekran/log yazımı
+B gittikten sonra yapılır. Ölçülen A→B = istenen + gönderim süresi (test VM'inde ~20 µs).
 
 `resetSeq = true` ise senaryo başında A ve B sayaçları 0'a döner.
 Şu anki çağrılar (`src/main.c`):
 
-| Senaryo | Interface | Net A | Net B | Payload | Akış | delayMs | abDelayMs | resetSeq |
+| Senaryo | Interface | Net A | Net B | Payload | Akış | delayMs | abDelayUs | resetSeq |
 |---------|-----------|-------|-------|---------|------|---------|-----------|----------|
-| `senaryoFlcsEndSystem` | ens1f0np0 | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 | 10 | true |
-| `senaryoVsEndSystem`   | ens1f0np0 | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 | 10 | true |
+| `senaryoFlcsEndSystem` | ens1f0np0 | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 | 10000 | true |
+| `senaryoVsEndSystem`   | ens1f0np0 | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 | 10000 | true |
 
 Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 

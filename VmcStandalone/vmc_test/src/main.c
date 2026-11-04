@@ -42,26 +42,26 @@ static bool runTryPacketSend(void)
 }
 
 /* senaryoFlcsEndSystem(ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
- *                      countA, countB, pairCount, delayMs, abDelayMs, resetSeq)
+ *                      countA, countB, pairCount, delayMs, abDelayUs, resetSeq)
  *   10 x Net A  VLAN 100  VL-IDX 70
  *   10 x Net B  VLAN  99  VL-IDX 71
  *   10 x (A, B) -> A B A B ...
- *   100 B payload (+1 B seq), 10 ms between packets, 10 ms A->B within a pair,
+ *   100 B payload (+1 B seq), 10 ms between packets, 10000 us A->B within a pair,
  *   sequence reset (A, B start at 0) */
 static bool runSenaryoFlcsEndSystem(void)
 {
-    return senaryoFlcsEndSystem("ens1f0np0", 100, 70, 99, 71, 100, 10, 10, 10, 10, 10, true) == 10 + 10 + 2 * 10;
+    return senaryoFlcsEndSystem("ens1f0np0", 100, 70, 99, 71, 100, 10, 10, 10, 10, 10000, true) == 10 + 10 + 2 * 10;
 }
 
 /* senaryoVsEndSystem - same flow as FLCS:
  *   10 x Net A  VLAN  98  VL-IDX 60
  *   10 x Net B  VLAN  97  VL-IDX 61
  *   10 x (A, B) -> A B A B ...
- *   100 B payload (+1 B seq), 10 ms between packets, 10 ms A->B within a pair,
+ *   100 B payload (+1 B seq), 10 ms between packets, 10000 us A->B within a pair,
  *   sequence reset (A, B start at 0) */
 static bool runSenaryoVsEndSystem(void)
 {
-    return senaryoVsEndSystem("ens1f0np0", 98, 60, 97, 61, 100, 10, 10, 10, 10, 10, true) == 10 + 10 + 2 * 10;
+    return senaryoVsEndSystem("ens1f0np0", 98, 60, 97, 61, 100, 10, 10, 10, 10, 10000, true) == 10 + 10 + 2 * 10;
 }
 
 typedef struct {

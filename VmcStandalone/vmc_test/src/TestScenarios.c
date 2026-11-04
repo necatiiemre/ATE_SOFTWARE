@@ -19,6 +19,42 @@ static void sleepMs(unsigned ms)
     while (nanosleep(&ts, &ts) != 0 && !g_stopRequested) { /* EINTR: continue */ }
 }
 
+/* Absolute deadline = t + us. */
+static struct timespec addUs(struct timespec t, unsigned us)
+{
+    t.tv_sec  += us / 1000000u;
+    t.tv_nsec += (long)(us % 1000000u) * 1000L;
+    if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+    return t;
+}
+
+/* Microsecond-accurate wait until an absolute CLOCK_MONOTONIC deadline.
+ * nanosleep alone overshoots by ~50-100 us, so sleep for the bulk and
+ * busy-wait the last 200 us. */
+static void waitUntil(struct timespec end)
+{
+    const long spin_ns = 200 * 1000L;
+    struct timespec now;
+    while (!g_stopRequested) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long left = (long)(end.tv_sec - now.tv_sec) * 1000000000L + (end.tv_nsec - now.tv_nsec);
+        if (left <= 0) break;
+        if (left > spin_ns) {
+            long sl = left - spin_ns;
+            struct timespec ts = { sl / 1000000000L, sl % 1000000000L };
+            nanosleep(&ts, NULL);
+        }
+    }
+}
+
+static void logTx(Network net, uint16_t vlanId, uint16_t vlIdx, uint8_t seq,
+                  const uint8_t *frame, size_t len, const char *progress)
+{
+    printf("[TX] %s VLAN %3u VL-IDX %u seq %3u  frame %zu B  %s\n",
+           networkName(net), vlanId, vlIdx, seq, len, progress);
+    if (g_hexDump) hexDump(frame, len);
+}
+
 static bool validFlow(const char *who, Network net, uint16_t vlanId, uint16_t payloadLen)
 {
     if (net < 0 || net >= NET_COUNT) {
@@ -54,10 +90,51 @@ static bool sendOne(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlId
                 networkName(net), vlanId, vlIdx, seq, progress);
         return false;
     }
-    printf("[TX] %s VLAN %3u VL-IDX %u seq %3u  frame %zu B  %s\n",
-           networkName(net), vlanId, vlIdx, seq, len, progress);
-    if (g_hexDump) hexDump(frame, len);
+    logTx(net, vlanId, vlIdx, seq, frame, len, progress);
     return true;
+}
+
+/* One A/B pair with the SAME sequence and B sent exactly abDelayUs after A.
+ * Both frames are built up front and logging happens after B is out, so
+ * nothing but the wait sits between the two sends. */
+static int sendPair(RawSocket *sock,
+                    uint16_t vlanIdA, uint16_t vlIdxA,
+                    uint16_t vlanIdB, uint16_t vlIdxB,
+                    uint16_t payloadLen, unsigned abDelayUs, const char *progress)
+{
+    uint8_t frameA[MAX_FRAME_LEN], frameB[MAX_FRAME_LEN];
+    const uint8_t seq = peekSequence(NET_A);            /* == peekSequence(NET_B) after align */
+    const size_t lenA = buildPacket(frameA, sizeof(frameA), NET_A, vlanIdA, vlIdxA, payloadLen, seq);
+    const size_t lenB = buildPacket(frameB, sizeof(frameB), NET_B, vlanIdB, vlIdxB, payloadLen, seq);
+    if (lenA == 0 || lenB == 0) {
+        fprintf(stderr, "[TX] buildPacket failed\n");
+        return 0;
+    }
+
+    if (rawSocketSend(sock, frameA, lenA) != 0) {
+        fprintf(stderr, "[TX] NetA VLAN %u VL-IDX %u seq %u NOT sent %s\n", vlanIdA, vlIdxA, seq, progress);
+        return 0;
+    }
+    struct timespec tA;
+    clock_gettime(CLOCK_MONOTONIC, &tA);
+    nextSequence(NET_A);
+
+    if (abDelayUs > 0) waitUntil(addUs(tA, abDelayUs));
+    if (g_stopRequested) {
+        logTx(NET_A, vlanIdA, vlIdxA, seq, frameA, lenA, progress);
+        return 1;
+    }
+
+    const bool okB = rawSocketSend(sock, frameB, lenB) == 0;
+    if (okB) nextSequence(NET_B);
+
+    logTx(NET_A, vlanIdA, vlIdxA, seq, frameA, lenA, progress);
+    if (!okB) {
+        fprintf(stderr, "[TX] NetB VLAN %u VL-IDX %u seq %u NOT sent %s\n", vlanIdB, vlIdxB, seq, progress);
+        return 1;
+    }
+    logTx(NET_B, vlanIdB, vlIdxB, seq, frameB, lenB, progress);
+    return 2;
 }
 
 /* Send `count` packets of one flow. Delay goes BETWEEN packets; pass
@@ -122,7 +199,7 @@ static int endSystemFlow(const char *who, const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, unsigned abDelayMs, bool resetSeq)
+                         unsigned delayMs, unsigned abDelayUs, bool resetSeq)
 {
     if (countA < 0 || countB < 0 || pairCount < 0 ||
         !validFlow(who, NET_A, vlanIdA, payloadLen) ||
@@ -134,7 +211,7 @@ static int endSystemFlow(const char *who, const char *ifname,
     printf("[%s] interface %s\n", who, ifname ? ifname : "(null)");
     printf("[%s] A: VLAN %u VL-IDX %u | B: VLAN %u VL-IDX %u | payload %u+1 B\n",
            who, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen);
-    printf("[%s] interval %u ms, A->B within a pair %u ms\n", who, delayMs, abDelayMs);
+    printf("[%s] interval %u ms, A->B within a pair %u us\n", who, delayMs, abDelayUs);
     printf("[%s] plan: %d x A, then %d x B, then %d x (A,B)  = %d packets\n",
            who, countA, countB, pairCount, expected);
 
@@ -179,12 +256,11 @@ static int endSystemFlow(const char *who, const char *ifname,
         snprintf(progress, sizeof(progress), "(pair %d/%d)", i + 1, pairCount);
 
         if (delayMs > 0 && sent > 0) sleepMs(delayMs);
-        if (g_stopRequested || !sendOne(sock, NET_A, vlanIdA, vlIdxA, payloadLen, progress)) break;
-        ++sent;
+        if (g_stopRequested) break;
 
-        if (abDelayMs > 0) sleepMs(abDelayMs);      /* A -> B of the same pair */
-        if (g_stopRequested || !sendOne(sock, NET_B, vlanIdB, vlIdxB, payloadLen, progress)) break;
-        ++sent;
+        const int n = sendPair(sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen, abDelayUs, progress);
+        sent += n;
+        if (n != 2) break;
     }
 
 done:
@@ -199,10 +275,10 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, unsigned abDelayMs, bool resetSeq)
+                         unsigned delayMs, unsigned abDelayUs, bool resetSeq)
 {
     return endSystemFlow("senaryoFlcsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs, abDelayMs, resetSeq);
+                         payloadLen, countA, countB, pairCount, delayMs, abDelayUs, resetSeq);
 }
 
 int senaryoVsEndSystem(const char *ifname,
@@ -210,8 +286,8 @@ int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,
                        int countA, int countB, int pairCount,
-                       unsigned delayMs, unsigned abDelayMs, bool resetSeq)
+                       unsigned delayMs, unsigned abDelayUs, bool resetSeq)
 {
     return endSystemFlow("senaryoVsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs, abDelayMs, resetSeq);
+                         payloadLen, countA, countB, pairCount, delayMs, abDelayUs, resetSeq);
 }
