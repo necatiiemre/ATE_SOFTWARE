@@ -43,6 +43,7 @@ bool SshClient::testConnection()
     VERBOSE_LOG(logPrefix() << " Testing connection to " << m_host << "...");
 
     auto result = syscmd::execute(buildSSHCommand("echo 'Connection OK'"));
+    FILE_LOG(logPrefix() << "   connection test exit " << result.exit_code);
     if (!result.success) {
         std::cerr << logPrefix() << " Connection to " << m_host
                   << " failed: " << result.output << std::endl;
@@ -63,10 +64,9 @@ bool SshClient::execute(const std::string& command,
         actual_command = "echo '" + m_password + "' | sudo -S " + command;
     }
 
-    if (!silent) {
-        VERBOSE_LOG(logPrefix() << " Executing: " << command
-                                << (use_sudo ? " (with sudo)" : ""));
-    }
+    // The log file always gets the command, exit code and output; the
+    // console only in --verbose mode (and never for silent commands).
+    logx::detail(logPrefix() + " SSH> " + command + (use_sudo ? "  (sudo)" : ""), !silent);
 
     auto result = syscmd::execute(buildSSHCommand(actual_command));
 
@@ -77,16 +77,15 @@ bool SshClient::execute(const std::string& command,
     if (!result.success) {
         // Errors are always shown, even in silent mode.
         std::cerr << logPrefix() << " Command failed (exit " << result.exit_code
-                  << "): " << command << std::endl;
+                  << "): " << logx::mask(command) << std::endl;
         if (!result.output.empty()) {
-            std::cerr << logPrefix() << " Output:\n" << result.output << std::endl;
+            std::cerr << logPrefix() << " Output:\n" << logx::mask(result.output) << std::endl;
         }
         return false;
     }
 
-    if (!silent && !result.output.empty()) {
-        VERBOSE_LOG(logPrefix() << " Output:\n" << result.output);
-    }
+    logx::detail(logPrefix() + "   exit 0" +
+                 (result.output.empty() ? "" : ", output:\n" + result.output), !silent);
     return true;
 }
 
@@ -108,6 +107,7 @@ bool SshClient::copyFileToPath(const std::string& local_path,
     if (!use_sudo) {
         syscmd::execute(buildSSHCommand("mkdir -p " + remote_dir));
         auto result = syscmd::execute(buildSCPCommand(local_path, remote_path));
+        FILE_LOG(logPrefix() << "   scp exit " << result.exit_code);
         if (!result.success) {
             std::cerr << logPrefix() << " Copy failed: " << result.output << std::endl;
             return false;
@@ -121,6 +121,7 @@ bool SshClient::copyFileToPath(const std::string& local_path,
     const std::string tmp_path = "/tmp/" + filename;
 
     auto result = syscmd::execute(buildSCPCommand(local_path, tmp_path));
+    FILE_LOG(logPrefix() << "   scp -> " << tmp_path << " exit " << result.exit_code);
     if (!result.success) {
         std::cerr << logPrefix() << " Copy to /tmp failed: " << result.output << std::endl;
         return false;
@@ -131,6 +132,8 @@ bool SshClient::copyFileToPath(const std::string& local_path,
 
     result = syscmd::execute(buildSSHCommand(
         "echo '" + m_password + "' | sudo -S mv " + tmp_path + " " + remote_path));
+    FILE_LOG(logPrefix() << "   sudo mv " << tmp_path << " " << remote_path
+                         << " exit " << result.exit_code);
     if (!result.success) {
         std::cerr << logPrefix() << " sudo mv failed: " << result.output << std::endl;
         return false;
@@ -162,6 +165,8 @@ bool SshClient::copyDirectory(const std::string& local_dir,
         " && tar -C " + remote_path + " -xf -\"";
 
     auto result = syscmd::execute(cmd);
+    FILE_LOG(logPrefix() << "   tar copy exit " << result.exit_code
+                         << (result.output.empty() ? "" : ", output:\n" + result.output));
     if (!result.success) {
         std::cerr << logPrefix() << " Directory copy to " << remote_path << " failed: "
                   << result.output << std::endl;
@@ -172,7 +177,7 @@ bool SshClient::copyDirectory(const std::string& local_dir,
 
 bool SshClient::executeInteractive(const std::string& command, int* exit_code)
 {
-    VERBOSE_LOG(logPrefix() << " Executing interactively: " << command);
+    VERBOSE_LOG(logPrefix() << " SSH -t> " << logx::mask(command));
 
     // -t: allocate a remote PTY so the program behaves as if run locally.
     const std::string ssh_cmd =
@@ -185,6 +190,7 @@ bool SshClient::executeInteractive(const std::string& command, int* exit_code)
     const int status = std::system(ssh_cmd.c_str());
     const int code = (status != -1 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
     if (exit_code) *exit_code = code;
+    FILE_LOG(logPrefix() << "   interactive exit " << code);
 
     // The caller reports a non-zero exit code (it knows what was run).
     return code == 0;

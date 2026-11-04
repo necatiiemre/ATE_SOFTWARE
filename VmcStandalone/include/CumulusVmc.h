@@ -69,8 +69,11 @@ public:
      */
     static std::vector<BridgeVlanEntry> expectedVlans();
 
-    /** @brief Fetch and parse 'bridge -j vlan show' (one SSH round-trip). */
-    bool fetchBridgeVlanState(std::vector<BridgeVlanEntry>& out);
+    /**
+     * @brief Fetch and parse 'bridge -j vlan show' (one SSH round-trip).
+     * @param raw optional: the unparsed JSON as returned by the switch
+     */
+    bool fetchBridgeVlanState(std::vector<BridgeVlanEntry>& out, std::string* raw = nullptr);
 
     /**
      * @brief Entries of 'expected' that are missing from 'actual' (matching

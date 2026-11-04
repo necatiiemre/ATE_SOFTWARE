@@ -2,14 +2,17 @@
 #define VMC_STANDALONE_LOG_H
 
 #include <iostream>
+#include <sstream>
 #include <string>
+
+#include "Logger.h"
 
 // ============================================================================
 // Logging helpers for VmcStandalone.
 //
 // MainSoftware uses a compile-time DEBUG_LOG macro (Utils.h, DEBUG_PRINT=0).
-// Here the same detail level is switchable at runtime with --verbose so the
-// operator can debug a switch problem without rebuilding.
+// Here detail messages ALWAYS go to the session log file (Logger.h), and
+// also to the console when --verbose is given.
 // ============================================================================
 
 namespace logcfg {
@@ -17,8 +20,13 @@ namespace logcfg {
     extern bool verbose;
 }
 
+// Detail message: log file always, console only with --verbose.
 #define VERBOSE_LOG(msg) \
-    do { if (logcfg::verbose) { std::cout << msg << std::endl; } } while (0)
+    do { std::ostringstream vlog_ss_; vlog_ss_ << msg; logx::detail(vlog_ss_.str()); } while (0)
+
+// Detail message for the log file only (never on the console).
+#define FILE_LOG(msg) \
+    do { std::ostringstream vlog_ss_; vlog_ss_ << msg; logx::detail(vlog_ss_.str(), false); } while (0)
 
 /**
  * @brief Consistent, categorized error/warning/info messages

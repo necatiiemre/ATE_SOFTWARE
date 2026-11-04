@@ -15,13 +15,20 @@
 #include "CumulusConfig.h"
 #include "CumulusVmc.h"
 #include "Log.h"
+#include "Logger.h"
 #include "ServerConfig.h"
 #include "SshClient.h"
 #include "SystemCommand.h"
 #include "Version.h"
 #include "VmcTestRunner.h"
 
+#include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <unistd.h>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -40,6 +47,7 @@ struct Options {
     bool skip_cumulus = false;
     bool skip_vmc_test = false;
     std::string vmc_test_args;     // everything after "--"
+    std::string log_dir;           // empty -> <exe_dir>/LOGS/VMC
 };
 
 struct Step {
@@ -63,7 +71,9 @@ void printUsage(const char* prog)
         << "      --skip-cumulus     Skip step 1 (Cumulus configuration)\n"
         << "      --skip-vmc-test    Skip step 2 (vmc_test on the server)\n"
         << "  --                     Pass the remaining arguments to vmc_test\n"
-        << "  -v, --verbose          Print every SSH command and its output\n"
+        << "  -v, --verbose          Also print every SSH command and its output on the console\n"
+        << "                         (they are always written to the log file)\n"
+        << "      --log-dir DIR      Where run logs go (default: <exe dir>/LOGS/VMC)\n"
         << "      --version          Print version and exit\n"
         << "  -h, --help             Show this help\n";
 }
@@ -97,6 +107,12 @@ bool parseArgs(int argc, char* argv[], Options& opt, bool& exit_now)
                 opt.vmc_test_args += argv[j];
             }
             break;
+        } else if (arg == "--log-dir") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for " << arg << std::endl;
+                return false;
+            }
+            opt.log_dir = argv[++i];
         } else if (arg == "-i" || arg == "--interfaces") {
             if (i + 1 >= argc) {
                 std::cerr << "Missing value for " << arg << std::endl;
@@ -163,21 +179,94 @@ bool checkLocalTools()
     return ok;
 }
 
-} // namespace
 
-int main(int argc, char* argv[])
+struct StepResult {
+    std::string name;
+    std::string status = "NOT RUN";   // PASS / FAIL / NOT RUN
+    double seconds = 0.0;
+};
+
+std::string readFirstLine(const std::string& path)
 {
-    // A closed SSH pipe must not kill the process.
-    std::signal(SIGPIPE, SIG_IGN);
+    std::ifstream f(path);
+    std::string line;
+    std::getline(f, line);
+    return line;
+}
 
-    Options opt;
-    bool exit_now = false;
-    if (!parseArgs(argc, argv, opt, exit_now)) return 2;
-    if (exit_now) return 0;
+std::string localHostName()
+{
+    char buf[256] = {0};
+    if (gethostname(buf, sizeof(buf) - 1) != 0) return "unknown";
+    return buf;
+}
 
+std::string buildLogHeader(int argc, char* argv[], const std::string& log_path)
+{
+    std::string cmdline;
+    for (int i = 0; i < argc; ++i) {
+        if (i) cmdline += " ";
+        cmdline += argv[i];
+    }
+    const std::string vmc_test_ver =
+        readFirstLine(VmcTestRunner::localPrebuiltDir() + "/VERSION.txt");
+
+    std::ostringstream h;
+    h << "========================================\n";
+    h << "         VMC STANDALONE LOG\n";
+    h << "========================================\n";
+    h << "Software Start Time : " << logx::timestamp() << "\n";
+    h << "Unit Name           : VMC\n";
+    h << "Software Version    : " << Version << "\n";
+    h << "vmc_test Version    : " << (vmc_test_ver.empty() ? "N/A" : vmc_test_ver) << "\n";
+    h << "PC Host             : " << localHostName() << "\n";
+    h << "Command Line        : " << cmdline << "\n";
+    h << "Cumulus Switch      : " << CUMULUS_USER << "@" << CUMULUS_HOST << "\n";
+    h << "ATE Server          : " << SERVER_USER << "@" << SERVER_HOST << "\n";
+    h << "Log File            : " << log_path << "\n";
+    h << "========================================\n\n";
+    return h.str();
+}
+
+void printSummary(const std::vector<StepResult>& results, bool ok, double total_s)
+{
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "         SUMMARY" << std::endl;
+    std::cout << "========================================" << std::endl;
+    for (size_t i = 0; i < results.size(); ++i) {
+        std::cout << "Step " << (i + 1) << "  " << std::left << std::setw(32) << results[i].name
+                  << std::setw(8) << results[i].status;
+        if (results[i].status != "NOT RUN") {
+            std::cout << std::right << std::fixed << std::setprecision(1)
+                      << std::setw(7) << results[i].seconds << " s";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "----------------------------------------" << std::endl;
+    std::cout << "Result              : " << (ok ? "PASS" : "FAIL") << std::endl;
+    std::cout << "Software End Time   : " << logx::timestamp() << std::endl;
+    std::cout << "Total Duration      : " << std::fixed << std::setprecision(1)
+              << total_s << " s" << std::endl;
+    if (logx::active()) {
+        std::cout << "Log Directory       : " << logx::dir() << std::endl;
+    }
+    std::cout << "========================================" << std::endl;
+}
+
+double secondsSince(std::chrono::steady_clock::time_point t0)
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Everything after argument parsing; runs with the session log active.
+int runSteps(const Options& opt)
+{
     std::cout << "========================================" << std::endl;
     std::cout << " VmcStandalone v" << Version << std::endl;
     std::cout << "========================================" << std::endl;
+    if (logx::active()) {
+        ErrorPrinter::info("LOG", "Logging to " + logx::filePath());
+    }
 
     if (!checkLocalTools()) return 1;
 
@@ -217,20 +306,64 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+    std::vector<StepResult> results(steps.size());
+    for (size_t i = 0; i < steps.size(); ++i) results[i].name = steps[i].name;
+
+    const auto run_t0 = std::chrono::steady_clock::now();
+    bool ok = true;
     for (size_t i = 0; i < steps.size(); ++i) {
         const std::string tag = "Step " + std::to_string(i + 1) + "/" +
                                 std::to_string(steps.size());
         ErrorPrinter::info("SYSTEM", tag + ": " + steps[i].name);
 
-        if (!steps[i].run()) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool step_ok = steps[i].run();
+        results[i].seconds = secondsSince(t0);
+        results[i].status = step_ok ? "PASS" : "FAIL";
+
+        if (!step_ok) {
             ErrorPrinter::error("SYSTEM", tag + " FAILED: " + steps[i].name);
-            return 1;
+            ok = false;
+            break;
         }
         ErrorPrinter::info("SYSTEM", tag + " OK: " + steps[i].name);
     }
 
-    std::cout << "\n========================================" << std::endl;
-    std::cout << " All steps completed successfully" << std::endl;
-    std::cout << "========================================" << std::endl;
-    return 0;
+    printSummary(results, ok, secondsSince(run_t0));
+    return ok ? 0 : 1;
+}
+
+} // namespace
+
+int main(int argc, char* argv[])
+{
+    // A closed SSH pipe must not kill the process.
+    std::signal(SIGPIPE, SIG_IGN);
+
+    Options opt;
+    bool exit_now = false;
+    if (!parseArgs(argc, argv, opt, exit_now)) return 2;
+    if (exit_now) return 0;
+
+    // Passwords never end up in the log or on the console.
+    logx::addSecret(CUMULUS_PASSWORD);
+    logx::addSecret(SERVER_PASSWORD);
+
+    // One directory per run: <log root>/<YYYY-MM-DD_HH-MM-SS>/
+    const std::filesystem::path log_root = opt.log_dir.empty()
+        ? executableDir() / "LOGS" / "VMC"
+        : std::filesystem::absolute(opt.log_dir);
+    const std::string run_dir = (log_root / logx::fileSafeTimestamp()).string();
+    const std::string log_name = "VMC_Standalone_Log.log";
+    logx::start(run_dir, log_name,
+                buildLogHeader(argc, argv, (std::filesystem::path(run_dir) / log_name).string()));
+
+    const int rc = runSteps(opt);
+
+    const std::string log_path = logx::filePath();
+    logx::stop();
+    if (!log_path.empty()) {
+        std::cout << "Log saved: " << log_path << std::endl;
+    }
+    return rc;
 }

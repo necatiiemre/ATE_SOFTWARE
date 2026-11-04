@@ -100,7 +100,8 @@ cd build/bin
 ./vmcStandalone --skip-cumulus     # sadece Adım 2
 ./vmcStandalone --skip-vmc-test    # sadece Adım 1
 ./vmcStandalone --verify-only      # sadece switch'teki VMC VLAN durumunu kontrol et
-./vmcStandalone -v                 # her SSH komutunu ve çıktısını göster
+./vmcStandalone -v                 # her SSH komutunu ve çıktısını ekranda da göster
+./vmcStandalone --log-dir /yol     # logları başka bir klasöre yaz
 ./vmcStandalone -i /yol/interfaces # başka bir interfaces dosyası gönder
 ```
 
@@ -113,6 +114,33 @@ görünür, klavye girişi ve Ctrl+C programa ulaşır. `vmc_test` 0 dışında 
 
 Bağlantı ayarları: switch `include/CumulusConfig.h`, server `include/ServerConfig.h`
 (build script'i de server ayarlarını bu dosyadan okur).
+
+## Log kaydı
+
+Her çalıştırma kendi klasörünü açar (varsayılan: programın yanındaki `LOGS/VMC/`):
+
+```
+build/bin/LOGS/VMC/2026-11-04_14-16-59/
+├── VMC_Standalone_Log.log        ← ana log
+├── cumulus_interfaces_deployed   ← switch'e gönderilen interfaces dosyasının birebir kopyası
+└── cumulus_bridge_vlan.json      ← doğrulama sonrası switch'in 'bridge -j vlan show' çıktısı
+```
+
+`VMC_Standalone_Log.log` içeriği:
+
+- **Başlık:** başlangıç zamanı, yazılım ve vmc_test versiyonları, PC adı, komut satırı,
+  switch/server adresleri
+- **Ekranda görünen her şey**, her satır zaman damgasıyla (`[14:16:59.263] ...`) – server'da
+  çalışan `vmc_test`'in canlı çıktısı dahil
+- **Ayrıntılar** (`|` ile başlayan satırlar, ekranda sadece `-v` ile görünür): her SSH
+  komutu, çıkış kodu ve çıktısı, scp/mv sonuçları, switch'in VMC port tablosu
+- **Özet:** adım adım PASS / FAIL / NOT RUN, süreler, sonuç, bitiş zamanı
+
+Şifreler log'a ve ekrana `****` olarak yazılır; renk kodları dosyada temizlenir.
+Program yarıda kesilirse (Ctrl+C / kill) log'un sonuna bunu belirten bir satır düşülür.
+
+> Not: `build/` klasörü silinirse içindeki `LOGS/` da gider. Kalıcı bir yer için
+> `--log-dir` kullanın ya da `build/bin/`'i başka bir yere kopyalayıp oradan çalıştırın.
 
 ## vmc_test (server uygulaması)
 
@@ -156,4 +184,5 @@ steps.push_back({"Adim adi", [&] { return birFonksiyon(); }});
 | `CumulusVmc` | `CumulusHelper` – sadece VMC yolu |
 | `VmcTestRunner` | `Vmc::runDpdkVmcInteractive` (dpdk_vmc yerine vmc_test) |
 | `scripts/build_vmc_test_on_server.sh` | `prepare_release.sh` → `prepare_dpdk_vmc` |
-| `Log.h` | `ErrorPrinter` + `DEBUG_LOG` (burada `--verbose` ile çalışma anında açılır) |
+| `Log.h` | `ErrorPrinter` + `DEBUG_LOG` (ayrıntılar her zaman log dosyasına, `--verbose` ile ekrana da) |
+| `Logger` | `ReportManager`'ın log klasörü/başlık kısmı + ekran çıktısının dosyaya kaydı |

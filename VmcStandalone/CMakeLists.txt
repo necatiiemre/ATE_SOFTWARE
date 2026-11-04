@@ -19,12 +19,17 @@ set(SOURCES
     src/SshClient.cpp
     src/CumulusVmc.cpp
     src/VmcTestRunner.cpp
+    src/Logger.cpp
 )
 
 add_executable(vmcStandalone ${SOURCES})
 
 target_include_directories(vmcStandalone PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_options(vmcStandalone PRIVATE -Wall -Wextra)
+
+# Logger runs a background thread (stdout/stderr -> console + log file)
+find_package(Threads REQUIRED)
+target_link_libraries(vmcStandalone PRIVATE Threads::Threads)
 
 set_target_properties(vmcStandalone PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin

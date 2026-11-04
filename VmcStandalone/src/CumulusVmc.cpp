@@ -1,9 +1,11 @@
 #include "CumulusVmc.h"
 #include "CumulusConfig.h"
 #include "Log.h"
+#include "Logger.h"
 
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
@@ -115,6 +117,18 @@ std::vector<BridgeVlanEntry> expandGroups(
     return out;
 }
 
+// Save a copy of something into this run's log directory (no-op without a log).
+void saveToLogDir(const std::string& name, const std::string& content)
+{
+    if (!logx::active()) return;
+    const std::string path = (std::filesystem::path(logx::dir()) / name).string();
+    std::ofstream f(path);
+    if (f) {
+        f << content;
+        FILE_LOG("[Cumulus] Saved " << path);
+    }
+}
+
 void printBanner(const std::string& text)
 {
     std::cout << "\n========================================" << std::endl;
@@ -168,6 +182,16 @@ bool CumulusVmc::deployNetworkInterfaces(const std::string& local_interfaces_pat
         return false;
     }
     std::cout << logPrefix() << " Using interfaces file: " << local_interfaces_path << std::endl;
+
+    // Keep an exact copy of what is sent to the switch with this run's log.
+    if (logx::active()) {
+        std::error_code ec;
+        const auto dst = std::filesystem::path(logx::dir()) / "cumulus_interfaces_deployed";
+        std::filesystem::copy_file(local_interfaces_path, dst,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        FILE_LOG(logPrefix() << " Interfaces copy for the log: " << dst.string()
+                             << (ec ? " FAILED: " + ec.message() : ""));
+    }
 
     std::cout << logPrefix() << " [1/3] Testing connection..." << std::endl;
     if (!connect()) {
@@ -240,10 +264,27 @@ bool CumulusVmc::verifyVlans()
     std::cout << logPrefix() << " Verifying VMC bridge VLAN state..." << std::endl;
 
     std::vector<BridgeVlanEntry> actual;
-    if (!fetchBridgeVlanState(actual)) {
+    std::string raw;
+    if (!fetchBridgeVlanState(actual, &raw)) {
         std::cerr << logPrefix() << " Verification failed: cannot read 'bridge -j vlan show'"
                   << std::endl;
         return false;
+    }
+
+    // Final switch state goes with the log, plus a readable table of the
+    // VMC ports in the log file.
+    saveToLogDir("cumulus_bridge_vlan.json", raw);
+    {
+        std::ostringstream t;
+        t << logPrefix() << " Bridge VLAN state of VMC ports (swp9-swp12):";
+        for (const auto& a : actual) {
+            if (a.interface.rfind("swp9s", 0) != 0 && a.interface.rfind("swp10s", 0) != 0 &&
+                a.interface.rfind("swp11s", 0) != 0 && a.interface.rfind("swp12s", 0) != 0)
+                continue;
+            t << "\n    " << a.interface << "  vid " << a.vlan_id
+              << (a.pvid ? "  PVID" : "") << (a.egress_untagged ? "  Egress-Untagged" : "");
+        }
+        FILE_LOG(t.str());
     }
 
     const auto expected = expectedVlans();
@@ -271,7 +312,7 @@ std::vector<BridgeVlanEntry> CumulusVmc::expectedVlans()
     return expandGroups(groups);
 }
 
-bool CumulusVmc::fetchBridgeVlanState(std::vector<BridgeVlanEntry>& out)
+bool CumulusVmc::fetchBridgeVlanState(std::vector<BridgeVlanEntry>& out, std::string* raw)
 {
     out.clear();
     std::string output;
@@ -284,6 +325,7 @@ bool CumulusVmc::fetchBridgeVlanState(std::vector<BridgeVlanEntry>& out)
         VERBOSE_LOG(logPrefix() << " bridge -j vlan show: SSH failed");
         return false;
     }
+    if (raw) *raw = output;
     if (output.empty()) {
         VERBOSE_LOG(logPrefix() << " bridge -j vlan show: empty output");
         return false;
