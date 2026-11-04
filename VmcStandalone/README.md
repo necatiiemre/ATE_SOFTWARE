@@ -8,6 +8,42 @@ yönetimi yapmaz; adımlar sırayla çalışır, ilk başarısız adımda durur.
 | 1 | Cumulus switch'i (10.1.33.3) VMC'ye göre konfigüre eder |
 | 2 | `vmc_test`'i ATE server'a (10.1.33.2) gönderip orada çalıştırır |
 
+## Hızlı başlangıç
+
+```bash
+cd VmcStandalone
+./prepare_release.sh        # her şeyi derler, binary'leri Execute/ klasörüne toplar
+cd Execute
+./vmcStandalone             # Adım 1 -> Adım 2
+```
+
+`prepare_release.sh` şunları yapar:
+
+1. PC uygulaması `vmcStandalone`'u derler (cmake + make, `build/` klasöründe)
+2. `vmc_test`'i server'a gönderip **orada** derler ve binary'yi geri çeker
+3. Çalışmak için gereken her şeyi `Execute/` klasörüne kopyalar:
+
+```
+Execute/
+├── vmcStandalone                      ← bunu çalıştır
+├── CumulusInterfaces/VMC/interfaces
+├── vmc_test/vmc_test (+ VERSION.txt)
+├── VERSION.txt
+└── LOGS/VMC/<tarih_saat>/             ← çalıştırdıkça oluşan loglar
+```
+
+| Komut | Ne yapar |
+|-------|----------|
+| `./prepare_release.sh` | Derle + `Execute/`'a topla (değişmeyen şey yeniden derlenmez) |
+| `./prepare_release.sh --clean` | `build/`'i silip her şeyi sıfırdan derler (vmc_test dahil) |
+| `./prepare_release.sh --skip-vmc-test` | Server'a bağlanmadan sadece PC uygulamasını derler; `Execute/`'taki mevcut vmc_test korunur |
+
+- `Execute/LOGS/` hiçbir zaman silinmez; tekrar hazırlamak eski logları bozmaz.
+- Build başarısız olursa `Execute/` değiştirilmez (eski binary'ler yerinde kalır).
+- `Execute/` klasörü olduğu gibi başka bir PC'ye kopyalanıp oradan çalıştırılabilir
+  (o PC'de `sshpass`, `ssh`, `scp`, `tar` kurulu olmalı).
+- `build/` ve `Execute/` git'e eklenmez (`.gitignore`).
+
 ## Adım 1 – Cumulus VMC konfigürasyonu
 
 MainSoftware'deki `Vmc::configureSequence()` içindeki Cumulus kısmının
@@ -31,7 +67,9 @@ birebir aynısıdır, yalnızca VMC yolu alınmıştır (DTN/CMC/HSN yok):
 
 Bağlantı bilgileri: `include/CumulusConfig.h` (MainSoftware ile aynı).
 
-## Derleme
+## Derleme (elle)
+
+Normalde `prepare_release.sh` yeterli. Elle derlemek istersen:
 
 ```bash
 cd VmcStandalone
