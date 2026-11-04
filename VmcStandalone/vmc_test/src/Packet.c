@@ -4,7 +4,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static uint8_t  g_nextSeq[NET_COUNT];          /* starts at 0 */
+/* Packets numbered so far per network. The on-wire sequence is derived
+ * from it (0, 1..255, 1..255, ...), so "which network is ahead" stays
+ * well-defined across the 255 -> 1 wrap. */
+static uint64_t g_count[NET_COUNT];
+
+static uint8_t seqFromCount(uint64_t c)
+{
+    return (c == 0) ? 0 : (uint8_t)(((c - 1) % 255) + 1);
+}
 
 const char *networkName(Network net)
 {
@@ -18,19 +26,24 @@ const char *networkName(Network net)
 uint8_t nextSequence(Network net)
 {
     if (net < 0 || net >= NET_COUNT) return 0;
-    uint8_t seq = g_nextSeq[net];
-    g_nextSeq[net] = (seq == 255) ? 1 : (uint8_t)(seq + 1);   /* 255 -> 1, never back to 0 */
-    return seq;
+    return seqFromCount(g_count[net]++);           /* 0, 1..255, then 1 again */
 }
 
 uint8_t peekSequence(Network net)
 {
-    return (net < 0 || net >= NET_COUNT) ? 0 : g_nextSeq[net];
+    return (net < 0 || net >= NET_COUNT) ? 0 : seqFromCount(g_count[net]);
 }
 
 void resetSequence(Network net)
 {
-    if (net >= 0 && net < NET_COUNT) g_nextSeq[net] = 0;
+    if (net >= 0 && net < NET_COUNT) g_count[net] = 0;
+}
+
+void alignSequences(Network a, Network b)
+{
+    if (a < 0 || a >= NET_COUNT || b < 0 || b >= NET_COUNT) return;
+    const uint64_t ahead = (g_count[a] > g_count[b]) ? g_count[a] : g_count[b];
+    g_count[a] = g_count[b] = ahead;
 }
 
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }

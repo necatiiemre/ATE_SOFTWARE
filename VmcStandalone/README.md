@@ -256,7 +256,12 @@ int senaryoVsEndSystem(/* aynı parametreler */);
 
 1. `countA` × Net A (`vlanIdA` / `vlIdxA`)
 2. `countB` × Net B (`vlanIdB` / `vlIdxB`)
-3. `pairCount` × (A, B) → `A B A B …`
+3. `pairCount` × (A, B) → `A B A B …` – **bir çiftin A ve B paketi aynı sequence'ı taşır**
+
+Faz 3 başlarken A ve B sayaçları farklıysa (ör. `countA ≠ countB` ya da `resetSeq = false`)
+geride olan network öndekine atlar; böylece hiçbir network'te sequence geri gitmez veya
+tekrar etmez. Bu durumda log'a `WARNING: A/B sequences differ (A 15, B 10) - NetB jumps to 15`
+yazılır. Şu anki değerlerde (10 A, 10 B) iki sayaç da 10'dadır, çiftler (10,10) … (19,19).
 
 Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
 `resetSeq = true` ise senaryo başında A ve B sayaçları 0'a döner.

@@ -159,8 +159,20 @@ static int endSystemFlow(const char *who, const char *ifname,
     sent += ok;
     if (ok != countB) goto done;
 
-    /* Phase 3: pairCount x (A, B) -> A B A B ... */
+    /* Phase 3: pairCount x (A, B) -> A B A B ...
+     * A and B of a pair carry the SAME sequence number. */
     printf("[%s] --- Phase 3/3: %d x (NetA, NetB) ---\n", who, pairCount);
+    {
+        const uint8_t seqA = peekSequence(NET_A), seqB = peekSequence(NET_B);
+        alignSequences(NET_A, NET_B);
+        const uint8_t start = peekSequence(NET_A);
+        if (seqA != seqB) {
+            printf("[%s] WARNING: A/B sequences differ (A %u, B %u) - %s jumps to %u so "
+                   "each A/B pair carries the same sequence\n",
+                   who, seqA, seqB, (start == seqA) ? "NetB" : "NetA", start);
+        }
+        printf("[%s] A/B pairs share the sequence, starting at %u\n", who, start);
+    }
     for (int i = 0; i < pairCount && !g_stopRequested; ++i) {
         char progress[32];
         snprintf(progress, sizeof(progress), "(pair %d/%d)", i + 1, pairCount);

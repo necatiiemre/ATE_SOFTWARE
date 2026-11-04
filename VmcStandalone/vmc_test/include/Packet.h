@@ -33,6 +33,11 @@ uint8_t peekSequence(Network net);
 /* Restart a network's counter: its next packet carries sequence 0 again. */
 void resetSequence(Network net);
 
+/* Bring two networks to the same next sequence: the one behind jumps to the
+ * one ahead (no network ever goes back or repeats a sequence). Afterwards,
+ * sending one packet on each keeps them equal. */
+void alignSequences(Network a, Network b);
+
 /* Print a frame as hex (16 bytes per line). */
 void hexDump(const uint8_t *buf, size_t len);
 

@@ -41,6 +41,9 @@ int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlI
  *   Phase 1: countA    x Net A (vlanIdA / vlIdxA)
  *   Phase 2: countB    x Net B (vlanIdB / vlIdxB)
  *   Phase 3: pairCount x (Net A, Net B)  ->  A B A B ...
+ *            A and B of a pair carry the SAME sequence number. If the two
+ *            counters differ when phase 3 starts, the one behind jumps to
+ *            the one ahead (logged as a WARNING).
  *
  * ifname: server interface - the scenario opens its own raw socket on it
  * and closes it at the end.
