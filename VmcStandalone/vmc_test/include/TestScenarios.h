@@ -16,6 +16,8 @@ extern volatile int g_stopRequested;
 /*
  * Send `count` packets on one network / VLAN / VL-IDX.
  *
+ *   ifname     : server interface; the raw socket is opened on it for this
+ *                call and closed again at the end
  *   net        : NET_A or NET_B (SRC MAC tail 0x20 / 0x40)
  *   vlanId     : 802.1Q VLAN ID (0..4094)
  *   vlIdx      : VL-IDX (DST MAC / DST IP last 2 bytes)
@@ -27,9 +29,9 @@ extern volatile int g_stopRequested;
  * are independent): 0, 1, ..., 255, 1, ...
  *
  * Returns the number of packets actually sent (== count on success),
- * or -1 for invalid arguments.
+ * or -1 for invalid arguments / socket error.
  */
-int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
+int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlIdx,
                   uint16_t payloadLen, int count, unsigned delayMs);
 
 /*
@@ -38,21 +40,23 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
  *   Phase 2: countB    x Net B (vlanIdB / vlIdxB)
  *   Phase 3: pairCount x (Net A, Net B)  ->  A B A B ...
  *
+ * ifname: server interface - the scenario opens its own raw socket on it
+ * and closes it at the end.
  * Same payload length for every packet; delayMs between every two
  * consecutive packets (also across phases and between A and B of a pair).
  * Net A and Net B sequence counters continue across the phases.
  *
  * Returns packets sent (== countA + countB + 2*pairCount on success),
- * or -1 for invalid arguments.
+ * or -1 for invalid arguments / socket error.
  */
-int senaryoFlcsEndSystem(RawSocket *sock,
+int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdA, uint16_t vlIdxA,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
                          unsigned delayMs);
 
-int senaryoVsEndSystem(RawSocket *sock,
+int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdA, uint16_t vlIdxA,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,

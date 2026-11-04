@@ -5,7 +5,10 @@
  * Runs every scenario in SCENARIOS[] in order; waits SCENARIO_GAP_S seconds
  * between two scenarios.
  *
- * Usage: vmc_test [--interface <dev>] [--hexdump]
+ * Every scenario opens its own raw socket on the interface given in its
+ * call below (different scenarios may use different interfaces).
+ *
+ * Usage: vmc_test [--hexdump]
  */
 
 #include <signal.h>
@@ -15,11 +18,8 @@
 #include <time.h>
 
 #include "Packet.h"
-#include "RawSocket.h"
 #include "TestScenarios.h"
 #include "Version.h"
-
-#define DEFAULT_INTERFACE "ens1f0np0"
 
 /* Wait between two scenarios (seconds). */
 #ifndef SCENARIO_GAP_S
@@ -31,26 +31,24 @@
  *  with its parameter values; add new ones to SCENARIOS[] below.
  * ==================================================================== */
 
-/* tryPacketSend(sock, network, vlanId, vlIdx, payloadLen, count, delayMs)
+/* tryPacketSend(ifname, network, vlanId, vlIdx, payloadLen, count, delayMs)
  *   10 x Net A, VLAN 100, VL-IDX 70, 100 B payload (+1 B seq), 10 ms
  *   10 x Net B, VLAN 100, VL-IDX 71, 100 B payload (+1 B seq), 10 ms */
-static bool runTryPacketSend(RawSocket *sock)
+static bool runTryPacketSend(void)
 {
-    bool ok = true;
-    ok &= tryPacketSend(sock, NET_A, 100, 70, 100, 10, 10) == 10;
-    ok &= tryPacketSend(sock, NET_B, 100, 71, 100, 10, 10) == 10;
-    return ok;
+    return tryPacketSend("ens1f0np0", NET_A, 100, 70, 100, 10, 10) == 10
+        && tryPacketSend("ens1f0np0", NET_B, 100, 71, 100, 10, 10) == 10;
 }
 
-/* senaryoFlcsEndSystem(sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
+/* senaryoFlcsEndSystem(ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
  *                      countA, countB, pairCount, delayMs)
  *   10 x Net A  VLAN 100  VL-IDX 70
  *   10 x Net B  VLAN  99  VL-IDX 71
  *   10 x (A, B) -> A B A B ...
  *   100 B payload (+1 B seq), 10 ms between packets */
-static bool runSenaryoFlcsEndSystem(RawSocket *sock)
+static bool runSenaryoFlcsEndSystem(void)
 {
-    return senaryoFlcsEndSystem(sock, 100, 70, 99, 71, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
+    return senaryoFlcsEndSystem("ens1f0np0", 100, 70, 99, 71, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
 }
 
 /* senaryoVsEndSystem - same flow as FLCS:
@@ -58,14 +56,14 @@ static bool runSenaryoFlcsEndSystem(RawSocket *sock)
  *   10 x Net B  VLAN  97  VL-IDX 61
  *   10 x (A, B) -> A B A B ...
  *   100 B payload (+1 B seq), 10 ms between packets */
-static bool runSenaryoVsEndSystem(RawSocket *sock)
+static bool runSenaryoVsEndSystem(void)
 {
-    return senaryoVsEndSystem(sock, 98, 60, 97, 61, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
+    return senaryoVsEndSystem("ens1f0np0", 98, 60, 97, 61, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
 }
 
 typedef struct {
     const char *name;
-    bool (*run)(RawSocket *sock);
+    bool (*run)(void);
 } Scenario;
 
 static const Scenario SCENARIOS[] = {
@@ -97,25 +95,18 @@ static void waitSeconds(int seconds)
 static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n"
-           "  -i, --interface <dev>  Server interface to send on (default: %s)\n"
            "  -x, --hexdump          Print every sent frame as hex\n"
            "  -h, --help             Show this help\n"
            "\n"
            "Runs all scenarios in order, %d s apart:\n",
-           prog, DEFAULT_INTERFACE, SCENARIO_GAP_S);
+           prog, SCENARIO_GAP_S);
     for (int i = 0; i < SCENARIO_COUNT; ++i) printf("  %d. %s\n", i + 1, SCENARIOS[i].name);
 }
 
 int main(int argc, char *argv[])
 {
-    const char *ifname = DEFAULT_INTERFACE;
-
     for (int i = 1; i < argc; ++i) {
-        if ((!strcmp(argv[i], "-i") || !strcmp(argv[i], "--interface")) && i + 1 < argc) {
-            ifname = argv[++i];
-        } else if (!strncmp(argv[i], "--interface=", 12)) {
-            ifname = argv[i] + 12;
-        } else if (!strcmp(argv[i], "-x") || !strcmp(argv[i], "--hexdump")) {
+        if (!strcmp(argv[i], "-x") || !strcmp(argv[i], "--hexdump")) {
             scenarioSetHexDump(true);
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
@@ -137,11 +128,6 @@ int main(int argc, char *argv[])
     sa.sa_handler = onSigint;
     sigaction(SIGINT, &sa, NULL);
 
-    RawSocket sock;
-    if (rawSocketOpen(&sock, ifname) != 0) {
-        return 1;
-    }
-
     const char *result[SCENARIO_COUNT];
     for (int i = 0; i < SCENARIO_COUNT; ++i) result[i] = "NOT RUN";
 
@@ -158,7 +144,7 @@ int main(int argc, char *argv[])
         printf(" SCENARIO %d/%d: %s\n", i + 1, SCENARIO_COUNT, SCENARIOS[i].name);
         printf("==================================================\n");
 
-        const bool scenario_ok = SCENARIOS[i].run(&sock) && !g_stopRequested;
+        const bool scenario_ok = SCENARIOS[i].run() && !g_stopRequested;
         result[i] = scenario_ok ? "PASS" : "FAIL";
         printf("SCENARIO %d/%d %s: %s\n", i + 1, SCENARIO_COUNT, SCENARIOS[i].name, result[i]);
 
@@ -168,8 +154,6 @@ int main(int argc, char *argv[])
         }
     }
     if (g_stopRequested) ok = false;
-
-    rawSocketClose(&sock);
 
     printf("\n==================== vmc_test summary ====================\n");
     for (int i = 0; i < SCENARIO_COUNT; ++i) {

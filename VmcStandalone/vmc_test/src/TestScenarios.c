@@ -82,15 +82,19 @@ static int sendBurst(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlI
  *  Scenarios
  * ==================================================================== */
 
-int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
+int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlIdx,
                   uint16_t payloadLen, int count, unsigned delayMs)
 {
-    if (!sock || count < 0 || !validFlow("tryPacketSend", net, vlanId, payloadLen)) return -1;
+    if (count < 0 || !validFlow("tryPacketSend", net, vlanId, payloadLen)) return -1;
 
-    printf("[tryPacketSend] %s VLAN %u VL-IDX %u payload %u+1 B, %d packets, %u ms interval\n",
-           networkName(net), vlanId, vlIdx, payloadLen, count, delayMs);
+    printf("[tryPacketSend] %s: %s VLAN %u VL-IDX %u payload %u+1 B, %d packets, %u ms interval\n",
+           ifname ? ifname : "(null)", networkName(net), vlanId, vlIdx, payloadLen, count, delayMs);
 
-    const int sent = sendBurst(sock, net, vlanId, vlIdx, payloadLen, count, delayMs, false);
+    RawSocket sock;
+    if (rawSocketOpen(&sock, ifname) != 0) return -1;
+
+    const int sent = sendBurst(&sock, net, vlanId, vlIdx, payloadLen, count, delayMs, false);
+    rawSocketClose(&sock);
 
     printf("[tryPacketSend] %s: %d/%d packets sent%s\n", networkName(net), sent, count,
            g_stopRequested ? " (stopped by Ctrl+C)" : "");
@@ -99,24 +103,29 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
 
 /* Shared end-system flow: countA x A, countB x B, pairCount x (A, B).
  * `who` is the scenario name used in every log line. */
-static int endSystemFlow(const char *who, RawSocket *sock,
+static int endSystemFlow(const char *who, const char *ifname,
                          uint16_t vlanIdA, uint16_t vlIdxA,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
                          unsigned delayMs)
 {
-    if (!sock || countA < 0 || countB < 0 || pairCount < 0 ||
+    if (countA < 0 || countB < 0 || pairCount < 0 ||
         !validFlow(who, NET_A, vlanIdA, payloadLen) ||
         !validFlow(who, NET_B, vlanIdB, payloadLen)) {
         return -1;
     }
 
     const int expected = countA + countB + 2 * pairCount;
+    printf("[%s] interface %s\n", who, ifname ? ifname : "(null)");
     printf("[%s] A: VLAN %u VL-IDX %u | B: VLAN %u VL-IDX %u | payload %u+1 B | %u ms interval\n",
            who, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen, delayMs);
     printf("[%s] plan: %d x A, then %d x B, then %d x (A,B)  = %d packets\n",
            who, countA, countB, pairCount, expected);
+
+    RawSocket sockStorage;
+    if (rawSocketOpen(&sockStorage, ifname) != 0) return -1;
+    RawSocket *sock = &sockStorage;
 
     int sent = 0;
     int ok;
@@ -149,29 +158,30 @@ static int endSystemFlow(const char *who, RawSocket *sock,
     }
 
 done:
+    rawSocketClose(sock);
     printf("[%s] %d/%d packets sent%s\n", who, sent, expected,
            g_stopRequested ? " (stopped by Ctrl+C)" : "");
     return sent;
 }
 
-int senaryoFlcsEndSystem(RawSocket *sock,
+int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdA, uint16_t vlIdxA,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
                          unsigned delayMs)
 {
-    return endSystemFlow("senaryoFlcsEndSystem", sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
+    return endSystemFlow("senaryoFlcsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
                          payloadLen, countA, countB, pairCount, delayMs);
 }
 
-int senaryoVsEndSystem(RawSocket *sock,
+int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdA, uint16_t vlIdxA,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,
                        int countA, int countB, int pairCount,
                        unsigned delayMs)
 {
-    return endSystemFlow("senaryoVsEndSystem", sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
+    return endSystemFlow("senaryoVsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
                          payloadLen, countA, countB, pairCount, delayMs);
 }

@@ -214,14 +214,21 @@ ETH 14 | 802.1Q 4 | IPv4 20 | UDP 8 | DATA N byte | SEQ 1 byte
 - Payload sınırı: 1..1466 (DPDK'daki en büyük payload: 1466 + 1 seq).
 - Sequence Net A ve Net B için **ayrı sayaç**: `0, 1, 2, … 255, 1, 2, …` (0 sadece ilk pakette).
 
+### Raw socket ve interface
+
+Her senaryo fonksiyonu raw socket'i **kendisi açar ve sonunda kapatır**; interface adı
+fonksiyonun ilk parametresidir (`src/main.c`'deki çağrıda yazılır). Böylece farklı
+senaryolar farklı server interface'lerini kullanabilir. Interface açılamazsa senaryo
+FAIL olur.
+
 ### tryPacketSend
 
 ```c
-int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
+int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlIdx,
                   uint16_t payloadLen, int count, unsigned delayMs);
 ```
 
-Hepsi parametre: network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
+Hepsi parametre: interface adı, network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
 paketler arası bekleme (ms). Gönderilen paket sayısını döner. Deneme senaryosu
 (`src/main.c` → `runTryPacketSend`):
 
@@ -235,7 +242,7 @@ tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10);   // 10 x Net B, VLAN 100, VL
 İkisi aynı akışı kullanır, sadece parametre değerleri farklıdır:
 
 ```c
-int senaryoFlcsEndSystem(RawSocket *sock,
+int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdA, uint16_t vlIdxA,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
@@ -251,10 +258,10 @@ int senaryoVsEndSystem(/* aynı parametreler */);
 Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
 Şu anki çağrılar (`src/main.c`):
 
-| Senaryo | Net A | Net B | Payload | Akış | Bekleme |
-|---------|-------|-------|---------|------|---------|
-| `senaryoFlcsEndSystem` | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
-| `senaryoVsEndSystem`   | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
+| Senaryo | Interface | Net A | Net B | Payload | Akış | Bekleme |
+|---------|-----------|-------|-------|---------|------|---------|
+| `senaryoFlcsEndSystem` | ens1f0np0 | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
+| `senaryoVsEndSystem`   | ens1f0np0 | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
 
 Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 
@@ -279,12 +286,13 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
 
 **Yeni senaryo eklemek:**
 
-1. `src/TestScenarios.c` / `include/TestScenarios.h`'ye fonksiyonu yaz (`senaryoXxx(...)`)
+1. `src/TestScenarios.c` / `include/TestScenarios.h`'ye fonksiyonu yaz (`senaryoXxx(const char *ifname, ...)`,
+   socket'i `rawSocketOpen`/`rawSocketClose` ile kendisi açıp kapatır)
 2. `src/main.c`'ye parametre değerleriyle bir wrapper ekle:
    ```c
-   static bool runSenaryoXxx(RawSocket *sock)
+   static bool runSenaryoXxx(void)
    {
-       return senaryoXxx(sock, /* değerler */) == /* beklenen paket sayısı */;
+       return senaryoXxx("ens1f0np0", /* değerler */) == /* beklenen paket sayısı */;
    }
    ```
 3. `SCENARIOS[]` listesine sırasına göre ekle: `{ "senaryoXxx", runSenaryoXxx },`
@@ -292,12 +300,11 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
 ### Argümanlar
 
 ```bash
-sudo ./vmc_test                       # tüm senaryolar sırayla, interface ens1f0np0
-sudo ./vmc_test --interface ens1f1np1
+sudo ./vmc_test                       # tüm senaryolar sırayla
 sudo ./vmc_test --hexdump             # gönderilen her frame'i hex olarak bas
 ```
 
-vmcStandalone üzerinden: `./vmcStandalone -- --interface ens1f1np1 --hexdump`
+vmcStandalone üzerinden: `./vmcStandalone -- --hexdump`
 
 Bir paket gönderilemezse `vmc_test` 1 ile çıkar ve vmcStandalone Adım 2'yi FAIL sayar.
 
