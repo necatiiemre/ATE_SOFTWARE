@@ -2,7 +2,9 @@
 #include "SystemCommand.h"
 #include "Log.h"
 
+#include <cstdlib>
 #include <filesystem>
+#include <sys/wait.h>
 #include <utility>
 
 SshClient::SshClient(std::string host,
@@ -134,4 +136,56 @@ bool SshClient::copyFileToPath(const std::string& local_path,
         return false;
     }
     return true;
+}
+
+bool SshClient::copyDirectory(const std::string& local_dir,
+                              const std::string& remote_parent,
+                              const std::string& remote_name)
+{
+    if (!std::filesystem::is_directory(local_dir)) {
+        std::cerr << logPrefix() << " Local directory not found: " << local_dir << std::endl;
+        return false;
+    }
+
+    const std::string remote_path = remote_parent + "/" + remote_name;
+    VERBOSE_LOG(logPrefix() << " Copying directory " << local_dir << " -> " << remote_path);
+
+    // One tar stream over one SSH session: replaces the remote directory
+    // with the local one (behaves the same on every OpenSSH version, unlike
+    // `scp -r dir/.`). No `-n` here - ssh must read the tar data from stdin.
+    const std::string cmd =
+        "tar -C \"" + local_dir + "\" -cf - . | "
+        "sshpass -p '" + m_password + "' "
+        "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 "
+        + m_username + "@" + m_host + " "
+        "\"rm -rf " + remote_path + " && mkdir -p " + remote_path +
+        " && tar -C " + remote_path + " -xf -\"";
+
+    auto result = syscmd::execute(cmd);
+    if (!result.success) {
+        std::cerr << logPrefix() << " Directory copy to " << remote_path << " failed: "
+                  << result.output << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool SshClient::executeInteractive(const std::string& command, int* exit_code)
+{
+    VERBOSE_LOG(logPrefix() << " Executing interactively: " << command);
+
+    // -t: allocate a remote PTY so the program behaves as if run locally.
+    const std::string ssh_cmd =
+        "sshpass -p '" + m_password + "' "
+        "ssh -t -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
+        + m_username + "@" + m_host + " "
+        "\"" + command + "\"";
+
+    // system(): stdin/stdout/stderr stay connected to this terminal.
+    const int status = std::system(ssh_cmd.c_str());
+    const int code = (status != -1 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    if (exit_code) *exit_code = code;
+
+    // The caller reports a non-zero exit code (it knows what was run).
+    return code == 0;
 }

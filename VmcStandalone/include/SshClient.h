@@ -46,6 +46,25 @@ public:
                         const std::string& remote_path,
                         bool use_sudo = false);
 
+    /**
+     * @brief Copy a local directory to <remote_parent>/<remote_name>.
+     *        Any existing remote directory with that name is removed first.
+     */
+    bool copyDirectory(const std::string& local_dir,
+                       const std::string& remote_parent,
+                       const std::string& remote_name);
+
+    /**
+     * @brief Run a command with a remote pseudo-terminal (ssh -t), wired
+     *        straight to this terminal: output is live, keyboard input and
+     *        Ctrl+C reach the remote program. Blocks until it exits.
+     * @param exit_code Remote command's exit code (optional)
+     * @return true if the remote command exited with 0
+     */
+    bool executeInteractive(const std::string& command, int* exit_code = nullptr);
+
+    const std::string& password() const { return m_password; }
+
 private:
     std::string m_host;
     std::string m_username;

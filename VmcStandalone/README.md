@@ -6,6 +6,7 @@ yönetimi yapmaz; adımlar sırayla çalışır, ilk başarısız adımda durur.
 | Adım | Ne yapar |
 |------|----------|
 | 1 | Cumulus switch'i (10.1.33.3) VMC'ye göre konfigüre eder |
+| 2 | `vmc_test`'i ATE server'a (10.1.33.2) gönderip orada çalıştırır |
 
 ## Adım 1 – Cumulus VMC konfigürasyonu
 
@@ -34,11 +35,37 @@ Bağlantı bilgileri: `include/CumulusConfig.h` (MainSoftware ile aynı).
 
 ```bash
 cd VmcStandalone
-cmake -S . -B build
-cmake --build build
+mkdir -p build && cd build
+cmake ..
+make
 ```
 
-Çıktı: `build/bin/vmcStandalone`.
+`make` iki şey yapar:
+
+1. PC uygulaması `vmcStandalone`'u derler.
+2. **`vmc_test`'i server'da derler** (prepare_release.sh'in dpdk_vmc için yaptığının
+   aynısı): `vmc_test/` kaynakları server'da `/home/user/Desktop/vmc_test_build`'e
+   kopyalanır, orada `make` çalışır, binary geri çekilir.
+
+Sonuç – taşınabilir `build/bin/` klasörü:
+
+```
+build/bin/
+├── vmcStandalone                       ← çalıştırılacak program
+├── CumulusInterfaces/VMC/interfaces    ← Adım 1'de switch'e gönderilir
+└── vmc_test/
+    ├── vmc_test                        ← server'da derlenmiş binary (Adım 2)
+    └── VERSION.txt
+```
+
+- `vmc_test` sadece `vmc_test/` içinde bir şey (ya da `ServerConfig.h`) değiştiyse
+  yeniden derlenir; değişiklik yoksa `make` server'a hiç bağlanmaz.
+- Elle yeniden derletmek: `make vmc_test`
+- Server kapalıyken sadece PC uygulamasını derlemek: `cmake -DVMC_TEST_SERVER_BUILD=OFF ..`
+- Server build script'i tek başına da çalışır: `scripts/build_vmc_test_on_server.sh`
+
+Gerekli araçlar (PC): `cmake`, `g++`, `sshpass`, `ssh`, `scp`, `tar`.
+Server'da: `gcc`, `make`.
 
 ## Interfaces dosyası
 
@@ -67,19 +94,32 @@ Gerekli araçlar: `sshpass`, `ssh`, `scp`.
 ## Kullanım
 
 ```bash
-./build/bin/vmcStandalone                 # tüm adımlar
-./build/bin/vmcStandalone --verify-only   # sadece switch'teki VMC VLAN durumunu kontrol et
-./build/bin/vmcStandalone -v              # her SSH komutunu ve çıktısını göster
-./build/bin/vmcStandalone -i /yol/interfaces
+cd build/bin
+./vmcStandalone                    # Adım 1 (Cumulus) -> Adım 2 (vmc_test server'da)
+./vmcStandalone -- --arg1 deger    # "--" sonrası her şey vmc_test'e argüman olarak gider
+./vmcStandalone --skip-cumulus     # sadece Adım 2
+./vmcStandalone --skip-vmc-test    # sadece Adım 1
+./vmcStandalone --verify-only      # sadece switch'teki VMC VLAN durumunu kontrol et
+./vmcStandalone -v                 # her SSH komutunu ve çıktısını göster
+./vmcStandalone -i /yol/interfaces # başka bir interfaces dosyası gönder
 ```
 
+Adım 2'de `build/bin/vmc_test/` klasörü server'da `/home/user/Desktop/vmc_test/`'e
+kopyalanır ve `sudo ./vmc_test` ile **interaktif** çalıştırılır: çıktısı canlı
+görünür, klavye girişi ve Ctrl+C programa ulaşır. `vmc_test` 0 dışında bir kodla
+çıkarsa adım başarısız sayılır.
+
 Çıkış kodu: `0` başarılı, `1` bir adım başarısız, `2` hatalı argüman.
+
+Bağlantı ayarları: switch `include/CumulusConfig.h`, server `include/ServerConfig.h`
+(build script'i de server ayarlarını bu dosyadan okur).
 
 ## vmc_test (server uygulaması)
 
 `vmc_test/` – ATE server'da derlenip çalışacak VMC test uygulaması
 (eskiden `dpdk_vmc`'nin yaptığı iş). DPDK kullanmaz, düz raw socket kullanır.
-Şu an boş iskelet; içerik eklenecek.
+Şu an boş iskelet; içerik eklenecek. Normalde elle derlemeye gerek yok
+(`vmcStandalone` build'i server'da derler); server'da doğrudan denemek için:
 
 ```
 vmc_test/
@@ -112,6 +152,8 @@ steps.push_back({"Adim adi", [&] { return birFonksiyon(); }});
 | Dosya | Kaynak (MainSoftware) |
 |-------|-----------------------|
 | `SystemCommand` | `SystemCommandExecutor` (sadeleştirilmiş) |
-| `SshClient` | `SSHDeployer` – sadece `testConnection`, `execute`, `copyFileToPath` |
+| `SshClient` | `SSHDeployer` – `testConnection`, `execute`, `copyFileToPath`, `copyDirectory`, `executeInteractive` |
 | `CumulusVmc` | `CumulusHelper` – sadece VMC yolu |
+| `VmcTestRunner` | `Vmc::runDpdkVmcInteractive` (dpdk_vmc yerine vmc_test) |
+| `scripts/build_vmc_test_on_server.sh` | `prepare_release.sh` → `prepare_dpdk_vmc` |
 | `Log.h` | `ErrorPrinter` + `DEBUG_LOG` (burada `--verbose` ile çalışma anında açılır) |

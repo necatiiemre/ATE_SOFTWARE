@@ -18,6 +18,7 @@ set(SOURCES
     src/SystemCommand.cpp
     src/SshClient.cpp
     src/CumulusVmc.cpp
+    src/VmcTestRunner.cpp
 )
 
 add_executable(vmcStandalone ${SOURCES})
@@ -44,3 +45,42 @@ endif()
 configure_file(${VMC_INTERFACES_SRC}
                ${CMAKE_BINARY_DIR}/bin/CumulusInterfaces/VMC/interfaces
                COPYONLY)
+
+# ==================== vmc_test: compiled ON THE SERVER ====================
+# Same idea as prepare_release.sh for dpdk_vmc: the sources in vmc_test/ are
+# copied to the ATE server, built there with its own Makefile, and the binary
+# is fetched back to build/bin/vmc_test/. vmcStandalone later deploys that
+# prebuilt binary to the server and runs it (step 2).
+#
+# Runs as part of a normal build (`make`), but only when something in
+# vmc_test/, the script or ServerConfig.h has changed. Rebuild on demand with
+# `make vmc_test`. Needs the server to be reachable; build without it with
+#   cmake -DVMC_TEST_SERVER_BUILD=OFF ..
+option(VMC_TEST_SERVER_BUILD "Build vmc_test on the ATE server during the build" ON)
+
+set(VMC_TEST_SRC_DIR   ${CMAKE_SOURCE_DIR}/vmc_test)
+set(VMC_TEST_OUT_DIR   ${CMAKE_BINARY_DIR}/bin/vmc_test)
+set(VMC_TEST_SCRIPT    ${CMAKE_SOURCE_DIR}/scripts/build_vmc_test_on_server.sh)
+set(SERVER_CONFIG_H    ${CMAKE_SOURCE_DIR}/include/ServerConfig.h)
+
+if(VMC_TEST_SERVER_BUILD)
+    file(GLOB_RECURSE VMC_TEST_SOURCES CONFIGURE_DEPENDS
+        ${VMC_TEST_SRC_DIR}/*.c
+        ${VMC_TEST_SRC_DIR}/*.h
+    )
+
+    add_custom_command(
+        OUTPUT  ${VMC_TEST_OUT_DIR}/vmc_test
+        COMMAND bash ${VMC_TEST_SCRIPT} ${VMC_TEST_SRC_DIR} ${VMC_TEST_OUT_DIR} ${SERVER_CONFIG_H}
+        DEPENDS ${VMC_TEST_SOURCES}
+                ${VMC_TEST_SRC_DIR}/Makefile
+                ${VMC_TEST_SCRIPT}
+                ${SERVER_CONFIG_H}
+        COMMENT "Building vmc_test on the ATE server and fetching the binary"
+        USES_TERMINAL
+        VERBATIM
+    )
+    add_custom_target(vmc_test ALL DEPENDS ${VMC_TEST_OUT_DIR}/vmc_test)
+else()
+    message(STATUS "VMC_TEST_SERVER_BUILD=OFF: vmc_test will NOT be built on the server")
+endif()

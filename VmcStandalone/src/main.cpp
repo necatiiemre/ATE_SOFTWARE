@@ -6,6 +6,8 @@
 //
 //   Step 1: Configure the Cumulus switch for VMC
 //           (interfaces deploy + ifreload + VMC bridge VLAN sequence)
+//   Step 2: Deploy the prebuilt vmc_test to the ATE server and run it
+//           (vmc_test is compiled on the server during the build)
 //
 // New steps are added to the `steps` table in main().
 // ============================================================================
@@ -13,9 +15,11 @@
 #include "CumulusConfig.h"
 #include "CumulusVmc.h"
 #include "Log.h"
+#include "ServerConfig.h"
 #include "SshClient.h"
 #include "SystemCommand.h"
 #include "Version.h"
+#include "VmcTestRunner.h"
 
 #include <csignal>
 #include <filesystem>
@@ -33,6 +37,9 @@ namespace {
 struct Options {
     std::string interfaces_path;   // empty -> auto-resolve
     bool verify_only = false;
+    bool skip_cumulus = false;
+    bool skip_vmc_test = false;
+    std::string vmc_test_args;     // everything after "--"
 };
 
 struct Step {
@@ -43,15 +50,19 @@ struct Step {
 void printUsage(const char* prog)
 {
     std::cout
-        << "Usage: " << prog << " [options]\n"
+        << "Usage: " << prog << " [options] [-- vmc_test args...]\n"
         << "\n"
-        << "Standalone VMC application.\n"
-        << "  Step 1: configure the Cumulus switch (" << CUMULUS_HOST << ") for VMC.\n"
+        << "Standalone VMC application. Steps run in order:\n"
+        << "  Step 1: configure the Cumulus switch (" << CUMULUS_HOST << ") for VMC\n"
+        << "  Step 2: deploy vmc_test to the server (" << SERVER_HOST << ") and run it\n"
         << "\n"
         << "Options:\n"
         << "  -i, --interfaces PATH  VMC interfaces file to deploy\n"
         << "                         (default: auto-locate " << VMC_INTERFACES_RELATIVE_PATH << ")\n"
         << "      --verify-only      Only check the VMC VLAN state on the switch, change nothing\n"
+        << "      --skip-cumulus     Skip step 1 (Cumulus configuration)\n"
+        << "      --skip-vmc-test    Skip step 2 (vmc_test on the server)\n"
+        << "  --                     Pass the remaining arguments to vmc_test\n"
         << "  -v, --verbose          Print every SSH command and its output\n"
         << "      --version          Print version and exit\n"
         << "  -h, --help             Show this help\n";
@@ -76,6 +87,16 @@ bool parseArgs(int argc, char* argv[], Options& opt, bool& exit_now)
             logcfg::verbose = true;
         } else if (arg == "--verify-only") {
             opt.verify_only = true;
+        } else if (arg == "--skip-cumulus") {
+            opt.skip_cumulus = true;
+        } else if (arg == "--skip-vmc-test") {
+            opt.skip_vmc_test = true;
+        } else if (arg == "--") {
+            for (int j = i + 1; j < argc; ++j) {
+                if (!opt.vmc_test_args.empty()) opt.vmc_test_args += " ";
+                opt.vmc_test_args += argv[j];
+            }
+            break;
         } else if (arg == "-i" || arg == "--interfaces") {
             if (i + 1 >= argc) {
                 std::cerr << "Missing value for " << arg << std::endl;
@@ -163,6 +184,9 @@ int main(int argc, char* argv[])
     SshClient cumulus_ssh(CUMULUS_HOST, CUMULUS_USER, CUMULUS_PASSWORD, "Cumulus");
     CumulusVmc cumulus(cumulus_ssh);
 
+    SshClient server_ssh(SERVER_HOST, SERVER_USER, SERVER_PASSWORD, "Server");
+    VmcTestRunner vmc_test(server_ssh);
+
     std::vector<Step> steps;
 
     if (opt.verify_only) {
@@ -170,14 +194,27 @@ int main(int argc, char* argv[])
             return cumulus.connect() && cumulus.verifyVlans();
         }});
     } else {
-        const std::string interfaces_path = resolveInterfacesPath(opt.interfaces_path);
-        if (interfaces_path.empty()) return 1;
+        if (!opt.skip_cumulus) {
+            const std::string interfaces_path = resolveInterfacesPath(opt.interfaces_path);
+            if (interfaces_path.empty()) return 1;
 
-        steps.push_back({"Configure Cumulus for VMC", [&cumulus, interfaces_path] {
-            return cumulus.configure(interfaces_path);
-        }});
+            steps.push_back({"Configure Cumulus for VMC", [&cumulus, interfaces_path] {
+                return cumulus.configure(interfaces_path);
+            }});
+        }
+
+        if (!opt.skip_vmc_test) {
+            steps.push_back({"Run vmc_test on server", [&vmc_test, &opt] {
+                return vmc_test.deployAndRun(opt.vmc_test_args);
+            }});
+        }
         // Next steps go here, e.g.:
         // steps.push_back({"...", [&] { return ...; }});
+    }
+
+    if (steps.empty()) {
+        ErrorPrinter::warn("SYSTEM", "Nothing to do (all steps skipped)");
+        return 0;
     }
 
     for (size_t i = 0; i < steps.size(); ++i) {
