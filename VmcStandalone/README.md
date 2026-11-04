@@ -182,20 +182,71 @@ Program yarıda kesilirse (Ctrl+C / kill) log'un sonuna bunu belirten bir satır
 
 ## vmc_test (server uygulaması)
 
-`vmc_test/` – ATE server'da derlenip çalışacak VMC test uygulaması
-(eskiden `dpdk_vmc`'nin yaptığı iş). DPDK kullanmaz, düz raw socket kullanır.
-Şu an boş iskelet; içerik eklenecek. Normalde elle derlemeye gerek yok
-(`vmcStandalone` build'i server'da derler); server'da doğrudan denemek için:
+`vmc_test/` – ATE server'da derlenip çalışan VMC test uygulaması (eskiden `dpdk_vmc`'nin
+yaptığı iş). DPDK kullanmaz; `AF_PACKET` raw socket ile hazır Ethernet frame'i gönderir.
 
 ```
 vmc_test/
 ├── Makefile
-├── include/Version.h
-└── src/main.c
+├── include/PacketDefs.h      ← paket formatı sabitleri (MAC/IP önekleri, A/B, port, TTL, sınırlar)
+├── src/RawSocket.c           ← raw socket aç / gönder / kapat
+├── src/Packet.c              ← buildPacket(), A/B sequence sayaçları
+├── src/TestScenarios.c       ← gönderim senaryoları (tryPacketSend, ileride diğerleri)
+└── src/main.c                ← argümanlar + çalıştırılan senaryo çağrıları
 ```
 
-`src/` altındaki tüm `.c` dosyaları (alt klasörler dahil) Makefile tarafından
-otomatik derlenir; yeni dosya eklemek için Makefile'a dokunmaya gerek yok.
+### Paket formatı (dpdk_vmc / dpdk_cmc ile aynı başlıklar)
+
+```
+ETH 14 | 802.1Q 4 | IPv4 20 | UDP 8 | DATA N byte | SEQ 1 byte
+```
+
+| Alan | Değer |
+|------|-------|
+| DST MAC | `03:00:00:00:VV:VV` (son 2 byte = VL-IDX) |
+| SRC MAC | `02:00:00:00:00:20` Net A / `02:00:00:00:00:40` Net B (dpdk_cmc kuralı) |
+| VLAN | TPID 0x8100, priority 0, VID = VLAN ID |
+| IPv4 | src `10.0.0.0`, dst `224.224.VV.VV`, TTL 1, TOS 0, checksum hesaplanır |
+| UDP | port 100 → 100, checksum 0 |
+| Payload | N byte veri, **N+1. byte sequence**; verinin her byte'ı = sequence değeri (PRBS yok) |
+
+- Payload 100 → frame 147 byte; payload 200 → 201. byte sequence, frame 247 byte.
+- Payload sınırı: 1..1466 (DPDK'daki en büyük payload: 1466 + 1 seq).
+- Sequence Net A ve Net B için **ayrı sayaç**: `0, 1, 2, … 255, 1, 2, …` (0 sadece ilk pakette).
+
+### tryPacketSend
+
+```c
+int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
+                  uint16_t payloadLen, int count, unsigned delayMs);
+```
+
+Hepsi parametre: network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
+paketler arası bekleme (ms). Gönderilen paket sayısını döner. Şu anki VMC deneme senaryosu
+(`src/main.c`):
+
+```c
+tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10);   // 10 x Net A, VLAN 100, VL-IDX 70
+tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10);   // 10 x Net B, VLAN 100, VL-IDX 71
+```
+
+Yeni senaryolar `src/TestScenarios.c`'ye ayrı fonksiyon olarak eklenir.
+
+### Argümanlar
+
+```bash
+sudo ./vmc_test                       # varsayılan interface: ens1f0np0
+sudo ./vmc_test --interface ens1f1np1
+sudo ./vmc_test --hexdump             # gönderilen her frame'i hex olarak bas
+```
+
+vmcStandalone üzerinden: `./vmcStandalone -- --interface ens1f1np1 --hexdump`
+
+Bir paket gönderilemezse `vmc_test` 1 ile çıkar ve vmcStandalone Adım 2'yi FAIL sayar.
+
+### Server'da elle derleme
+
+Normalde gerekmez (`prepare_release.sh` server'da derler):
 
 ```bash
 cd vmc_test
