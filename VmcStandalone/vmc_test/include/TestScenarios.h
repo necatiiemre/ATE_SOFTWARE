@@ -47,8 +47,11 @@ int tryPacketSend(const char *ifname, Network net, uint16_t vlanId, uint16_t vlI
  *
  * ifname: server interface - the scenario opens its own raw socket on it
  * and closes it at the end.
- * Same payload length for every packet; delayMs between every two
- * consecutive packets (also across phases and between A and B of a pair).
+ * Same payload length for every packet.
+ *   delayMs   : wait between two consecutive packets (phases 1-2, across
+ *               phases, and from the B of one pair to the A of the next)
+ *   abDelayMs : wait between the A and the B of the SAME pair (phase 3);
+ *               0 = B right after A
  * Net A and Net B sequence counters continue across the phases.
  * resetSeq: true -> both A and B restart at 0 when the scenario starts;
  *           false -> both continue from the previous scenario.
@@ -61,13 +64,13 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, bool resetSeq);
+                         unsigned delayMs, unsigned abDelayMs, bool resetSeq);
 
 int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdA, uint16_t vlIdxA,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,
                        int countA, int countB, int pairCount,
-                       unsigned delayMs, bool resetSeq);
+                       unsigned delayMs, unsigned abDelayMs, bool resetSeq);
 
 #endif /* VMC_TEST_TEST_SCENARIOS_H_ */

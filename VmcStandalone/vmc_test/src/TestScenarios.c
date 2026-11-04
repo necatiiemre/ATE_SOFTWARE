@@ -122,7 +122,7 @@ static int endSystemFlow(const char *who, const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, bool resetSeq)
+                         unsigned delayMs, unsigned abDelayMs, bool resetSeq)
 {
     if (countA < 0 || countB < 0 || pairCount < 0 ||
         !validFlow(who, NET_A, vlanIdA, payloadLen) ||
@@ -132,8 +132,9 @@ static int endSystemFlow(const char *who, const char *ifname,
 
     const int expected = countA + countB + 2 * pairCount;
     printf("[%s] interface %s\n", who, ifname ? ifname : "(null)");
-    printf("[%s] A: VLAN %u VL-IDX %u | B: VLAN %u VL-IDX %u | payload %u+1 B | %u ms interval\n",
-           who, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen, delayMs);
+    printf("[%s] A: VLAN %u VL-IDX %u | B: VLAN %u VL-IDX %u | payload %u+1 B\n",
+           who, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen);
+    printf("[%s] interval %u ms, A->B within a pair %u ms\n", who, delayMs, abDelayMs);
     printf("[%s] plan: %d x A, then %d x B, then %d x (A,B)  = %d packets\n",
            who, countA, countB, pairCount, expected);
 
@@ -181,7 +182,7 @@ static int endSystemFlow(const char *who, const char *ifname,
         if (g_stopRequested || !sendOne(sock, NET_A, vlanIdA, vlIdxA, payloadLen, progress)) break;
         ++sent;
 
-        if (delayMs > 0) sleepMs(delayMs);
+        if (abDelayMs > 0) sleepMs(abDelayMs);      /* A -> B of the same pair */
         if (g_stopRequested || !sendOne(sock, NET_B, vlanIdB, vlIdxB, payloadLen, progress)) break;
         ++sent;
     }
@@ -198,10 +199,10 @@ int senaryoFlcsEndSystem(const char *ifname,
                          uint16_t vlanIdB, uint16_t vlIdxB,
                          uint16_t payloadLen,
                          int countA, int countB, int pairCount,
-                         unsigned delayMs, bool resetSeq)
+                         unsigned delayMs, unsigned abDelayMs, bool resetSeq)
 {
     return endSystemFlow("senaryoFlcsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs, resetSeq);
+                         payloadLen, countA, countB, pairCount, delayMs, abDelayMs, resetSeq);
 }
 
 int senaryoVsEndSystem(const char *ifname,
@@ -209,8 +210,8 @@ int senaryoVsEndSystem(const char *ifname,
                        uint16_t vlanIdB, uint16_t vlIdxB,
                        uint16_t payloadLen,
                        int countA, int countB, int pairCount,
-                       unsigned delayMs, bool resetSeq)
+                       unsigned delayMs, unsigned abDelayMs, bool resetSeq)
 {
     return endSystemFlow("senaryoVsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
-                         payloadLen, countA, countB, pairCount, delayMs, resetSeq);
+                         payloadLen, countA, countB, pairCount, delayMs, abDelayMs, resetSeq);
 }
