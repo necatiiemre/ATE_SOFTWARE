@@ -64,6 +64,18 @@ static bool runSenaryoVsEndSystem(void)
     return senaryoVsEndSystem("ens1f0np0", 98, 60, 97, 61, 100, 10, 10, 10, 10, 10000, true) == 10 + 10 + 2 * 10;
 }
 
+/* senaryoFlcsSwitch(ifname, network, vlanId, vlIdxList, vlIdxCount, payloadLen,
+ *                   countPerVl, delayMs, resetSeq)
+ *   interface ens2f0np0, Net A, VLAN 125
+ *   10 x VL-IDX 90, then 10 x 91, then 10 x 80, then 10 x 81
+ *   100 B payload (+1 B seq), 10 ms between packets, sequence reset (A starts at 0) */
+static bool runSenaryoFlcsSwitch(void)
+{
+    static const uint16_t vlIdx[] = { 90, 91, 80, 81 };
+    const int n = (int)(sizeof(vlIdx) / sizeof(vlIdx[0]));
+    return senaryoFlcsSwitch("ens2f0np0", NET_A, 125, vlIdx, n, 100, 10, 10, true) == n * 10;
+}
+
 typedef struct {
     const char *name;
     bool (*run)(void);
@@ -73,6 +85,7 @@ static const Scenario SCENARIOS[] = {
     { "tryPacketSend",        runTryPacketSend        },
     { "senaryoFlcsEndSystem", runSenaryoFlcsEndSystem },
     { "senaryoVsEndSystem",   runSenaryoVsEndSystem   },
+    { "senaryoFlcsSwitch",    runSenaryoFlcsSwitch    },
     /* { "senaryoXxx", runSenaryoXxx }, */
 };
 

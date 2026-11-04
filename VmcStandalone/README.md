@@ -287,6 +287,25 @@ B gittikten sonra yapılır. Ölçülen A→B = istenen + gönderim süresi (tes
 
 Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 
+### senaryoFlcsSwitch
+
+```c
+int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                      const uint16_t *vlIdxList, int vlIdxCount,
+                      uint16_t payloadLen, int countPerVl,
+                      unsigned delayMs, bool resetSeq);
+```
+
+Tek network ve tek VLAN'da, `vlIdxList`'teki her VL-IDX için sırayla `countPerVl` paket.
+Paketler arası (VL-IDX değişirken de) `delayMs` beklenir. Sequence network başına tutulur;
+VL-IDX blokları boyunca devam eder. Şu anki çağrı (`src/main.c` → `runSenaryoFlcsSwitch`):
+
+| Interface | Network | VLAN | VL-IDX sırası | Paket / VL-IDX | Payload | delayMs | resetSeq |
+|-----------|---------|------|---------------|----------------|---------|---------|----------|
+| ens2f0np0 | A | 125 | 90 → 91 → 80 → 81 | 10 | 100 | 10 | true |
+
+Toplam 40 paket, sequence 0…39.
+
 ### Senaryoların çalışma sırası
 
 `vmc_test` `src/main.c`'deki `SCENARIOS[]` listesindeki senaryoları **sırayla** koşar:
@@ -298,6 +317,7 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
   1. tryPacketSend            PASS
   2. senaryoFlcsEndSystem     PASS
   3. senaryoVsEndSystem       PASS
+  4. senaryoFlcsSwitch        PASS
   Result: PASS
 ```
 

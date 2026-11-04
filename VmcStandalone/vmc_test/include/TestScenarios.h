@@ -73,4 +73,27 @@ int senaryoVsEndSystem(const char *ifname,
                        int countA, int countB, int pairCount,
                        unsigned delayMs, unsigned abDelayUs, bool resetSeq);
 
+/*
+ * FLCS switch scenario: countPerVl packets on ONE network and VLAN for each
+ * VL-IDX in vlIdxList, in list order.
+ *
+ *   ifname      : server interface (own raw socket, closed at the end)
+ *   net         : NET_A or NET_B
+ *   vlanId      : 802.1Q VLAN ID for every packet
+ *   vlIdxList   : VL-IDX values, sent in this order
+ *   vlIdxCount  : number of entries in vlIdxList
+ *   payloadLen  : data bytes N (1..1466); byte N+1 is the sequence number
+ *   countPerVl  : packets per VL-IDX
+ *   delayMs     : wait between two consecutive packets (also across VL-IDX)
+ *   resetSeq    : true -> the network's sequence restarts at 0 at the start;
+ *                 false -> it continues. The counter is per network, so it
+ *                 keeps counting across the VL-IDX blocks.
+ *
+ * Returns packets sent (== vlIdxCount * countPerVl on success), or -1.
+ */
+int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                      const uint16_t *vlIdxList, int vlIdxCount,
+                      uint16_t payloadLen, int countPerVl,
+                      unsigned delayMs, bool resetSeq);
+
 #endif /* VMC_TEST_TEST_SCENARIOS_H_ */

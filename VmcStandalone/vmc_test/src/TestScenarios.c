@@ -291,3 +291,44 @@ int senaryoVsEndSystem(const char *ifname,
     return endSystemFlow("senaryoVsEndSystem", ifname, vlanIdA, vlIdxA, vlanIdB, vlIdxB,
                          payloadLen, countA, countB, pairCount, delayMs, abDelayUs, resetSeq);
 }
+
+int senaryoFlcsSwitch(const char *ifname, Network net, uint16_t vlanId,
+                      const uint16_t *vlIdxList, int vlIdxCount,
+                      uint16_t payloadLen, int countPerVl,
+                      unsigned delayMs, bool resetSeq)
+{
+    const char *who = "senaryoFlcsSwitch";
+    if (!vlIdxList || vlIdxCount <= 0 || countPerVl < 0 ||
+        !validFlow(who, net, vlanId, payloadLen)) {
+        fprintf(stderr, "[%s] invalid arguments\n", who);
+        return -1;
+    }
+
+    const int expected = vlIdxCount * countPerVl;
+    printf("[%s] interface %s\n", who, ifname ? ifname : "(null)");
+    printf("[%s] %s VLAN %u | VL-IDX:", who, networkName(net), vlanId);
+    for (int i = 0; i < vlIdxCount; ++i) printf(" %u", vlIdxList[i]);
+    printf(" | payload %u+1 B | %u ms interval\n", payloadLen, delayMs);
+    printf("[%s] plan: %d x %s per VL-IDX, %d VL-IDX  = %d packets\n",
+           who, countPerVl, networkName(net), vlIdxCount, expected);
+
+    RawSocket sock;
+    if (rawSocketOpen(&sock, ifname) != 0) return -1;
+
+    applySeqReset(who, &net, 1, resetSeq);
+
+    int sent = 0;
+    for (int i = 0; i < vlIdxCount && !g_stopRequested; ++i) {
+        printf("[%s] --- %d/%d: %s VLAN %u VL-IDX %u, %d packets ---\n",
+               who, i + 1, vlIdxCount, networkName(net), vlanId, vlIdxList[i], countPerVl);
+        const int ok = sendBurst(&sock, net, vlanId, vlIdxList[i], payloadLen,
+                                 countPerVl, delayMs, sent > 0);
+        sent += ok;
+        if (ok != countPerVl) break;
+    }
+
+    rawSocketClose(&sock);
+    printf("[%s] %d/%d packets sent%s\n", who, sent, expected,
+           g_stopRequested ? " (stopped by Ctrl+C)" : "");
+    return sent;
+}
