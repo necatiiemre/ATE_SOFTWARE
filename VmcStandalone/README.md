@@ -75,6 +75,30 @@ Gerekli araçlar: `sshpass`, `ssh`, `scp`.
 
 Çıkış kodu: `0` başarılı, `1` bir adım başarısız, `2` hatalı argüman.
 
+## vmc_test (server uygulaması)
+
+`vmc_test/` – ATE server'da derlenip çalışacak VMC test uygulaması
+(eskiden `dpdk_vmc`'nin yaptığı iş). DPDK kullanmaz, düz raw socket kullanır.
+Şu an boş iskelet; içerik eklenecek.
+
+```
+vmc_test/
+├── Makefile
+├── include/Version.h
+└── src/main.c
+```
+
+`src/` altındaki tüm `.c` dosyaları (alt klasörler dahil) Makefile tarafından
+otomatik derlenir; yeni dosya eklemek için Makefile'a dokunmaya gerek yok.
+
+```bash
+cd vmc_test
+make          # derle -> ./vmc_test
+make debug    # debug build -> ./vmc_test-debug
+make run      # sudo ile çalıştır (raw socket root ister)
+make clean
+```
+
 ## Yeni adım ekleme
 
 `src/main.cpp` içindeki `steps` listesine ekleyin:
