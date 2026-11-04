@@ -223,7 +223,7 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
 
 Hepsi parametre: network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
 paketler arası bekleme (ms). Gönderilen paket sayısını döner. Deneme senaryosu
-(`--scenario try`, `src/main.c`):
+(`src/main.c` → `runTryPacketSend`):
 
 ```c
 tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10);   // 10 x Net A, VLAN 100, VL-IDX 70
@@ -246,7 +246,8 @@ int senaryoEndSystem(RawSocket *sock,
 3. `pairCount` × (A, B) → `A B A B …`
 
 Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
-A ve B sequence sayaçları fazlar boyunca devam eder. Şu anki çağrı (`src/main.c`):
+A ve B sequence sayaçları fazlar boyunca devam eder. Şu anki çağrı (`src/main.c` →
+`runSenaryoEndSystem`):
 
 ```c
 senaryoEndSystem(&sock, 100, 70, 99, 71, 100, 10, 10, 10, 10);
@@ -254,18 +255,45 @@ senaryoEndSystem(&sock, 100, 70, 99, 71, 100, 10, 10, 10, 10);
 // -> 40 paket: AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB
 ```
 
-Yeni senaryolar `src/TestScenarios.c`'ye ayrı fonksiyon olarak eklenir.
+### Senaryoların çalışma sırası
+
+`vmc_test` `src/main.c`'deki `SCENARIOS[]` listesindeki senaryoları **sırayla** koşar:
+önce senaryonun adı yazılır, senaryo çalışır, sonra bir sonrakine geçmeden **30 saniye**
+beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
+
+```
+==================== vmc_test summary ====================
+  1. tryPacketSend            PASS
+  2. senaryoEndSystem         PASS
+  Result: PASS
+```
+
+- Bir senaryo başarısız olursa (paket gönderilemezse) kalanlar koşulmaz (`NOT RUN`) ve
+  `vmc_test` 1 ile çıkar.
+- Ctrl+C (bekleme sırasında da) çalışmayı durdurur.
+- Sequence sayaçları (A ve B ayrı) senaryolar arasında da kaldığı yerden devam eder.
+
+**Yeni senaryo eklemek:**
+
+1. `src/TestScenarios.c` / `include/TestScenarios.h`'ye fonksiyonu yaz (`senaryoXxx(...)`)
+2. `src/main.c`'ye parametre değerleriyle bir wrapper ekle:
+   ```c
+   static bool runSenaryoXxx(RawSocket *sock)
+   {
+       return senaryoXxx(sock, /* değerler */) == /* beklenen paket sayısı */;
+   }
+   ```
+3. `SCENARIOS[]` listesine sırasına göre ekle: `{ "senaryoXxx", runSenaryoXxx },`
 
 ### Argümanlar
 
 ```bash
-sudo ./vmc_test                       # varsayılan: senaryoEndSystem, interface ens1f0np0
-sudo ./vmc_test --scenario try        # tryPacketSend deneme senaryosu
+sudo ./vmc_test                       # tüm senaryolar sırayla, interface ens1f0np0
 sudo ./vmc_test --interface ens1f1np1
 sudo ./vmc_test --hexdump             # gönderilen her frame'i hex olarak bas
 ```
 
-vmcStandalone üzerinden: `./vmcStandalone -- --scenario try --interface ens1f1np1 --hexdump`
+vmcStandalone üzerinden: `./vmcStandalone -- --interface ens1f1np1 --hexdump`
 
 Bir paket gönderilemezse `vmc_test` 1 ile çıkar ve vmcStandalone Adım 2'yi FAIL sayar.
 
