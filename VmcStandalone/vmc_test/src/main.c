@@ -3,7 +3,7 @@
  *
  * Built and run on the ATE server (vmcStandalone step 2).
  *
- * Usage: vmc_test [--interface <dev>] [--hexdump]
+ * Usage: vmc_test [--interface <dev>] [--scenario <name>] [--hexdump]
  */
 
 #include <signal.h>
@@ -28,6 +28,9 @@ static void usage(const char *prog)
 {
     printf("Usage: %s [options]\n"
            "  -i, --interface <dev>  Server interface to send on (default: %s)\n"
+           "  -s, --scenario <name>  Scenario to run (default: endsystem)\n"
+           "                           endsystem : senaryoEndSystem\n"
+           "                           try       : tryPacketSend trial\n"
            "  -x, --hexdump          Print every sent frame as hex\n"
            "  -h, --help             Show this help\n",
            prog, DEFAULT_INTERFACE);
@@ -36,12 +39,17 @@ static void usage(const char *prog)
 int main(int argc, char *argv[])
 {
     const char *ifname = DEFAULT_INTERFACE;
+    const char *scenario = "endsystem";
 
     for (int i = 1; i < argc; ++i) {
         if ((!strcmp(argv[i], "-i") || !strcmp(argv[i], "--interface")) && i + 1 < argc) {
             ifname = argv[++i];
         } else if (!strncmp(argv[i], "--interface=", 12)) {
             ifname = argv[i] + 12;
+        } else if ((!strcmp(argv[i], "-s") || !strcmp(argv[i], "--scenario")) && i + 1 < argc) {
+            scenario = argv[++i];
+        } else if (!strncmp(argv[i], "--scenario=", 11)) {
+            scenario = argv[i] + 11;
         } else if (!strcmp(argv[i], "-x") || !strcmp(argv[i], "--hexdump")) {
             scenarioSetHexDump(true);
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -57,7 +65,13 @@ int main(int argc, char *argv[])
     /* Line-buffered even when stdout is a pipe/log, so lines stay in order. */
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    printf("vmc_test v%s\n", Version);
+    if (strcmp(scenario, "endsystem") != 0 && strcmp(scenario, "try") != 0) {
+        fprintf(stderr, "Unknown scenario: %s\n", scenario);
+        usage(argv[0]);
+        return 2;
+    }
+
+    printf("vmc_test v%s  (scenario: %s)\n", Version, scenario);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -71,13 +85,25 @@ int main(int argc, char *argv[])
 
     bool ok = true;
 
-    /* ================= VMC trial packets =================
-     * tryPacketSend(sock, network, vlanId, vlIdx, payloadLen, count, delayMs)
-     *   10 x Net A, VLAN 100, VL-IDX 70, 100 B payload (+1 B seq)
-     *   10 x Net B, VLAN 100, VL-IDX 71, 100 B payload (+1 B seq)
-     */
-    ok &= tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10) == 10;
-    ok &= tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10) == 10;
+    if (!strcmp(scenario, "endsystem")) {
+        /* ================= VMC end-system scenario =================
+         * senaryoEndSystem(sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
+         *                  countA, countB, pairCount, delayMs)
+         *   10 x Net A  VLAN 100  VL-IDX 70
+         *   10 x Net B  VLAN  99  VL-IDX 71
+         *   10 x (A, B) -> A B A B ...
+         *   100 B payload (+1 B seq), 10 ms between packets
+         */
+        ok = senaryoEndSystem(&sock, 100, 70, 99, 71, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
+    } else {
+        /* ================= VMC trial packets =================
+         * tryPacketSend(sock, network, vlanId, vlIdx, payloadLen, count, delayMs)
+         *   10 x Net A, VLAN 100, VL-IDX 70, 100 B payload (+1 B seq)
+         *   10 x Net B, VLAN 100, VL-IDX 71, 100 B payload (+1 B seq)
+         */
+        ok &= tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10) == 10;
+        ok &= tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10) == 10;
+    }
 
     rawSocketClose(&sock);
 

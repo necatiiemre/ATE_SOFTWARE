@@ -222,12 +222,36 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
 ```
 
 Hepsi parametre: network (`NET_A`/`NET_B`), VLAN ID, VL-IDX, payload uzunluğu, paket sayısı,
-paketler arası bekleme (ms). Gönderilen paket sayısını döner. Şu anki VMC deneme senaryosu
-(`src/main.c`):
+paketler arası bekleme (ms). Gönderilen paket sayısını döner. Deneme senaryosu
+(`--scenario try`, `src/main.c`):
 
 ```c
 tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10);   // 10 x Net A, VLAN 100, VL-IDX 70
 tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10);   // 10 x Net B, VLAN 100, VL-IDX 71
+```
+
+### senaryoEndSystem
+
+```c
+int senaryoEndSystem(RawSocket *sock,
+                     uint16_t vlanIdA, uint16_t vlIdxA,
+                     uint16_t vlanIdB, uint16_t vlIdxB,
+                     uint16_t payloadLen,
+                     int countA, int countB, int pairCount,
+                     unsigned delayMs);
+```
+
+1. `countA` × Net A (`vlanIdA` / `vlIdxA`)
+2. `countB` × Net B (`vlanIdB` / `vlIdxB`)
+3. `pairCount` × (A, B) → `A B A B …`
+
+Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
+A ve B sequence sayaçları fazlar boyunca devam eder. Şu anki çağrı (`src/main.c`):
+
+```c
+senaryoEndSystem(&sock, 100, 70, 99, 71, 100, 10, 10, 10, 10);
+// A: VLAN 100 VL-IDX 70 | B: VLAN 99 VL-IDX 71 | payload 100 | 10 A, 10 B, 10 x AB | 10 ms
+// -> 40 paket: AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB
 ```
 
 Yeni senaryolar `src/TestScenarios.c`'ye ayrı fonksiyon olarak eklenir.
@@ -235,12 +259,13 @@ Yeni senaryolar `src/TestScenarios.c`'ye ayrı fonksiyon olarak eklenir.
 ### Argümanlar
 
 ```bash
-sudo ./vmc_test                       # varsayılan interface: ens1f0np0
+sudo ./vmc_test                       # varsayılan: senaryoEndSystem, interface ens1f0np0
+sudo ./vmc_test --scenario try        # tryPacketSend deneme senaryosu
 sudo ./vmc_test --interface ens1f1np1
 sudo ./vmc_test --hexdump             # gönderilen her frame'i hex olarak bas
 ```
 
-vmcStandalone üzerinden: `./vmcStandalone -- --interface ens1f1np1 --hexdump`
+vmcStandalone üzerinden: `./vmcStandalone -- --scenario try --interface ens1f1np1 --hexdump`
 
 Bir paket gönderilemezse `vmc_test` 1 ile çıkar ve vmcStandalone Adım 2'yi FAIL sayar.
 
