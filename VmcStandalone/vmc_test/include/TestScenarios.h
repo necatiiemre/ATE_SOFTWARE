@@ -33,7 +33,7 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
                   uint16_t payloadLen, int count, unsigned delayMs);
 
 /*
- * End-system scenario:
+ * End-system scenarios (FLCS and VS use the same flow):
  *   Phase 1: countA    x Net A (vlanIdA / vlIdxA)
  *   Phase 2: countB    x Net B (vlanIdB / vlIdxB)
  *   Phase 3: pairCount x (Net A, Net B)  ->  A B A B ...
@@ -45,11 +45,18 @@ int tryPacketSend(RawSocket *sock, Network net, uint16_t vlanId, uint16_t vlIdx,
  * Returns packets sent (== countA + countB + 2*pairCount on success),
  * or -1 for invalid arguments.
  */
-int senaryoEndSystem(RawSocket *sock,
-                     uint16_t vlanIdA, uint16_t vlIdxA,
-                     uint16_t vlanIdB, uint16_t vlIdxB,
-                     uint16_t payloadLen,
-                     int countA, int countB, int pairCount,
-                     unsigned delayMs);
+int senaryoFlcsEndSystem(RawSocket *sock,
+                         uint16_t vlanIdA, uint16_t vlIdxA,
+                         uint16_t vlanIdB, uint16_t vlIdxB,
+                         uint16_t payloadLen,
+                         int countA, int countB, int pairCount,
+                         unsigned delayMs);
+
+int senaryoVsEndSystem(RawSocket *sock,
+                       uint16_t vlanIdA, uint16_t vlIdxA,
+                       uint16_t vlanIdB, uint16_t vlIdxB,
+                       uint16_t payloadLen,
+                       int countA, int countB, int pairCount,
+                       unsigned delayMs);
 
 #endif /* VMC_TEST_TEST_SCENARIOS_H_ */

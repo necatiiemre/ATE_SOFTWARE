@@ -230,15 +230,18 @@ tryPacketSend(&sock, NET_A, 100, 70, 100, 10, 10);   // 10 x Net A, VLAN 100, VL
 tryPacketSend(&sock, NET_B, 100, 71, 100, 10, 10);   // 10 x Net B, VLAN 100, VL-IDX 71
 ```
 
-### senaryoEndSystem
+### senaryoFlcsEndSystem / senaryoVsEndSystem
+
+İkisi aynı akışı kullanır, sadece parametre değerleri farklıdır:
 
 ```c
-int senaryoEndSystem(RawSocket *sock,
-                     uint16_t vlanIdA, uint16_t vlIdxA,
-                     uint16_t vlanIdB, uint16_t vlIdxB,
-                     uint16_t payloadLen,
-                     int countA, int countB, int pairCount,
-                     unsigned delayMs);
+int senaryoFlcsEndSystem(RawSocket *sock,
+                         uint16_t vlanIdA, uint16_t vlIdxA,
+                         uint16_t vlanIdB, uint16_t vlIdxB,
+                         uint16_t payloadLen,
+                         int countA, int countB, int pairCount,
+                         unsigned delayMs);
+int senaryoVsEndSystem(/* aynı parametreler */);
 ```
 
 1. `countA` × Net A (`vlanIdA` / `vlIdxA`)
@@ -246,14 +249,14 @@ int senaryoEndSystem(RawSocket *sock,
 3. `pairCount` × (A, B) → `A B A B …`
 
 Her iki paket arasında `delayMs` beklenir (fazlar arasında ve çiftin A–B'si arasında da).
-A ve B sequence sayaçları fazlar boyunca devam eder. Şu anki çağrı (`src/main.c` →
-`runSenaryoEndSystem`):
+Şu anki çağrılar (`src/main.c`):
 
-```c
-senaryoEndSystem(&sock, 100, 70, 99, 71, 100, 10, 10, 10, 10);
-// A: VLAN 100 VL-IDX 70 | B: VLAN 99 VL-IDX 71 | payload 100 | 10 A, 10 B, 10 x AB | 10 ms
-// -> 40 paket: AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB
-```
+| Senaryo | Net A | Net B | Payload | Akış | Bekleme |
+|---------|-------|-------|---------|------|---------|
+| `senaryoFlcsEndSystem` | VLAN 100 / VL-IDX 70 | VLAN 99 / VL-IDX 71 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
+| `senaryoVsEndSystem`   | VLAN 98 / VL-IDX 60  | VLAN 97 / VL-IDX 61 | 100 | 10 A, 10 B, 10 × AB | 10 ms |
+
+Her biri 40 paket: `AAAAAAAAAA BBBBBBBBBB ABABABABABABABABABAB`.
 
 ### Senaryoların çalışma sırası
 
@@ -264,7 +267,8 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
 ```
 ==================== vmc_test summary ====================
   1. tryPacketSend            PASS
-  2. senaryoEndSystem         PASS
+  2. senaryoFlcsEndSystem     PASS
+  3. senaryoVsEndSystem       PASS
   Result: PASS
 ```
 

@@ -42,15 +42,25 @@ static bool runTryPacketSend(RawSocket *sock)
     return ok;
 }
 
-/* senaryoEndSystem(sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
- *                  countA, countB, pairCount, delayMs)
+/* senaryoFlcsEndSystem(sock, vlanIdA, vlIdxA, vlanIdB, vlIdxB, payloadLen,
+ *                      countA, countB, pairCount, delayMs)
  *   10 x Net A  VLAN 100  VL-IDX 70
  *   10 x Net B  VLAN  99  VL-IDX 71
  *   10 x (A, B) -> A B A B ...
  *   100 B payload (+1 B seq), 10 ms between packets */
-static bool runSenaryoEndSystem(RawSocket *sock)
+static bool runSenaryoFlcsEndSystem(RawSocket *sock)
 {
-    return senaryoEndSystem(sock, 100, 70, 99, 71, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
+    return senaryoFlcsEndSystem(sock, 100, 70, 99, 71, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
+}
+
+/* senaryoVsEndSystem - same flow as FLCS:
+ *   10 x Net A  VLAN  98  VL-IDX 60
+ *   10 x Net B  VLAN  97  VL-IDX 61
+ *   10 x (A, B) -> A B A B ...
+ *   100 B payload (+1 B seq), 10 ms between packets */
+static bool runSenaryoVsEndSystem(RawSocket *sock)
+{
+    return senaryoVsEndSystem(sock, 98, 60, 97, 61, 100, 10, 10, 10, 10) == 10 + 10 + 2 * 10;
 }
 
 typedef struct {
@@ -59,8 +69,9 @@ typedef struct {
 } Scenario;
 
 static const Scenario SCENARIOS[] = {
-    { "tryPacketSend",    runTryPacketSend    },
-    { "senaryoEndSystem", runSenaryoEndSystem },
+    { "tryPacketSend",        runTryPacketSend        },
+    { "senaryoFlcsEndSystem", runSenaryoFlcsEndSystem },
+    { "senaryoVsEndSystem",   runSenaryoVsEndSystem   },
     /* { "senaryoXxx", runSenaryoXxx }, */
 };
 
