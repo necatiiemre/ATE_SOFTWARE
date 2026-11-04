@@ -12,9 +12,9 @@
 // Remote location of the interfaces file on the switch.
 #define CUMULUS_REMOTE_INTERFACES_PATH "/etc/network/interfaces"
 
-// Relative location of the VMC interfaces file. Searched next to the
-// executable first (build/bin/ - CMake copies it there), then up the tree
-// so it also resolves against the repository's CumulusInterfaces/ folder.
+// Relative location of the VMC interfaces file. The file is part of this
+// project (VmcStandalone/CumulusInterfaces/VMC/interfaces); CMake copies it
+// next to the executable (build/bin/). Nothing outside VmcStandalone/ is used.
 #define VMC_INTERFACES_RELATIVE_PATH "CumulusInterfaces/VMC/interfaces"
 
 #endif // VMC_STANDALONE_CUMULUS_CONFIG_H

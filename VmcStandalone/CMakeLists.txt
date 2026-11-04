@@ -30,20 +30,17 @@ set_target_properties(vmcStandalone PROPERTIES
 )
 
 # ==================== Runtime asset: VMC interfaces file ====================
-# Single source of truth stays in <repo>/CumulusInterfaces/VMC/interfaces
-# (the same file MainSoftware deploys). It is copied next to the binary on
-# every build so build/bin/ is self-contained and can be moved anywhere.
-set(VMC_INTERFACES_SRC ${CMAKE_SOURCE_DIR}/../CumulusInterfaces/VMC/interfaces)
-if(EXISTS ${VMC_INTERFACES_SRC})
-    add_custom_command(TARGET vmcStandalone POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                $<TARGET_FILE_DIR:vmcStandalone>/CumulusInterfaces/VMC
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${VMC_INTERFACES_SRC}
-                $<TARGET_FILE_DIR:vmcStandalone>/CumulusInterfaces/VMC/interfaces
-        COMMENT "Copying VMC Cumulus interfaces file next to vmcStandalone"
-    )
-else()
-    message(WARNING "VMC interfaces file not found: ${VMC_INTERFACES_SRC} "
-                    "- pass it at runtime with --interfaces")
+# The interfaces file lives INSIDE this project
+# (VmcStandalone/CumulusInterfaces/VMC/interfaces) - the app is fully
+# independent of the rest of the repository.
+#
+# configure_file(COPYONLY) puts a copy next to the binary so build/bin/ is
+# self-contained, and registers the source as a configure dependency: when
+# the file is edited, the next `cmake --build` re-copies it automatically.
+set(VMC_INTERFACES_SRC ${CMAKE_SOURCE_DIR}/CumulusInterfaces/VMC/interfaces)
+if(NOT EXISTS ${VMC_INTERFACES_SRC})
+    message(FATAL_ERROR "VMC interfaces file not found: ${VMC_INTERFACES_SRC}")
 endif()
+configure_file(${VMC_INTERFACES_SRC}
+               ${CMAKE_BINARY_DIR}/bin/CumulusInterfaces/VMC/interfaces
+               COPYONLY)

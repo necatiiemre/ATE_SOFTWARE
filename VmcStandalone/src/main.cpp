@@ -99,9 +99,10 @@ std::filesystem::path executableDir()
 }
 
 // Locate the VMC interfaces file. Search order:
-//   <exe_dir>/        (build/bin/ - CMake copies the file there; portable layout)
-//   <exe_dir>/..      <exe_dir>/../..   <exe_dir>/../../..  (repo root in dev)
-//   <cwd>/
+//   <exe_dir>/          build/bin/ copy (CMake puts it there) / portable layout
+//   <exe_dir>/../..     VmcStandalone/ itself, when running from build/bin/
+//   <cwd>/              current directory
+// Deliberately never looks outside VmcStandalone/ (the app is independent).
 std::string resolveInterfacesPath(const std::string& user_path)
 {
     if (!user_path.empty()) {
@@ -112,9 +113,7 @@ std::string resolveInterfacesPath(const std::string& user_path)
     const auto exe_dir = executableDir();
     const std::vector<std::filesystem::path> candidates = {
         exe_dir / rel,
-        exe_dir / ".." / rel,
         exe_dir / ".." / ".." / rel,
-        exe_dir / ".." / ".." / ".." / rel,
         std::filesystem::current_path() / rel,
     };
 

@@ -38,10 +38,29 @@ cmake -S . -B build
 cmake --build build
 ```
 
-Çıktı: `build/bin/vmcStandalone`. Derleme sırasında
-`../CumulusInterfaces/VMC/interfaces` dosyası `build/bin/CumulusInterfaces/VMC/`
-altına kopyalanır; yani `build/bin/` klasörü tek başına taşınabilir. Dosyanın
-tek kaynağı yine repodaki `CumulusInterfaces/VMC/interfaces`'tir.
+Çıktı: `build/bin/vmcStandalone`.
+
+## Interfaces dosyası
+
+Uygulama repodaki diğer hiçbir şeye bağlı değildir; switch'e gönderilen dosya
+bu projenin içindedir:
+
+```
+VmcStandalone/CumulusInterfaces/VMC/interfaces
+```
+
+Değişiklik **bu dosyada** yapılır. Derleme sırasında `build/bin/CumulusInterfaces/VMC/`
+altına kopyalanır (dosya değişince bir sonraki `cmake --build` kopyayı otomatik
+günceller), böylece `build/bin/` klasörü tek başına başka bir PC'ye taşınabilir.
+
+Çalışırken dosya şu sırayla aranır, ilk bulunan kullanılır:
+
+1. `-i / --interfaces <yol>` verildiyse o dosya
+2. `<exe klasörü>/CumulusInterfaces/VMC/interfaces` (normalde `build/bin/` içindeki kopya)
+3. `<exe klasörü>/../../CumulusInterfaces/VMC/interfaces` (`VmcStandalone/` içindeki asıl dosya)
+4. `./CumulusInterfaces/VMC/interfaces` (çalıştırılan klasör)
+
+`VmcStandalone/` dışındaki hiçbir yola bakılmaz.
 
 Gerekli araçlar: `sshpass`, `ssh`, `scp`.
 
