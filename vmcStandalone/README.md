@@ -345,7 +345,7 @@ msg (0x00 Sync / 0x01 Req / 0x09 Resp) | 35 B blob (master/slave) | TIME_1 (4 B 
 
 | Faz | VMC | Akış (FLCS J6-1 / VS J6-3) |
 |-----|-----|----------------------------|
-| 1. Grandmaster | sadece Sync atar | Önce biz her bacaktan **1 Sync** atarız (1500/1520, `kickSync`) – VMC kendi Sync'ine ancak bunu görünce başlar. Sonra VMC Sync **1600/1620** → biz Req **1601/1621** → VMC Resp **1602/1622**. İlk VMC Sync'iyle başlar; 1 dk içinde Sync gelmezse faz durur (FAIL). VMC'nin bu ilk Sync'e verdiği Req (1501/1521) yok sayılır. |
+| 1. Grandmaster | sadece Sync atar | Önce VMC'yi senkronlarız (`kickSync`): biz **1 Sync** 1500/1520 → VMC Req 1501/1521 → biz Resp 1502/1522. VMC kendi Sync'ine ancak bundan sonra başlar: VMC Sync **1600/1620** → biz Req **1601/1621** → VMC Resp **1602/1622**. Faz ilk VMC Sync'iyle başlar; 1 dk içinde Sync gelmezse faz durur (FAIL). |
 | 2. Master | hem master hem slave | Faz 1 akışı **+** biz Sync **1500/1520** (1 Hz) → VMC Req **1501/1521** → biz Resp **1502/1522**. Bizim ilk Sync'imizle başlar; Sync'i kesince biter. |
 | 3. Slave | sadece slave | biz Sync 1500/1520 → VMC Req 1501/1521 → biz Resp 1502/1522 |
 

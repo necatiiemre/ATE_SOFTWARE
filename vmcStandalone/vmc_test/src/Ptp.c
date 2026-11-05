@@ -155,7 +155,7 @@ typedef struct {
 
     /* Errors */
     uint32_t txFail, badNe, badSize, unexpected;
-    uint32_t kickReq;                 /* phase 1: VMC Req answering the kick Sync (ignored) */
+    uint32_t kickSyncTx, kickReq, kickResp;   /* phase 1: our kick Sync, VMC Req to it, our Resp */
 } LegState;
 
 typedef enum { PH_GRANDMASTER = 0, PH_MASTER = 1, PH_SLAVE = 2 } PhaseId;
@@ -264,7 +264,20 @@ static void handleFrame(PhaseCtx *c, const uint8_t *f, const RawRxInfo *rx, uint
             st->t4 = getTime(body + PTP_BODY_TIME1_OFF);
             st->reqOutstanding = false;
         } else {                                  /* VMC Delay_Req */
-            if (c->phase == PH_GRANDMASTER) { st->kickReq++; return; }   /* answer to the kick Sync */
+            if (c->phase == PH_GRANDMASTER) {
+                /* VMC answering our kick Sync: complete the exchange with a
+                 * Delay_Resp so the VMC gets synchronised; only then does it
+                 * start sending its own (master) Sync. */
+                st->kickReq++;
+                if (sendFrame(c, st, leg, PTP_MSG_DELAY_RESP, leg->ourRespVl, PTP_DATA_MASTER_BLOB,
+                              rx->rxTimeNs)) {
+                    st->kickResp++;
+                    if (st->kickResp == 1)
+                        printf("[PTP] kick: %s VMC Delay_Req (VL %u) answered with Delay_Resp (VL %u)\n",
+                               leg->label, vl, leg->ourRespVl);
+                }
+                return;
+            }
             if (!c->weMaster || !c->started) { st->unexpected++; return; }
             st->reqRx++;
             st->mT3 = getTime(body + PTP_BODY_TIME1_OFF);
@@ -367,7 +380,8 @@ static bool runPhase(const PtpConfig *cfg, PhaseId phase, unsigned durationS, in
             /* The VMC starts its own Sync only after it has seen one from us. */
             for (int i = 0; i < cfg->legCount; ++i) {
                 const PtpLeg *l = &cfg->legs[i];
-                if (sendFrame(&c, &c.legs[i], l, PTP_MSG_SYNC, l->ourSyncVl, PTP_DATA_MASTER_BLOB, realNs()))
+                if (sendFrame(&c, &c.legs[i], l, PTP_MSG_SYNC, l->ourSyncVl, PTP_DATA_MASTER_BLOB, realNs())
+                    && ++c.legs[i].kickSyncTx)
                     printf("[PTP] kick: 1 Sync sent on %s (VL %u) to start the VMC Sync\n",
                            l->label, l->ourSyncVl);
                 else
@@ -456,9 +470,10 @@ static bool runPhase(const PtpConfig *cfg, PhaseId phase, unsigned durationS, in
         ok &= legOk;
     }
     for (int i = 0; i < cfg->legCount; ++i)
-        if (c.legs[i].kickReq)
-            printf("[PTP]   %s: %u VMC Delay_Req answering the kick Sync (ignored)\n",
-                   cfg->legs[i].label, c.legs[i].kickReq);
+        if (phase == PH_GRANDMASTER && cfg->kickSync)
+            printf("[PTP]   %-10s kick: Sync %u -> VMC Req %u -> our Resp %u%s\n",
+                   cfg->legs[i].label, c.legs[i].kickSyncTx, c.legs[i].kickReq,
+                   c.legs[i].kickResp, c.legs[i].kickReq ? "" : "  (VMC never answered the kick Sync)");
     if (c.unmatched) printf("[PTP]   %u PTP frame(s) on unknown VL-IDX ignored\n", c.unmatched);
     printf("[PTP] Phase %d/3 %s: %s\n", num, phaseName(phase), ok ? "PASS" : "FAIL");
     return ok;

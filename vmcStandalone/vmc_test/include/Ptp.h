@@ -15,10 +15,11 @@
  *
  * Phases (run in this order, gapS seconds apart):
  *
- *   1. VMC GRANDMASTER - VMC only sends Sync. With kickSync, we first send ONE
- *      Sync per leg (ourSyncVl) - the VMC only starts its own Sync after
- *      seeing one. Starts with the first VMC Sync (none within
- *      firstSyncWaitS -> phase FAIL), runs grandmasterS:
+ *   1. VMC GRANDMASTER - VMC only sends Sync. With kickSync, we first sync
+ *      the VMC: ONE Sync per leg (ourSyncVl 1500/1520) -> VMC Delay_Req
+ *      (vmcReqVl 1501/1521) -> our Delay_Resp (ourRespVl 1502/1522). Only
+ *      then does the VMC start its own Sync. The phase starts with the first
+ *      VMC Sync (none within firstSyncWaitS -> phase FAIL), runs grandmasterS:
  *        VMC -> us   Sync      vmcSyncVl  (1600 / 1620)
  *        us  -> VMC  Delay_Req ourReqVl   (1601 / 1621)   one per Sync
  *        VMC -> us   Delay_Resp vmcRespVl (1602 / 1622)
@@ -73,8 +74,8 @@ typedef struct {
     unsigned syncIntervalMs;       /* period of our Sync                         */
     unsigned respTimeoutMs;        /* Delay_Req -> Delay_Resp timeout            */
     unsigned dashboardS;           /* status table period, 0 = off               */
-    bool     kickSync;             /* phase 1: send one Sync per leg first, so
-                                      the VMC starts sending its own Sync      */
+    bool     kickSync;             /* phase 1: sync the VMC first (one Sync per leg,
+                                      answer its Req), so it starts its own Sync */
     bool     trace;                /* print every PTP message sent / received    */
 } PtpConfig;
 
