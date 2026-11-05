@@ -331,6 +331,41 @@ senaryo başında eşitlenir, VL-IDX blokları boyunca devam eder. Şu anki ça�
 
 80 paket: VL-IDX 80 için `ABAB…` (seq 0…9), sonra 81 (10…19), 90 (20…29), 91 (30…39).
 
+### casePtp (en sonda, öncesinde 1 dk bekleme)
+
+dpdk_vmc'deki PTP'nin raw socket hali (`src/Ptp.c`). Frame yapısı dpdk_vmc `ptp_wire.h` ile
+aynı – IEEE 1588 değil, 124 byte'lık özel frame:
+
+```
+DST 03:00:00:00:VV:VV | SRC 02:00:00:00:00:NE | 8100 VLAN | 88F7 |
+msg (0x00 Sync / 0x01 Req / 0x09 Resp) | 35 B blob (master/slave) | TIME_1 (4 B sn + 4 B ns) | 0 ...
+```
+
+Üç faz, her biri 1 dk, aralarında 1 dk bekleme:
+
+| Faz | VMC | Akış (FLCS J6-1 / VS J6-3) |
+|-----|-----|----------------------------|
+| 1. Grandmaster | sadece Sync atar | VMC Sync **1600/1620** → biz Req **1601/1621** → VMC Resp **1602/1622**. İlk VMC Sync'iyle başlar; 1 dk içinde Sync gelmezse faz durur (FAIL). |
+| 2. Master | hem master hem slave | Faz 1 akışı **+** biz Sync **1500/1520** (1 Hz) → VMC Req **1501/1521** → biz Resp **1502/1522**. Bizim ilk Sync'imizle başlar; Sync'i kesince biter. |
+| 3. Slave | sadece slave | biz Sync 1500/1520 → VMC Req 1501/1521 → biz Resp 1502/1522 |
+
+- Gönderdiğimiz her frame bacağın VLAN'ıyla çıkar: **J6-1 = 105, J6-3 = 107** (dpdk_vmc'deki
+  server→VMC VLAN'ları); VMC 233 / 235 ile döner (sadece log'lanır). Gelen frame'ler VL-IDX +
+  mesaj tipinden tanınır.
+- Gelen her VMC Sync'e bir Req, gelen her VMC Req'e bir Resp (TIME_1 = bizim alış zamanımız,
+  dpdk_vmc ile aynı). Req'e 1 s içinde Resp gelmezse timeout.
+- Zaman damgaları: alışta kernel zaman damgası (`SO_TIMESTAMPNS`), gönderimde `CLOCK_REALTIME`.
+  VMC-master tarafında dpdk_vmc gibi `offset` / `delay`, bizim master tarafımızda `T4-T3` gösterilir.
+- **PASS:** her bacakta
+  - VMC master iken (faz 1, 2): ≥1 VMC Sync, timeout yok, Resp sayısı = Req sayısı
+  - biz master iken (faz 2, 3): ≥1 VMC Req, hepsine Resp gönderilmiş
+- Log: her PTP mesajı (`[PTP] TX/RX ...`), 10 s'de bir durum tablosu, faz sonunda bacak bacak
+  sonuç ve 3 fazın özeti.
+
+Bütün değerler `src/main.c` → `PTP_LEGS[]` (VL-IDX, VLAN, network) ve `runCasePtp()`
+(interface, süreler, Sync aralığı, timeout) içindedir. PTP öncesindeki 1 dk bekleme
+`SCENARIOS[]`'daki üçüncü alandır (`0` = varsayılan `SCENARIO_GAP_S`).
+
 ### Senaryoların çalışma sırası
 
 `vmc_test` `src/main.c`'deki `SCENARIOS[]` listesindeki senaryoları **sırayla** koşar:
@@ -345,6 +380,8 @@ beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
   4. senaryoFlcsSwitch        PASS
   5. senaryoVsSwitch          PASS
   6. senaryoBothSwitch        PASS
+  ...
+ 10. casePtp                  PASS
   Result: PASS
 ```
 

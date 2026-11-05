@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "Packet.h"
+#include "Ptp.h"
 #include "TestScenarios.h"
 #include "Version.h"
 
@@ -139,22 +140,58 @@ static bool runCaseIntegrityVsSwitch(void)
     return caseIntegrityVsSwitch("ens2f0np0", NET_B, 107, 82, 83, 100, 20, 20) == 20 * 2;
 }
 
+/* ================= PTP (after all packet scenarios) =================
+ * Phases, 1 min each, 1 min apart:
+ *   1. VMC grandmaster : VMC Sync 1600/1620 -> our Req 1601/1621 -> VMC Resp 1602/1622
+ *   2. VMC master      : phase 1 exchange + our Sync 1500/1520 -> VMC Req 1501/1521
+ *                        -> our Resp 1502/1522
+ *   3. VMC slave       : our Sync 1500/1520 -> VMC Req 1501/1521 -> our Resp 1502/1522
+ * J6-1 = FLCS (Net A), J6-3 = VS (Net B). TX VLANs are dpdk_vmc's server->VMC
+ * VLANs of J6-1 / J6-3 (105 / 107); VMC answers on 233 / 235 (only logged,
+ * received frames are matched on VL-IDX). */
+static const PtpLeg PTP_LEGS[] = {
+    /* label        net    txVlan  vmcSync ourReq vmcResp  ourSync vmcReq ourResp */
+    { "FLCS J6-1",  NET_A, 105,    1600,   1601,  1602,    1500,   1501,  1502 },
+    { "VS J6-3",    NET_B, 107,    1620,   1621,  1622,    1520,   1521,  1522 },
+};
+
+static bool runCasePtp(void)
+{
+    static const PtpConfig cfg = {
+        .ifname         = "ens1f0np0",   /* J6 server interface */
+        .legs           = PTP_LEGS,
+        .legCount       = (int)(sizeof(PTP_LEGS) / sizeof(PTP_LEGS[0])),
+        .grandmasterS   = 60,            /* from the first VMC Sync */
+        .masterS        = 60,
+        .slaveS         = 60,
+        .gapS           = 60,            /* between phases */
+        .firstSyncWaitS = 60,            /* no VMC Sync by then -> phase 1 FAIL */
+        .syncIntervalMs = 1000,          /* our Sync: 1 Hz, as dpdk_vmc */
+        .respTimeoutMs  = 1000,          /* Delay_Req -> Delay_Resp */
+        .dashboardS     = 10,
+        .trace          = true,          /* every PTP message in the log */
+    };
+    return casePtp(&cfg);
+}
+
 typedef struct {
     const char *name;
     bool (*run)(void);
+    int  gapBeforeS;     /* wait before this scenario; 0 = SCENARIO_GAP_S */
 } Scenario;
 
 static const Scenario SCENARIOS[] = {
     //{ "tryPacketSend",        runTryPacketSend        },
-    { "caseRedundancyFlcsEndSystem", runCaseRedundancyFlcsEndSystem },
-    { "caseRedundancyVsEndSystem",   runCaseRedundancyVsEndSystem   },
-    { "caseRedundancyFlcsSwitch",    runCaseRedundancyFlcsSwitch    },
-    { "caseRedundancyVsSwitch",      runCaseRedundancyVsSwitch      },
-    { "caseRedundancyBothSwitch",    runCaseRedundancyBothSwitch    },
-    { "caseIntegrityFlcsEndSystem", runCaseIntegrityFlcsEndSystem },
-    { "caseIntegrityVsEndSystem",   runCaseIntegrityVsEndSystem   },
-    { "caseIntegrityFlcsSwitch",    runCaseIntegrityFlcsSwitch    },
-    { "caseIntegrityVsSwitch",      runCaseIntegrityVsSwitch      },
+    { "caseRedundancyFlcsEndSystem", runCaseRedundancyFlcsEndSystem, 0 },
+    { "caseRedundancyVsEndSystem",   runCaseRedundancyVsEndSystem, 0 },
+    { "caseRedundancyFlcsSwitch",    runCaseRedundancyFlcsSwitch, 0 },
+    { "caseRedundancyVsSwitch",      runCaseRedundancyVsSwitch, 0 },
+    { "caseRedundancyBothSwitch",    runCaseRedundancyBothSwitch, 0 },
+    { "caseIntegrityFlcsEndSystem", runCaseIntegrityFlcsEndSystem, 0 },
+    { "caseIntegrityVsEndSystem",   runCaseIntegrityVsEndSystem, 0 },
+    { "caseIntegrityFlcsSwitch",    runCaseIntegrityFlcsSwitch, 0 },
+    { "caseIntegrityVsSwitch",      runCaseIntegrityVsSwitch, 0 },
+    { "casePtp",                    runCasePtp,                   60 },
     /* { "caseXxx", runCaseXxx }, */
 };
 
@@ -219,9 +256,10 @@ int main(int argc, char *argv[])
     bool ok = true;
     for (int i = 0; i < SCENARIO_COUNT && !g_stopRequested; ++i) {
         if (i > 0) {
+            const int gap = SCENARIOS[i].gapBeforeS > 0 ? SCENARIOS[i].gapBeforeS : SCENARIO_GAP_S;
             printf("\nWaiting %d s before scenario %d/%d (%s)...\n",
-                   SCENARIO_GAP_S, i + 1, SCENARIO_COUNT, SCENARIOS[i].name);
-            waitSeconds(SCENARIO_GAP_S);
+                   gap, i + 1, SCENARIO_COUNT, SCENARIOS[i].name);
+            waitSeconds(gap);
             if (g_stopRequested) break;
         }
 
