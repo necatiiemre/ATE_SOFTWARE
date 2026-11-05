@@ -169,6 +169,7 @@ static bool runCasePtp(void)
         .syncIntervalMs = 1000,          /* our Sync: 1 Hz, as dpdk_vmc */
         .respTimeoutMs  = 1000,          /* Delay_Req -> Delay_Resp */
         .dashboardS     = 10,
+        .kickSync       = true,          /* phase 1: one Sync first, VMC then starts its Sync */
         .trace          = true,          /* every PTP message in the log */
     };
     return casePtp(&cfg);

@@ -155,6 +155,7 @@ typedef struct {
 
     /* Errors */
     uint32_t txFail, badNe, badSize, unexpected;
+    uint32_t kickReq;                 /* phase 1: VMC Req answering the kick Sync (ignored) */
 } LegState;
 
 typedef enum { PH_GRANDMASTER = 0, PH_MASTER = 1, PH_SLAVE = 2 } PhaseId;
@@ -263,6 +264,7 @@ static void handleFrame(PhaseCtx *c, const uint8_t *f, const RawRxInfo *rx, uint
             st->t4 = getTime(body + PTP_BODY_TIME1_OFF);
             st->reqOutstanding = false;
         } else {                                  /* VMC Delay_Req */
+            if (c->phase == PH_GRANDMASTER) { st->kickReq++; return; }   /* answer to the kick Sync */
             if (!c->weMaster || !c->started) { st->unexpected++; return; }
             st->reqRx++;
             st->mT3 = getTime(body + PTP_BODY_TIME1_OFF);
@@ -361,6 +363,17 @@ static bool runPhase(const PtpConfig *cfg, PhaseId phase, unsigned durationS, in
     bool noSync = false;
 
     if (phase == PH_GRANDMASTER) {
+        if (cfg->kickSync) {
+            /* The VMC starts its own Sync only after it has seen one from us. */
+            for (int i = 0; i < cfg->legCount; ++i) {
+                const PtpLeg *l = &cfg->legs[i];
+                if (sendFrame(&c, &c.legs[i], l, PTP_MSG_SYNC, l->ourSyncVl, PTP_DATA_MASTER_BLOB, realNs()))
+                    printf("[PTP] kick: 1 Sync sent on %s (VL %u) to start the VMC Sync\n",
+                           l->label, l->ourSyncVl);
+                else
+                    printf("[PTP] WARNING: kick Sync on %s could not be sent\n", l->label);
+            }
+        }
         printf("[PTP] waiting up to %u s for the first VMC Sync...\n", cfg->firstSyncWaitS);
     } else {
         c.started = true;                        /* starts with our first Sync */
@@ -442,6 +455,10 @@ static bool runPhase(const PtpConfig *cfg, PhaseId phase, unsigned durationS, in
                (!legOk && why[0]) ? " - " : "", (!legOk && why[0]) ? why : "");
         ok &= legOk;
     }
+    for (int i = 0; i < cfg->legCount; ++i)
+        if (c.legs[i].kickReq)
+            printf("[PTP]   %s: %u VMC Delay_Req answering the kick Sync (ignored)\n",
+                   cfg->legs[i].label, c.legs[i].kickReq);
     if (c.unmatched) printf("[PTP]   %u PTP frame(s) on unknown VL-IDX ignored\n", c.unmatched);
     printf("[PTP] Phase %d/3 %s: %s\n", num, phaseName(phase), ok ? "PASS" : "FAIL");
     return ok;
