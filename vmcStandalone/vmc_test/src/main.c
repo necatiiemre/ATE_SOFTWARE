@@ -141,7 +141,8 @@ static bool runCaseIntegrityVsSwitch(void)
 }
 
 /* ================= PTP (after all packet scenarios) =================
- * Phases, 1 min each, 1 min apart:
+ * No fixed wait before it: phase 1 starts with the grandmaster Sync.
+ * Phases, 30 s each, 30 s apart:
  *   1. VMC grandmaster : VMC Sync 1600/1620 -> our Req 1601/1621 -> VMC Resp 1602/1622
  *   2. VMC master      : phase 1 exchange + our Sync 1500/1520 -> VMC Req 1501/1521
  *                        -> our Resp 1502/1522
@@ -161,10 +162,10 @@ static bool runCasePtp(void)
         .ifname         = "ens1f0np0",   /* J6 server interface */
         .legs           = PTP_LEGS,
         .legCount       = (int)(sizeof(PTP_LEGS) / sizeof(PTP_LEGS[0])),
-        .grandmasterS   = 60,            /* from the first VMC Sync */
-        .masterS        = 60,
-        .slaveS         = 60,
-        .gapS           = 60,            /* between phases */
+        .grandmasterS   = 30,            /* from the first VMC Sync */
+        .masterS        = 30,
+        .slaveS         = 30,
+        .gapS           = 30,            /* between phases */
         .firstSyncWaitS = 60,            /* no VMC Sync by then -> phase 1 FAIL */
         .syncIntervalMs = 1000,          /* our Sync: 1 Hz, as dpdk_vmc */
         .respTimeoutMs  = 1000,          /* Delay_Req -> Delay_Resp */
@@ -193,7 +194,7 @@ static const Scenario SCENARIOS[] = {
     { "caseIntegrityVsEndSystem",   runCaseIntegrityVsEndSystem, 0 },
     { "caseIntegrityFlcsSwitch",    runCaseIntegrityFlcsSwitch, 0 },
     { "caseIntegrityVsSwitch",      runCaseIntegrityVsSwitch, 0 },
-    { "casePtp",                    runCasePtp,                   60 },
+    { "casePtp",                    runCasePtp,                    0 },  /* starts with the grandmaster Sync */
     /* { "caseXxx", runCaseXxx }, */
 };
 

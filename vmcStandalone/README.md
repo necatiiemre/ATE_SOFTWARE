@@ -331,7 +331,7 @@ senaryo başında eşitlenir, VL-IDX blokları boyunca devam eder. Şu anki ça�
 
 80 paket: VL-IDX 80 için `ABAB…` (seq 0…9), sonra 81 (10…19), 90 (20…29), 91 (30…39).
 
-### casePtp (en sonda, öncesinde 1 dk bekleme)
+### casePtp (en sonda, grandmaster Sync'iyle başlar)
 
 dpdk_vmc'deki PTP'nin raw socket hali (`src/Ptp.c`). Frame yapısı dpdk_vmc `ptp_wire.h` ile
 aynı – IEEE 1588 değil, 124 byte'lık özel frame:
@@ -341,7 +341,8 @@ DST 03:00:00:00:VV:VV | SRC 02:00:00:00:00:NE | 8100 VLAN | 88F7 |
 msg (0x00 Sync / 0x01 Req / 0x09 Resp) | 35 B blob (master/slave) | TIME_1 (4 B sn + 4 B ns) | 0 ...
 ```
 
-Üç faz, her biri 1 dk, aralarında 1 dk bekleme:
+Önceki senaryodan sonra sabit bir bekleme yok (sadece varsayılan `SCENARIO_GAP_S`); PTP
+grandmaster Sync'i gelince başlar. Üç faz, her biri **30 s**, aralarında **30 s** bekleme:
 
 | Faz | VMC | Akış (FLCS J6-1 / VS J6-3) |
 |-----|-----|----------------------------|
@@ -363,13 +364,13 @@ msg (0x00 Sync / 0x01 Req / 0x09 Resp) | 35 B blob (master/slave) | TIME_1 (4 B 
   sonuç ve 3 fazın özeti.
 
 Bütün değerler `src/main.c` → `PTP_LEGS[]` (VL-IDX, VLAN, network) ve `runCasePtp()`
-(interface, süreler, Sync aralığı, timeout) içindedir. PTP öncesindeki 1 dk bekleme
+(interface, süreler, Sync aralığı, timeout) içindedir. Bir senaryodan önceki özel bekleme
 `SCENARIOS[]`'daki üçüncü alandır (`0` = varsayılan `SCENARIO_GAP_S`).
 
 ### Senaryoların çalışma sırası
 
 `vmc_test` `src/main.c`'deki `SCENARIOS[]` listesindeki senaryoları **sırayla** koşar:
-önce senaryonun adı yazılır, senaryo çalışır, sonra bir sonrakine geçmeden **30 saniye**
+önce senaryonun adı yazılır, senaryo çalışır, sonra bir sonrakine geçmeden **5 saniye**
 beklenir (`SCENARIO_GAP_S`). Sonda özet basılır:
 
 ```
